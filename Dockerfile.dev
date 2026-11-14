@@ -1,0 +1,20 @@
+FROM node:22-alpine
+
+# تفعيل pnpm بإصدار محدد ومستقر وتثبيت أدوات البناء
+RUN corepack enable && corepack prepare pnpm@9.15.0 --activate && \
+    apk add --no-cache git python3 make g++
+
+WORKDIR /app
+
+# نسخ ملف الحزم فقط أولاً للاستفادة من كاش Docker
+COPY package.json ./
+
+# تثبيت المكتبات مع زيادة مهلة الشبكة لتفادي انقطاع التحميل البطيء
+RUN pnpm config set network-timeout 100000 && pnpm install
+
+# نسخ باقي ملفات المشروع
+COPY . .
+
+EXPOSE 5173
+
+CMD ["pnpm", "run", "dev", "--host", "0.0.0.0"]

@@ -1,0 +1,25 @@
+﻿# Node & Frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Tauri & Rust Build Artifacts
+src-tauri/target/
+src-tauri/WixTools/
+
+# SQLite Local Databases & WAL files
+*.db
+*.db-shm
+*.db-wal
+
+# Environment & IDE
+.env
+.env.*
+!.env.example
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.log

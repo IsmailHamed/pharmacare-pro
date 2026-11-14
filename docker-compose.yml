@@ -1,0 +1,62 @@
+services:
+  # 1. حاوية تطوير واجهة الصيدلية
+  pharmacare-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: pharmacare_dev
+    ports:
+      - "5173:5173"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+
+  # 2. قاعدة بيانات السحابة المركزية (PostgreSQL)
+  cloud-sync-db:
+    image: postgres:16-alpine
+    container_name: pharmacare_cloud_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pharma_admin
+      POSTGRES_PASSWORD: pharma_password_2026
+      POSTGRES_DB: pharmacare_central
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  # 3. سيرفر استقبال حزم المزامنة (Cloud Sync API - Port 4000)
+  cloud-sync-api:
+    image: node:22-alpine
+    container_name: pharmacare_sync_api
+    working_dir: /srv
+    volumes:
+      - ./sync-server:/srv
+    command: sh -c "npm install --no-audit --no-fund && node server.mjs"
+    ports:
+      - "4000:4000"
+    environment:
+      PGHOST: cloud-sync-db
+      PGPORT: 5432
+      PGUSER: pharma_admin
+      PGPASSWORD: pharma_password_2026
+      PGDATABASE: pharmacare_central
+      PORT: 4000
+    depends_on:
+      - cloud-sync-db
+    restart: unless-stopped
+
+  # 4. واجهة رسومية لإدارة قاعدة البيانات عبر المتصفح (Adminer)
+  db-viewer:
+    image: adminer
+    container_name: pharmacare_db_viewer
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    depends_on:
+      - cloud-sync-db
+
+volumes:
+  pg_data:
