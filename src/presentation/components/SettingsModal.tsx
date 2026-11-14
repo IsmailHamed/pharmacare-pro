@@ -1,5 +1,6 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { usePosStore } from "../../application/store/usePosStore";
+import { getSystemPrinters } from "../../infrastructure/tauri/printer";
 import {
   Settings,
   X,
@@ -12,6 +13,7 @@ import {
   Download,
   Upload,
   RotateCcw,
+  RefreshCw,
 } from "lucide-react";
 
 interface Props {
@@ -44,8 +46,20 @@ export const SettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
   const [scannerMaxIntervalMs, setScannerMaxIntervalMs] = useState(
     String(settings.scannerMaxIntervalMs),
   );
+  const [availablePrinters, setAvailablePrinters] = useState<string[]>([]);
 
   const backupFileInputRef = useRef<HTMLInputElement>(null);
+
+  const loadPrinters = async () => {
+    const list = await getSystemPrinters();
+    setAvailablePrinters(list);
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      void loadPrinters();
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -101,7 +115,7 @@ export const SettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
         <div className="p-4 bg-slate-800 border-b border-slate-700 flex items-center justify-between">
           <h3 className="font-bold text-white text-sm flex items-center gap-2">
             <Settings className="w-4 h-4 text-emerald-400" />
-            إعدادات الصيدلية، الطابعة، والنسخ الاحتياطي لقاعدة البيانات
+            إعدادات الصيدلية، الطابعة الصامتة، والنسخ الاحتياطي
           </h3>
           <button
             type="button"
@@ -127,20 +141,13 @@ export const SettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
               </span>
             </div>
 
-            <p className="text-[11px] text-slate-400">
-              احفظ نسخة احتياطية كاملة لجميع الجداول العشرة (الأدوية، الدفعات،
-              الفواتير، الديون، الورديات، والإعدادات) على فلاشة خارجية أو
-              استعدها بضغطة زر.
-            </p>
-
             <div className="flex items-center gap-2.5 flex-wrap pt-1">
               <button
                 type="button"
                 onClick={exportDatabaseBackup}
                 className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 shadow"
               >
-                <Download className="w-4 h-4" /> تصدير نسخة احتياطية كاملة
-                (.json)
+                <Download className="w-4 h-4" /> تصدير نسخة احتياطية (.json)
               </button>
 
               <input
@@ -155,25 +162,24 @@ export const SettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                 onClick={() => backupFileInputRef.current?.click()}
                 className="flex-1 bg-sky-600 hover:bg-sky-500 text-white font-bold py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 shadow"
               >
-                <Upload className="w-4 h-4" /> استعادة نسخة احتياطية سابقة
+                <Upload className="w-4 h-4" /> استعادة نسخة احتياطية
               </button>
 
               <button
                 type="button"
                 onClick={() => void handleFactoryReset()}
                 className="bg-rose-950/80 hover:bg-rose-900 border border-rose-800 text-rose-200 font-bold py-2.5 px-3 rounded-xl flex items-center gap-1.5"
-                title="إعادة ضبط قاعدة البيانات للبيانات الافتراضية"
               >
                 <RotateCcw className="w-3.5 h-3.5" /> ضبط المصنع
               </button>
             </div>
           </div>
 
-          {/* 2. بيانات هوية الصيدلية على الفواتير ولصاقات الباركود */}
+          {/* 2. بيانات هوية الصيدلية */}
           <div className="space-y-3 bg-slate-950 p-4 rounded-xl border border-slate-800">
             <div className="font-bold text-slate-200 flex items-center gap-1.5">
               <Building2 className="w-4 h-4 text-emerald-400" /> بيانات هوية
-              الصيدلية (تظهر في الإيصال الحراري ولصاقات الباركود)
+              الصيدلية
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -233,15 +239,24 @@ export const SettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
             </div>
           </div>
 
-          {/* 3. إعدادات الطابعة الحرارية وقارئ الباركود */}
+          {/* 3. إعدادات الطابعة الحرارية الصامتة وقارئ الباركود */}
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2">
-              <div className="font-bold text-sky-400 flex items-center gap-1.5">
-                <Printer className="w-4 h-4" /> الطابعة الحرارية (80mm)
+              <div className="flex items-center justify-between">
+                <div className="font-bold text-sky-400 flex items-center gap-1.5">
+                  <Printer className="w-4 h-4" /> الطابعة الحرارية الصامتة
+                  (80mm)
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void loadPrinters()}
+                  className="text-[10px] text-slate-400 hover:text-white flex items-center gap-1"
+                  title="تحديث قائمة طابعات الويندوز"
+                >
+                  <RefreshCw className="w-3 h-3" /> تحديث
+                </button>
               </div>
-              <label className="block text-slate-400">
-                اسم الطابعة في نظام ويندوز
-              </label>
+
               <input
                 type="text"
                 value={thermalPrinterName}
@@ -249,6 +264,32 @@ export const SettingsModal: React.FC<Props> = ({ isOpen, onClose }) => {
                 className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-white font-mono outline-none"
                 placeholder="POS-80-Series"
               />
+
+              {availablePrinters.length > 0 && (
+                <div className="pt-1">
+                  <label className="block text-[10px] text-slate-400 mb-1">
+                    أو اختر من طابعات الويندوز المتصلة:
+                  </label>
+                  <select
+                    value={
+                      availablePrinters.includes(thermalPrinterName)
+                        ? thermalPrinterName
+                        : ""
+                    }
+                    onChange={(e) => {
+                      if (e.target.value) setThermalPrinterName(e.target.value);
+                    }}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg p-1.5 text-slate-200 font-mono text-[11px] outline-none"
+                  >
+                    <option value="">-- اختر طابعة من النظام --</option>
+                    {availablePrinters.map((p) => (
+                      <option key={p} value={p}>
+                        {p}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
             </div>
 
             <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2">

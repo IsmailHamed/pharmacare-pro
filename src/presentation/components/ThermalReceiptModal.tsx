@@ -1,6 +1,8 @@
 import React, { useState } from "react";
 import { InvoiceEntity } from "../../domain/entities/Invoice";
-import { Printer, X, Tag, Receipt } from "lucide-react";
+import { usePosStore } from "../../application/store/usePosStore";
+import { printThermalReceipt } from "../../infrastructure/tauri/printer";
+import { Printer, X, Tag, Receipt, Zap } from "lucide-react";
 
 interface Props {
   invoice: InvoiceEntity | null;
@@ -8,40 +10,54 @@ interface Props {
 }
 
 export const ThermalReceiptModal: React.FC<Props> = ({ invoice, onClose }) => {
-  const [viewMode, setViewMode] = useState<"receipt" | "labels">("receipt");
-  // تخزين نص الجرعة المخصص لكل صنف في الفاتورة
-  const [dosages, setDosages] = useState<Record<string, string>>({});
+  const { settings, setNotification } = usePosStore();
+  const [activeTab, setActiveTab] = useState<"RECEIPT" | "LABELS">("RECEIPT");
+  const [dosageMap, setDosageMap] = useState<Record<string, string>>({});
+  const [isPrinting, setIsPrinting] = useState(false);
 
   if (!invoice) return null;
 
-  const discountAmount = (invoice.subtotal * invoice.discountPercent) / 100;
+  const getDosageText = (cartKey: string): string =>
+    dosageMap[cartKey] ?? "قرص واحد كل 8 ساعات بعد الأكل";
 
-  const handlePrint = () => {
-    window.print();
+  const handleSilentDirectPrint = async () => {
+    setIsPrinting(true);
+    const ok = await printThermalReceipt(invoice);
+    setIsPrinting(false);
+
+    if (ok) {
+      setNotification({
+        type: "success",
+        message: `تم إرسال الإيصال (${invoice.id}) بالطباعة الصامتة الفورية إلى الطابعة (${settings.thermalPrinterName}).`,
+      });
+      onClose();
+    } else {
+      window.print();
+    }
   };
 
   return (
     <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4 text-xs">
-      <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md flex flex-col max-h-[90vh] shadow-2xl overflow-hidden">
-        {/* شريط التحكم العلوي */}
-        <div className="p-3.5 bg-slate-800/80 border-b border-slate-700 flex items-center justify-between">
-          <div className="flex items-center gap-1.5">
+      <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl">
+        {/* شريط التبديل بين الفاتورة الحرارية ولصاقة الجرعات */}
+        <div className="p-3 bg-slate-800 border-b border-slate-700 flex items-center justify-between">
+          <div className="flex gap-2">
             <button
-              onClick={() => setViewMode("receipt")}
-              className={`px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5 transition ${
-                viewMode === "receipt"
+              onClick={() => setActiveTab("RECEIPT")}
+              className={`px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5 ${
+                activeTab === "RECEIPT"
                   ? "bg-emerald-600 text-white"
-                  : "bg-slate-900 text-slate-400 hover:text-white"
+                  : "bg-slate-900 text-slate-400"
               }`}
             >
-              <Receipt className="w-3.5 h-3.5" /> إيصال حراري (80mm)
+              <Receipt className="w-3.5 h-3.5" /> الإيصال الحراري (80mm)
             </button>
             <button
-              onClick={() => setViewMode("labels")}
-              className={`px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5 transition ${
-                viewMode === "labels"
-                  ? "bg-blue-600 text-white"
-                  : "bg-slate-900 text-slate-400 hover:text-white"
+              onClick={() => setActiveTab("LABELS")}
+              className={`px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5 ${
+                activeTab === "LABELS"
+                  ? "bg-sky-600 text-white"
+                  : "bg-slate-900 text-slate-400"
               }`}
             >
               <Tag className="w-3.5 h-3.5" /> لصاقات الجرعات (
@@ -56,164 +72,175 @@ export const ThermalReceiptModal: React.FC<Props> = ({ invoice, onClose }) => {
           </button>
         </div>
 
-        {/* منطقة المعاينة القابلة للطباعة */}
-        <div className="flex-1 overflow-y-auto p-5 flex justify-center bg-slate-950/60">
-          {viewMode === "receipt" ? (
-            /* قالب ورق الطابعة الحرارية 80mm */
-            <div className="bg-white text-slate-950 w-[302px] p-4 rounded shadow-lg font-mono text-[11px] leading-relaxed">
-              <div className="text-center border-b-2 border-dashed border-slate-400 pb-2.5 mb-2.5">
-                <div className="font-extrabold text-sm">
-                  فارماكير برو - PharmaCare Pro
+        {/* محتوى المعاينة */}
+        <div className="p-5 bg-slate-950 max-h-[68vh] overflow-y-auto flex flex-col items-center">
+          {activeTab === "RECEIPT" ? (
+            <div className="bg-white text-slate-950 w-[300px] p-4 rounded shadow-xl font-mono text-[11px] space-y-2">
+              <div className="text-center border-b border-dashed border-slate-400 pb-2">
+                <div className="font-extrabold text-sm font-sans">
+                  {settings.pharmacyName}
                 </div>
-                <div className="text-[10px] text-slate-600">
-                  الفرع: {invoice.branchId} | نظام إدارة الصيدلية
-                </div>
-                <div className="text-[10px] mt-1 font-bold">
-                  {invoice.type === "RETURN"
-                    ? "*** إشعار مرتجع مبيعات ***"
-                    : "فاتورة مبيعات ضريبية مبسطة"}
-                </div>
+                {settings.address && (
+                  <div className="text-[10px] font-sans text-slate-600">
+                    {settings.address}
+                  </div>
+                )}
+                {settings.phone && (
+                  <div className="text-[10px]">هاتف: {settings.phone}</div>
+                )}
+                {settings.taxNumber && (
+                  <div className="text-[10px]">
+                    الرقم الضريبي: {settings.taxNumber}
+                  </div>
+                )}
               </div>
 
-              <div className="space-y-0.5 text-[10px] border-b border-dashed border-slate-400 pb-2 mb-2">
+              <div className="text-[10px] space-y-0.5 border-b border-dashed border-slate-400 pb-2 font-sans">
                 <div className="flex justify-between">
                   <span>رقم الفاتورة:</span>
-                  <span className="font-bold">{invoice.id}</span>
+                  <b className="font-mono">{invoice.id}</b>
                 </div>
                 <div className="flex justify-between">
                   <span>التاريخ:</span>
-                  <span>
-                    {invoice.createdAt.slice(0, 19).replace("T", " ")}
+                  <span className="font-mono">
+                    {new Date(invoice.createdAt).toLocaleString("ar-SA")}
                   </span>
                 </div>
                 <div className="flex justify-between">
                   <span>العميل:</span>
-                  <span>{invoice.customerName}</span>
+                  <b>{invoice.customerName || "عميل نقدي"}</b>
                 </div>
                 <div className="flex justify-between">
-                  <span>طريقة الدفع:</span>
-                  <span className="font-bold">
-                    {invoice.paymentMode === "CASH"
-                      ? "نقدي (CASH)"
-                      : "آجل (CREDIT)"}
+                  <span>النوع / الدفع:</span>
+                  <b>
+                    {invoice.type === "SALE" ? "مبيعات" : "مرتجع"} (
+                    {invoice.paymentMode === "CASH" ? "نقدي" : "آجل"})
+                  </b>
+                </div>
+              </div>
+
+              <div className="space-y-1 border-b border-dashed border-slate-400 pb-2">
+                {invoice.items.map((item) => (
+                  <div key={item.cartKey} className="text-[10px]">
+                    <div className="font-bold font-sans">
+                      {item.product.name} (
+                      {item.unit === "pack" ? "علبة" : "شريط"})
+                    </div>
+                    <div className="flex justify-between">
+                      <span>
+                        {item.qty} × {item.unitPrice.toFixed(2)}
+                      </span>
+                      <b>{(item.qty * item.unitPrice).toFixed(2)}</b>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="space-y-1 text-xs font-sans">
+                <div className="flex justify-between">
+                  <span>الإجمالي قبل الخصم:</span>
+                  <span className="font-mono">
+                    {invoice.subtotal.toFixed(2)}
+                  </span>
+                </div>
+                {invoice.discountPercent > 0 && (
+                  <div className="flex justify-between text-slate-600">
+                    <span>الخصم ({invoice.discountPercent}%):</span>
+                    <span className="font-mono">
+                      -
+                      {(
+                        (invoice.subtotal * invoice.discountPercent) /
+                        100
+                      ).toFixed(2)}
+                    </span>
+                  </div>
+                )}
+                <div className="flex justify-between font-extrabold text-sm border-t border-slate-400 pt-1">
+                  <span>الصافي النهائي:</span>
+                  <span className="font-mono">
+                    {invoice.totalAmount.toFixed(2)} ر.س
                   </span>
                 </div>
               </div>
 
-              {/* جدول الأصناف */}
-              <table className="w-full text-right border-b border-dashed border-slate-400 pb-2 mb-2 text-[10px]">
-                <thead>
-                  <tr className="border-b border-slate-300 text-slate-600">
-                    <th className="py-1">الصنف</th>
-                    <th className="py-1 text-center">الكمية</th>
-                    <th className="py-1 text-left">الإجمالي</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200">
-                  {invoice.items.map((item) => (
-                    <tr key={item.cartKey}>
-                      <td className="py-1.5">
-                        <div className="font-bold">{item.product.name}</div>
-                        <div className="text-[9px] text-slate-500">
-                          {item.unit === "pack" ? "علبة" : "شريط"} ×{" "}
-                          {item.unitPrice.toFixed(2)}
-                          {item.fifoAllocations?.[0] &&
-                            ` | دفعة: ${item.fifoAllocations[0].batchNumber}`}
-                        </div>
-                      </td>
-                      <td className="py-1.5 text-center font-bold">
-                        {item.qty}
-                      </td>
-                      <td className="py-1.5 text-left font-bold">
-                        {(item.unitPrice * item.qty).toFixed(2)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-
-              {/* الإجماليات */}
-              <div className="space-y-1 text-[11px] border-b-2 border-dashed border-slate-400 pb-2.5 mb-2.5">
-                <div className="flex justify-between">
-                  <span>الإجمالي الفرعي:</span>
-                  <span>{invoice.subtotal.toFixed(2)}</span>
+              {/* باركود رقم الفاتورة لسهولة مسحه عند المرتجع */}
+              <div className="pt-2 border-t border-dashed border-slate-400 text-center">
+                <div className="font-mono text-[10px] tracking-widest font-bold">
+                  *{invoice.id}*
                 </div>
-                {invoice.discountPercent > 0 && (
-                  <div className="flex justify-between text-slate-700">
-                    <span>الخصم ({invoice.discountPercent}%):</span>
-                    <span>-{discountAmount.toFixed(2)}</span>
+                {settings.receiptFooter && (
+                  <div className="text-[9px] font-sans text-slate-600 mt-1">
+                    {settings.receiptFooter}
                   </div>
                 )}
-                <div className="flex justify-between font-extrabold text-sm pt-1 border-t border-slate-300">
-                  <span>الصافي المطلوب:</span>
-                  <span>{invoice.totalAmount.toFixed(2)} ر.س</span>
-                </div>
-              </div>
-
-              <div className="text-center text-[10px] text-slate-600 space-y-0.5">
-                <div>شكراًلزيارتكم — مع تمنياتنا لكم بالشفاء العاجل</div>
-                <div className="font-mono text-[9px]">{invoice.id}</div>
               </div>
             </div>
           ) : (
-            /* قالب لصاقات الجرعات وطريقة الاستعمال (38mm x 25mm) */
             <div className="w-full space-y-3">
-              {invoice.items.map((item) => {
-                const defaultDosage =
-                  dosages[item.cartKey] ??
-                  "قرص واحد / كبسولة (صباحاً ومساءً) بعد الطعام";
-                return (
-                  <div
-                    key={item.cartKey}
-                    className="bg-white text-slate-950 p-3 rounded-lg border-2 border-slate-400 shadow space-y-1.5"
-                  >
-                    <div className="flex justify-between items-center border-b border-slate-300 pb-1 text-[10px] font-bold">
-                      <span>صيدلية فارماكير برو</span>
-                      <span>المريض: {invoice.customerName}</span>
-                    </div>
-                    <div className="font-extrabold text-xs text-blue-900">
-                      {item.product.name}
-                    </div>
-                    <div>
-                      <input
-                        type="text"
-                        value={defaultDosage}
-                        onChange={(e) =>
-                          setDosages((prev) => ({
-                            ...prev,
-                            [item.cartKey]: e.target.value,
-                          }))
-                        }
-                        className="w-full bg-amber-50 border border-amber-300 rounded px-2 py-1 text-[11px] font-bold text-slate-900 outline-none"
-                      />
-                    </div>
-                    <div className="flex justify-between text-[9px] text-slate-500 pt-0.5 font-mono">
-                      <span>يحفظ بعيداً عن متناول الأطفال</span>
-                      <span>{invoice.createdAt.slice(0, 10)}</span>
-                    </div>
+              {invoice.items.map((item) => (
+                <div
+                  key={item.cartKey}
+                  className="bg-white text-slate-950 p-3 rounded-xl border-2 border-slate-300 space-y-1.5"
+                >
+                  <div className="flex justify-between text-[10px] font-bold border-b border-slate-300 pb-1">
+                    <span>{settings.pharmacyName}</span>
+                    <span>{invoice.customerName || "عميل نقدي"}</span>
                   </div>
-                );
-              })}
+                  <div className="font-extrabold text-xs">
+                    {item.product.name}
+                  </div>
+                  <input
+                    type="text"
+                    value={getDosageText(item.cartKey)}
+                    onChange={(e) =>
+                      setDosageMap((prev) => ({
+                        ...prev,
+                        [item.cartKey]: e.target.value,
+                      }))
+                    }
+                    className="w-full bg-amber-50 border border-amber-300 rounded p-1.5 text-slate-900 font-bold text-[11px]"
+                  />
+                </div>
+              ))}
             </div>
           )}
         </div>
 
-        {/* أزرار الإجراءات السفلية */}
-        <div className="p-3.5 bg-slate-800/90 border-t border-slate-700 flex gap-2">
+        {/* أزرار الطباعة الصامتة والعادية */}
+        <div className="p-3.5 bg-slate-800 border-t border-slate-700 flex gap-2">
+          {activeTab === "RECEIPT" ? (
+            <button
+              onClick={() => void handleSilentDirectPrint()}
+              disabled={isPrinting}
+              className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold py-2.5 rounded-xl flex items-center justify-center gap-1.5 shadow-lg"
+            >
+              <Zap className="w-4 h-4" />
+              {isPrinting
+                ? "جاري الإرسال للطابعة..."
+                : `طباعة صامتة مباشرة (${settings.thermalPrinterName})`}
+            </button>
+          ) : (
+            <button
+              onClick={() => window.print()}
+              className="flex-1 bg-sky-600 hover:bg-sky-500 text-white font-bold py-2.5 rounded-xl flex items-center justify-center gap-1.5 shadow-lg"
+            >
+              <Printer className="w-4 h-4" /> طباعة لصاقات الجرعات
+            </button>
+          )}
+
           <button
-            onClick={handlePrint}
-            className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2.5 rounded-xl flex items-center justify-center gap-2 shadow-lg"
+            onClick={() => window.print()}
+            title="فتح نافذة طباعة النظام العادية"
+            className="px-3 py-2.5 bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold rounded-xl flex items-center gap-1"
           >
             <Printer className="w-4 h-4" />
-            {viewMode === "receipt"
-              ? "طباعة الإيصال الحراري"
-              : "طباعة لصاقات الجرعات"}
           </button>
+
           <button
             onClick={onClose}
-            className="px-5 py-2.5 bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold rounded-xl"
+            className="px-4 py-2.5 bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold rounded-xl"
           >
-            إغلاق (Esc)
+            إغلاق
           </button>
         </div>
       </div>

@@ -1,53 +1,119 @@
 import { InvoiceEntity } from "../../domain/entities/Invoice";
-
-export interface ThermalReceiptLinePayload {
-  name: string;
-  unit: string;
-  qty: number;
-  unitPrice: number;
-  lineTotal: number;
-}
+import { SettingsService } from "../config/SettingsService";
+import { isTauriDesktop } from "../db/connection";
 
 /**
- * وحدة الطباعة الحرارية المباشرة (ESC/POS via Tauri v2 Rust Bridge)
- * تقوم بالطباعة الصامتة مباشرة عبر Rust إذا كان النظام يعمل داخل Tauri،
- * أو تولد إيصالاً حرارياً جاهزاً في وضع المتصفح.
+ * تنسيق نص الإيصال الحراري (80mm) ليرسل مباشرة إلى طابعة الكاشير عبر نواة Rust
+ */
+export const formatThermalReceiptText = (invoice: InvoiceEntity): string => {
+  const settings = SettingsService.getSettings();
+  const divider = "----------------------------------------";
+  const doubleDivider = "========================================";
+  const dateStr = new Date(invoice.createdAt).toLocaleString("ar-SA");
+  const discountVal = (invoice.subtotal * invoice.discountPercent) / 100;
+
+  const lines: string[] = [doubleDivider, `      ${settings.pharmacyName}`];
+
+  if (settings.address) {
+    lines.push(`   ${settings.address}`);
+  }
+  if (settings.phone) {
+    lines.push(`   هاتف: ${settings.phone}`);
+  }
+  if (settings.taxNumber) {
+    lines.push(`   الرقم الضريبي: ${settings.taxNumber}`);
+  }
+
+  lines.push(
+    doubleDivider,
+    `رقم الفاتورة : ${invoice.id}`,
+    `التاريخ      : ${dateStr}`,
+    `العميل       : ${invoice.customerName || "عميل نقدي"}`,
+    `النوع / الدفع: ${invoice.type === "SALE" ? "فاتورة بيع" : "مرتجع"} (${
+      invoice.paymentMode === "CASH" ? "نقدي" : "آجل"
+    })`,
+    divider,
+    "الصنف (الوحدة)            الكمية × السعر = الإجمالي",
+    divider,
+  );
+
+  for (const item of invoice.items) {
+    const unitLabel = item.unit === "pack" ? "علبة" : "شريط";
+    const lineTotal = (item.qty * item.unitPrice).toFixed(2);
+    lines.push(`${item.product.name} (${unitLabel})`);
+    lines.push(
+      `   ${item.qty} × ${item.unitPrice.toFixed(2)} = ${lineTotal} ر.س`,
+    );
+  }
+
+  lines.push(divider, `الإجمالي الفرعي : ${invoice.subtotal.toFixed(2)} ر.س`);
+
+  if (invoice.discountPercent > 0) {
+    lines.push(
+      `الخصم (${invoice.discountPercent}%)     : -${discountVal.toFixed(2)} ر.س`,
+    );
+  }
+
+  lines.push(
+    doubleDivider,
+    `الصافي المطلوب  : ${invoice.totalAmount.toFixed(2)} ر.س`,
+    doubleDivider,
+    `         *${invoice.id}*`,
+  );
+
+  if (settings.receiptFooter) {
+    lines.push(divider, settings.receiptFooter);
+  }
+
+  lines.push("", "", "");
+  return lines.join("\n");
+};
+
+/**
+ * جلب قائمة الطابعات المعرفة في نظام ويندوز عبر نواة Rust
+ */
+export const getSystemPrinters = async (): Promise<string[]> => {
+  if (!isTauriDesktop()) {
+    return ["POS-80-Series", "Microsoft Print to PDF", "XP-80C"];
+  }
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const printers = await invoke<string[]>("list_system_printers");
+    return printers.length > 0 ? printers : ["POS-80-Series"];
+  } catch (err) {
+    console.warn("Could not list system printers:", err);
+    return ["POS-80-Series"];
+  }
+};
+
+/**
+ * طباعة الإيصال الحراري بشكل صامت وفوري عبر Rust دون إظهار نافذة المتصفح
  */
 export const printThermalReceipt = async (
   invoice: InvoiceEntity,
-): Promise<{
-  printed: boolean;
-  mode: "TAURI_RUST_ESC_POS" | "BROWSER_PREVIEW";
-}> => {
-  const isTauri =
-    typeof window !== "undefined" &&
-    ("__TAURI_INTERNALS__" in window || "__TAURI__" in window);
+): Promise<boolean> => {
+  const settings = SettingsService.getSettings();
+  const receiptText = formatThermalReceiptText(invoice);
 
-  const lines: ThermalReceiptLinePayload[] = invoice.items.map((item) => ({
-    name: item.product.name,
-    unit: item.unit === "pack" ? "علبة" : "شريط",
-    qty: item.qty,
-    unitPrice: item.unitPrice,
-    lineTotal: Number((item.unitPrice * item.qty).toFixed(2)),
-  }));
-
-  if (isTauri) {
+  if (isTauriDesktop()) {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("print_thermal_receipt", {
-        invoiceId: invoice.id,
-        customerName: invoice.customerName,
-        paymentMode: invoice.paymentMode,
-        subtotal: invoice.subtotal,
-        discountPercent: invoice.discountPercent,
-        total: invoice.totalAmount,
-        linesJson: JSON.stringify(lines),
+      await invoke<string>("print_thermal_receipt_silent", {
+        printerName: settings.thermalPrinterName,
+        receiptText,
       });
-      return { printed: true, mode: "TAURI_RUST_ESC_POS" };
-    } catch (err) {
-      console.warn("Tauri Thermal Printer fallback:", err);
+      console.info(
+        `🖨️ [Silent Thermal Print]: Invoice ${invoice.id} printed directly to (${settings.thermalPrinterName}).`,
+      );
+      return true;
+    } catch (error) {
+      console.warn("⚠️ [Silent Print Error]:", error);
+      return false;
     }
   }
 
-  return { printed: true, mode: "BROWSER_PREVIEW" };
+  console.info(
+    `🖨️ [Browser Mode Simulated Print -> ${settings.thermalPrinterName}]:\n${receiptText}`,
+  );
+  return true;
 };
