@@ -202,7 +202,8 @@ export interface SyncQueueItemEntity {
     | "CONTROLLED_LOG"
     | "EXPENSE"
     | "SHIFT"
-    | "BULK_PRICING";
+    | "BULK_PRICING"
+    | "LEDGER_PAYMENT";
   operation: "INSERT" | "UPDATE" | "DELETE";
   recordId: string;
   payload: string; // JSON serialized
@@ -211,8 +212,6 @@ export interface SyncQueueItemEntity {
   createdAt: string;
   syncedAt?: string;
 }
-
-// --- إضافة في نهاية src/domain/entities/index.ts ---
 
 export type LedgerPartyType = "CUSTOMER" | "SUPPLIER";
 
@@ -233,4 +232,15 @@ export interface PartyAccountSummary {
   totalPaidAmount: number; // إجمالي الدفعات المسددة
   remainingBalance: number; // الرصيد المتبقي (الدين الفعلي)
   lastTransactionAt: string;
+}
+
+export interface PharmacySettingsEntity {
+  pharmacyName: string;
+  phone: string;
+  address: string;
+  taxNumber: string;
+  receiptFooter: string;
+  thermalPrinterName: string;
+  cloudSyncUrl: string;
+  scannerMaxIntervalMs: number;
 }

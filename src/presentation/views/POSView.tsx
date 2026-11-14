@@ -6,10 +6,13 @@ import { CartView } from "../components/CartView";
 import { ControlledDrugModal } from "../components/ControlledDrugModal";
 import { AlternativesModal } from "../components/AlternativesModal";
 import { HeldInvoicesBar } from "../components/HeldInvoicesBar";
-import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
-import { ProductEntity, DrugInteractionAlert } from "../../domain/entities";
-import { AlertTriangle, Inbox } from "lucide-react";
 import { ThermalReceiptModal } from "../components/ThermalReceiptModal";
+import { SettingsModal } from "../components/SettingsModal";
+import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
+import { useBarcodeScanner } from "../hooks/useBarcodeScanner";
+import { ProductEntity, DrugInteractionAlert } from "../../domain/entities";
+import { AlertTriangle, Inbox, Settings, Barcode } from "lucide-react";
+
 /**
  * شاشة نقطة البيع الموحدة (POS)
  * طبقة Presentation خالصة: تعرض الحالة وتستدعي إجراءات الـ Store فقط.
@@ -17,15 +20,20 @@ import { ThermalReceiptModal } from "../components/ThermalReceiptModal";
 export const POSView: React.FC = () => {
   const store = usePosStore();
   const [searchQuery, setSearchQuery] = useState("");
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // الخطوة 1: تشغيل مستمع قارئ الباركود الليزري العالمي مع تفريغ حقل البحث تلقائياً عند اللقط
+  useBarcodeScanner(!isSettingsOpen, () => setSearchQuery(""));
 
   // البحث الذكي: باركود، اسم تجاري، أو مادة فعالة
   const filteredProducts = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
     if (!q) return store.products;
+    const baseBarcode = q.endsWith("-s") ? q.slice(0, -2) : q;
     return store.products.filter(
       (p) =>
-        p.barcode.includes(q) ||
+        p.barcode.includes(baseBarcode) ||
         p.name.toLowerCase().includes(q) ||
         p.scientificName.toLowerCase().includes(q),
     );
@@ -34,14 +42,20 @@ export const POSView: React.FC = () => {
   const handleSearchEnter = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
       if (e.key !== "Enter") return;
-      const q = searchQuery.toLowerCase().trim();
+      const q = searchQuery.trim();
       if (!q) return;
 
-      const exactBarcode = store.products.find((p) => p.barcode === q);
-      if (exactBarcode) {
-        store.requestAddToCart(exactBarcode, "pack");
-        setSearchQuery("");
-        return;
+      // إذا أدخل رقم فاتورة (INV-...) أو باركود شريط فرط (-S) أو باركود علبة قياسي
+      if (
+        q.toUpperCase().startsWith("INV-") ||
+        q.toUpperCase().endsWith("-S") ||
+        store.products.some((p) => p.barcode.toLowerCase() === q.toLowerCase())
+      ) {
+        const handled = store.handleBarcodeScan(q);
+        if (handled) {
+          setSearchQuery("");
+          return;
+        }
       }
 
       const firstMatch = filteredProducts[0];
@@ -69,6 +83,11 @@ export const POSView: React.FC = () => {
     );
   }, [store.selectedProductForAlternatives, store.products]);
 
+  const recentSaleInvoices = useMemo(
+    () => store.invoices.filter((inv) => inv.type === "SALE").slice(0, 8),
+    [store.invoices],
+  );
+
   useKeyboardShortcuts({
     onCheckout: () => void store.completeCheckout(),
     onFocusSearch: () => {
@@ -85,6 +104,30 @@ export const POSView: React.FC = () => {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
+      {/* شريط حالة القارئ الليزري وزر إعدادات الصيدلية والطابعة */}
+      <div className="bg-slate-900/90 border-b border-slate-800 px-4 py-1.5 flex items-center justify-between text-[11px]">
+        <div className="flex items-center gap-2 text-slate-300">
+          <span className="bg-emerald-950 border border-emerald-800 text-emerald-300 px-2 py-0.5 rounded-full flex items-center gap-1 font-bold">
+            <Barcode className="w-3.5 h-3.5" /> قارئ الليزر التلقائي نشط
+          </span>
+          <span className="text-slate-400">
+            ({store.settings.pharmacyName} — الطابعة:{" "}
+            <b className="font-mono text-slate-300">
+              {store.settings.thermalPrinterName}
+            </b>
+            )
+          </span>
+        </div>
+
+        <button
+          onClick={() => setIsSettingsOpen(true)}
+          className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 px-2.5 py-1 rounded-lg font-bold flex items-center gap-1.5 transition"
+        >
+          <Settings className="w-3.5 h-3.5 text-emerald-400" />
+          إعدادات الصيدلية والطابعة
+        </button>
+      </div>
+
       {/* شريط التحذير الطبي الوامض (تداخل دوائي) */}
       {store.interactionAlerts.length > 0 && (
         <InteractionAlertBar alerts={store.interactionAlerts} />
@@ -119,6 +162,9 @@ export const POSView: React.FC = () => {
           customerName={store.customerName}
           invoiceMode={store.invoiceMode}
           heldCount={store.heldInvoices.length}
+          returnSourceInvoiceId={store.returnSourceInvoiceId}
+          recentSaleInvoices={recentSaleInvoices}
+          onLoadInvoiceForReturn={store.loadInvoiceForReturn}
           onSetDiscount={store.setDiscountPercent}
           onSetPaymentMode={store.setPaymentMode}
           onSetCustomerName={store.setCustomerName}
@@ -149,9 +195,17 @@ export const POSView: React.FC = () => {
           store.setSelectedProductForAlternatives(null);
         }}
       />
+
+      {/* نافذة الإيصال الحراري ولصاقات الجرعات */}
       <ThermalReceiptModal
         invoice={store.lastPrintedInvoice}
         onClose={() => store.setLastPrintedInvoice(null)}
+      />
+
+      {/* نافذة إعدادات الصيدلية والطابعة والمزامنة (الخطوة 4) */}
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
       />
     </div>
   );

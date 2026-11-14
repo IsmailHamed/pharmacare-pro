@@ -1,6 +1,14 @@
-import React from "react";
+import React, { useState } from "react";
 import { CartItemEntity } from "../../domain/entities";
-import { Printer, ShoppingCart, Pause, Undo2 } from "lucide-react";
+import { InvoiceEntity } from "../../domain/entities/Invoice";
+import {
+  Printer,
+  ShoppingCart,
+  Pause,
+  Undo2,
+  FileSearch,
+  SearchCheck,
+} from "lucide-react";
 
 interface Props {
   cart: CartItemEntity[];
@@ -10,6 +18,9 @@ interface Props {
   customerName: string;
   invoiceMode: "SALE" | "RETURN";
   heldCount: number;
+  returnSourceInvoiceId?: string | null;
+  recentSaleInvoices?: InvoiceEntity[];
+  onLoadInvoiceForReturn?: (invoiceId: string) => boolean;
   onSetDiscount: (percent: number) => void;
   onSetPaymentMode: (mode: "CASH" | "CREDIT") => void;
   onSetCustomerName: (name: string) => void;
@@ -28,6 +39,9 @@ export const CartView: React.FC<Props> = ({
   customerName,
   invoiceMode,
   heldCount,
+  returnSourceInvoiceId,
+  recentSaleInvoices = [],
+  onLoadInvoiceForReturn,
   onSetDiscount,
   onSetPaymentMode,
   onSetCustomerName,
@@ -37,17 +51,77 @@ export const CartView: React.FC<Props> = ({
   onToggleReturn,
   onHold,
 }) => {
+  const [lookupId, setLookupId] = useState("");
+
   const discountAmount = (subtotal * discountPercent) / 100;
   const total = subtotal - discountAmount;
 
+  const handleInvoiceLookup = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!lookupId.trim() || !onLoadInvoiceForReturn) return;
+    const ok = onLoadInvoiceForReturn(lookupId);
+    if (ok) setLookupId("");
+  };
+
   return (
     <div className="w-5/12 p-4 flex flex-col bg-slate-900/20">
+      {/* الخطوة 6: شريط استرداد الفاتورة الأصلية بالرقم أو الباركود عند تفعيل وضع المرتجع */}
+      {invoiceMode === "RETURN" && onLoadInvoiceForReturn && (
+        <div className="mb-2.5 p-2.5 bg-amber-950/30 border border-amber-800/70 rounded-xl space-y-2 text-xs">
+          <div className="flex items-center justify-between">
+            <span className="font-bold text-amber-300 flex items-center gap-1.5">
+              <FileSearch className="w-3.5 h-3.5" /> استرداد فاتورة مبيعات
+              للمرتجع
+            </span>
+            {returnSourceInvoiceId && (
+              <span className="bg-amber-900/60 border border-amber-600 text-amber-200 text-[10px] font-mono px-2 py-0.5 rounded-full">
+                مرجع: {returnSourceInvoiceId}
+              </span>
+            )}
+          </div>
+
+          <form onSubmit={handleInvoiceLookup} className="flex gap-1.5">
+            <input
+              type="text"
+              value={lookupId}
+              onChange={(e) => setLookupId(e.target.value)}
+              placeholder="امسح باركود الفاتورة أو اكتب رقمها (INV-...)"
+              className="flex-1 bg-slate-900 border border-amber-800/80 rounded-lg px-2.5 py-1.5 text-white font-mono text-[11px] outline-none focus:border-amber-500"
+            />
+            <button
+              type="submit"
+              className="bg-amber-600 hover:bg-amber-500 text-white font-bold px-3 py-1.5 rounded-lg flex items-center gap-1"
+            >
+              <SearchCheck className="w-3.5 h-3.5" /> جلب
+            </button>
+          </form>
+
+          {recentSaleInvoices.length > 0 && (
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+              <span className="text-[10px] text-amber-300/80 shrink-0">
+                آخر الفواتير:
+              </span>
+              {recentSaleInvoices.slice(0, 6).map((inv) => (
+                <button
+                  key={inv.id}
+                  type="button"
+                  onClick={() => onLoadInvoiceForReturn(inv.id)}
+                  className="text-[10px] font-mono bg-slate-900 hover:bg-amber-900/50 border border-slate-700 text-slate-200 px-2 py-0.5 rounded shrink-0 transition"
+                >
+                  {inv.id} ({inv.totalAmount.toFixed(0)})
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* قائمة السلة */}
       <div className="flex-1 overflow-y-auto border border-slate-800 rounded-xl bg-slate-900/60 p-2.5 space-y-2 no-scrollbar">
         {cart.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center text-slate-500 text-xs">
+          <div className="h-full flex flex-col items-center justify-center text-slate-500 text-xs text-center px-4">
             <ShoppingCart className="w-8 h-8 mb-2 stroke-1" />
-            <p>السلة فارغة — ابدأ بإضافة الأدوية</p>
+            <p>السلة فارغة — ابدأ بإضافة الأدوية أو امسح الباركود بالليزر</p>
           </div>
         ) : (
           cart.map((item) => (
@@ -151,7 +225,7 @@ export const CartView: React.FC<Props> = ({
                 : "bg-slate-800 text-slate-400 hover:bg-slate-700"
             }`}
           >
-            آجل (آجل)
+            آجل (ذمم)
           </button>
           <div className="flex items-center gap-1">
             <input

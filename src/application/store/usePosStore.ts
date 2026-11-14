@@ -12,6 +12,7 @@ import {
   ShiftSummaryEntity,
   SyncQueueItemEntity,
   LedgerPaymentEntity,
+  PharmacySettingsEntity,
 } from "../../domain/entities";
 import { InvoiceEntity } from "../../domain/entities/Invoice";
 import { CompleteCheckoutUseCase } from "../use-cases/CompleteCheckoutUseCase";
@@ -25,6 +26,7 @@ import { SQLiteBatchRepository } from "../../infrastructure/persistence/SQLiteBa
 import { SQLiteInvoiceRepository } from "../../infrastructure/persistence/SQLiteInvoiceRepository";
 import { printThermalReceipt } from "../../infrastructure/tauri/printer";
 import { pushBatchToCloudServer } from "../../infrastructure/tauri/system";
+import { SettingsService } from "../../infrastructure/config/SettingsService";
 import {
   CURRENT_BRANCH_ID,
   sqliteEngine,
@@ -44,12 +46,15 @@ export interface PosState {
   expenses: CashExpenseEntity[];
   shifts: ShiftSummaryEntity[];
   syncQueue: SyncQueueItemEntity[];
+  ledgerPayments: LedgerPaymentEntity[];
+  settings: PharmacySettingsEntity;
 
   // حالة نقطة البيع (POS State)
   cart: CartItemEntity[];
   heldInvoices: HeldInvoiceEntity[];
   interactionAlerts: DrugInteractionAlert[];
   invoiceMode: "SALE" | "RETURN";
+  returnSourceInvoiceId: string | null;
   paymentMode: "CASH" | "CREDIT";
   discountPercent: number;
   customerName: string;
@@ -63,9 +68,10 @@ export interface PosState {
     type: "success" | "error" | "warning" | "info";
     message: string;
   } | null;
-  ledgerPayments: LedgerPaymentEntity[];
+
   // الإجراءات الأساسية (Actions)
   loadInitialData: () => Promise<void>;
+  updatePharmacySettings: (newSettings: PharmacySettingsEntity) => void;
   setNotification: (
     notification: {
       type: "success" | "error" | "warning" | "info";
@@ -83,7 +89,7 @@ export interface PosState {
   ) => void;
   setLastPrintedInvoice: (invoice: InvoiceEntity | null) => void;
 
-  // إجراءات السلة والبيع
+  // إجراءات السلة والبيع والباركود والمرتجع
   requestAddToCart: (product: ProductEntity, unit: "pack" | "strip") => void;
   addToCart: (
     product: ProductEntity,
@@ -96,6 +102,8 @@ export interface PosState {
   holdCurrentInvoice: (customerName?: string) => void;
   resumeInvoice: (invoiceId: string) => void;
   completeCheckout: () => Promise<InvoiceEntity | null>;
+  handleBarcodeScan: (rawBarcode: string) => boolean;
+  loadInvoiceForReturn: (invoiceQuery: string) => boolean;
 
   // إجراءات المشتريات والبونص
   createPurchaseWithBonus: (
@@ -172,10 +180,13 @@ export const usePosStore = create<PosState>()(
       shifts: sqliteEngine.getSnapshot().shifts,
       syncQueue: sqliteEngine.getSnapshot().syncQueue,
       ledgerPayments: sqliteEngine.getSnapshot().ledgerPayments,
+      settings: SettingsService.getSettings(),
+
       cart: [],
       heldInvoices: [],
       interactionAlerts: [],
       invoiceMode: "SALE",
+      returnSourceInvoiceId: null,
       paymentMode: "CASH",
       discountPercent: 0,
       customerName: "",
@@ -213,6 +224,18 @@ export const usePosStore = create<PosState>()(
           shifts,
           syncQueue,
           ledgerPayments,
+          settings: SettingsService.getSettings(),
+        });
+      },
+
+      updatePharmacySettings: (newSettings) => {
+        const saved = SettingsService.saveSettings(newSettings);
+        set({
+          settings: saved,
+          notification: {
+            type: "success",
+            message: "تم حفظ إعدادات الصيدلية والطابعة والمزامنة بنجاح.",
+          },
         });
       },
 
@@ -221,18 +244,23 @@ export const usePosStore = create<PosState>()(
       },
 
       setInvoiceMode: (invoiceMode) => {
-        set({ invoiceMode });
+        set({
+          invoiceMode,
+          returnSourceInvoiceId:
+            invoiceMode === "SALE" ? null : get().returnSourceInvoiceId,
+        });
       },
 
       toggleReturnMode: () => {
         const nextMode = get().invoiceMode === "SALE" ? "RETURN" : "SALE";
         set({
           invoiceMode: nextMode,
+          returnSourceInvoiceId: null,
           notification: {
             type: nextMode === "RETURN" ? "warning" : "info",
             message:
               nextMode === "RETURN"
-                ? "تم تفعيل وضع مرتجع المبيعات (F6)"
+                ? "تم تفعيل وضع مرتجع المبيعات (F6) — يمكنك مسح باركود الفاتورة لاستردادها"
                 : "تمت العودة لوضع البيع المباشر (SALE)",
           },
         });
@@ -377,14 +405,118 @@ export const usePosStore = create<PosState>()(
           discountPercent: 0,
           customerName: "",
           invoiceMode: "SALE",
+          returnSourceInvoiceId: null,
           paymentMode: "CASH",
         });
+      },
+
+      /**
+       * الخطوة 1: معالج قارئ الباركود الليزري العالمي
+       * يدعم:
+       * 1. باركود الفاتورة (INV-...) لتحميل الفاتورة في وضع المرتجع
+       * 2. باركود الشريط الفرط المنتهي بـ (-S) لإضافة شريط مباشرة
+       * 3. باركود العلبة القياسي لإضافة علبة مباشرة عبر requestAddToCart
+       */
+      handleBarcodeScan: (rawBarcode) => {
+        const code = rawBarcode.trim();
+        if (!code) return false;
+
+        if (code.toUpperCase().startsWith("INV-")) {
+          return get().loadInvoiceForReturn(code);
+        }
+
+        const isStripLabel = code.toUpperCase().endsWith("-S");
+        const baseBarcode = isStripLabel ? code.slice(0, -2) : code;
+
+        const matchedProduct = get().products.find(
+          (p) => p.barcode.toLowerCase() === baseBarcode.toLowerCase(),
+        );
+
+        if (matchedProduct) {
+          const unitToAdd: "pack" | "strip" =
+            isStripLabel && matchedProduct.stripsPerPack > 1 ? "strip" : "pack";
+          get().requestAddToCart(matchedProduct, unitToAdd);
+          set({
+            notification: {
+              type: "success",
+              message: `تم لقط الباركود: ${matchedProduct.name} (${
+                unitToAdd === "pack" ? "علبة" : "شريط فرط"
+              })`,
+            },
+          });
+          return true;
+        }
+
+        set({
+          notification: {
+            type: "warning",
+            message: `لم يتم العثور على صنف مسجل بالباركود (${code})`,
+          },
+        });
+        return false;
+      },
+
+      /**
+       * الخطوة 6: استرداد الفاتورة الأصلية بالرقم أو الباركود عند عمل مرتجع مبيعات
+       */
+      loadInvoiceForReturn: (invoiceQuery) => {
+        const cleanQuery = invoiceQuery.trim().toUpperCase();
+        if (!cleanQuery) return false;
+
+        const targetInvoice = get().invoices.find(
+          (inv) =>
+            inv.type === "SALE" &&
+            (inv.id.toUpperCase() === cleanQuery ||
+              inv.id.toUpperCase().endsWith(cleanQuery)),
+        );
+
+        if (!targetInvoice) {
+          set({
+            notification: {
+              type: "error",
+              message: `لم يتم العثور على فاتورة مبيعات بالرقم (${invoiceQuery}).`,
+            },
+          });
+          return false;
+        }
+
+        const currentProducts = get().products;
+        const restoredItems: CartItemEntity[] = targetInvoice.items.map(
+          (item) => {
+            const latestProduct =
+              currentProducts.find((p) => p.id === item.product.id) ||
+              item.product;
+            return {
+              cartKey: generateCartKey(latestProduct.id, item.unit),
+              product: latestProduct,
+              unit: item.unit,
+              qty: item.qty,
+              unitPrice: item.unitPrice,
+              isControlled: latestProduct.isControlled,
+              controlledMeta: item.controlledMeta,
+            };
+          },
+        );
+
+        set({
+          invoiceMode: "RETURN",
+          returnSourceInvoiceId: targetInvoice.id,
+          cart: restoredItems,
+          customerName: targetInvoice.customerName,
+          discountPercent: targetInvoice.discountPercent,
+          paymentMode: targetInvoice.paymentMode,
+          interactionAlerts: [],
+          notification: {
+            type: "warning",
+            message: `تم استرداد الفاتورة (${targetInvoice.id}) للعميل (${targetInvoice.customerName}) بكامل أسعارها لإجراء المرتجع.`,
+          },
+        });
+        return true;
       },
 
       holdCurrentInvoice: (customName) => {
         const { cart, customerName, heldInvoices, clearCart } = get();
         if (cart.length === 0) {
-          // إذا كانت السلة فارغة وهناك فواتير معلقة، نستأنف أحدث فاتورة معلقة فوراً (F5 Toggle)
           if (heldInvoices.length > 0) {
             get().resumeInvoice(heldInvoices[0].id);
           }
@@ -544,6 +676,7 @@ export const usePosStore = create<PosState>()(
           },
         });
       },
+
       importProductsBatch: async (importedProducts) => {
         for (const prod of importedProducts) {
           await productRepo.upsertProduct(prod);
@@ -557,6 +690,7 @@ export const usePosStore = create<PosState>()(
         });
         return importedProducts.length;
       },
+
       applyBulkPricing: async (percentChange, categoryFilter) => {
         await productRepo.applyBulkPriceAdjustment(
           percentChange,
@@ -688,6 +822,7 @@ export const usePosStore = create<PosState>()(
           },
         });
       },
+
       syncPendingBatchToCloud: async () => {
         const pending = get().syncQueue.filter((i) => i.status === "PENDING");
         const result = await pushBatchToCloudServer(pending);
@@ -706,6 +841,7 @@ export const usePosStore = create<PosState>()(
         });
         return { syncedCount: result.syncedCount, batchId: result.batchId };
       },
+
       resetDemoDatabase: async () => {
         sqliteEngine.resetToFactory();
         get().clearCart();

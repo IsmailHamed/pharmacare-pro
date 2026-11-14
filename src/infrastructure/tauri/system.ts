@@ -1,5 +1,6 @@
 import { SyncQueueItemEntity } from "../../domain/entities";
 import { CURRENT_BRANCH_ID } from "../db/database";
+import { SettingsService } from "../config/SettingsService";
 
 export interface SystemRuntimeInfo {
   runtime: "TAURI_V2_DESKTOP" | "OFFLINE_WEB_RUNTIME";
@@ -11,7 +12,10 @@ export interface SystemRuntimeInfo {
 export const getSystemRuntimeInfo = (): SystemRuntimeInfo => {
   const isTauri =
     typeof window !== "undefined" &&
-    Boolean((window as unknown as Record<string, unknown>).__TAURI__);
+    Boolean(
+      (window as unknown as Record<string, unknown>).__TAURI__ ||
+      (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__,
+    );
 
   return {
     runtime: isTauri ? "TAURI_V2_DESKTOP" : "OFFLINE_WEB_RUNTIME",
@@ -26,7 +30,7 @@ export const getSystemRuntimeInfo = (): SystemRuntimeInfo => {
  */
 export const pushBatchToCloudServer = async (
   pendingItems: SyncQueueItemEntity[],
-  endpointUrl = "http://localhost:4000/api/v1/sync/batch",
+  endpointUrl?: string,
 ): Promise<{
   syncedCount: number;
   batchId: string;
@@ -45,12 +49,15 @@ export const pushBatchToCloudServer = async (
     };
   }
 
+  const { cloudSyncUrl } = SettingsService.getSettings();
+  const targetEndpoint = endpointUrl || `${cloudSyncUrl}/api/v1/sync/batch`;
+
   // محاولة الاتصال بالسيرفر المركزي أو تنفيذ محاكاة المزامنة الحزمية الموثوقة
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 1200);
+    const timeout = setTimeout(() => controller.abort(), 1500);
 
-    await fetch(endpointUrl, {
+    await fetch(targetEndpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

@@ -161,6 +161,13 @@ const bootstrapSQLiteTables = async (db: Database) => {
         branch_id TEXT NOT NULL
       );
     `);
+  await sqliteRaw.execute(`
+      CREATE TABLE IF NOT EXISTS pharmacy_settings (
+        id TEXT PRIMARY KEY,
+        payload TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
 };
 
 // جسر Drizzle ORM المتصل بـ Tauri SQL Plugin
