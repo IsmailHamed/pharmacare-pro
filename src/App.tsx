@@ -4,6 +4,7 @@ import { PurchasesView } from "./presentation/views/PurchasesView";
 import { InventoryView } from "./presentation/views/InventoryView";
 import { FinanceView } from "./presentation/views/FinanceView";
 import { ControlledRegistryView } from "./presentation/views/ControlledRegistryView";
+import { SettingsView } from "./presentation/views/SettingsView";
 import {
   ShoppingCart,
   PackagePlus,
@@ -12,6 +13,7 @@ import {
   Activity,
   ShieldAlert,
   RefreshCw,
+  Settings,
   X,
 } from "lucide-react";
 import {
@@ -19,7 +21,13 @@ import {
   selectPendingSyncCount,
 } from "./application/store/usePosStore";
 
-type TabType = "pos" | "purchases" | "inventory" | "finance" | "controlled";
+type TabType =
+  | "pos"
+  | "purchases"
+  | "inventory"
+  | "finance"
+  | "controlled"
+  | "settings";
 
 const TABS: {
   id: TabType;
@@ -51,6 +59,12 @@ const TABS: {
     label: "دفتر المراقبة",
     activeCls: "bg-rose-700",
     icon: ShieldAlert,
+  },
+  {
+    id: "settings",
+    label: "الإعدادات والنسخ الاحتياطي",
+    activeCls: "bg-emerald-600",
+    icon: Settings,
   },
 ];
 
@@ -152,6 +166,7 @@ export default function App() {
         {activeTab === "inventory" && <InventoryView />}
         {activeTab === "finance" && <FinanceView />}
         {activeTab === "controlled" && <ControlledRegistryView />}
+        {activeTab === "settings" && <SettingsView />}
       </main>
     </div>
   );
