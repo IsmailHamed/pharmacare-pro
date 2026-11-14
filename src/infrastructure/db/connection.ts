@@ -12,7 +12,7 @@ export const isTauriDesktop = (): boolean => {
   );
 };
 
-// إنشاء الجداول الـ 8 تلقائياً وتفعيل WAL Mode عند الإقلاع بما يطابق schema.ts
+// إنشاء الجداول الـ 10 تلقائياً وتفعيل WAL Mode عند الإقلاع بما يطابق schema.ts
 const bootstrapSQLiteTables = async (db: Database) => {
   await db.execute("PRAGMA journal_mode = WAL;");
   await db.execute("PRAGMA synchronous = NORMAL;");
@@ -112,30 +112,47 @@ const bootstrapSQLiteTables = async (db: Database) => {
     );
   `);
 
-  await sqliteRaw.execute(`
-      CREATE TABLE IF NOT EXISTS shifts (
-        id TEXT PRIMARY KEY,
-        pharmacist_name TEXT NOT NULL,
-        opened_at TEXT NOT NULL,
-        closed_at TEXT,
-        status TEXT NOT NULL,
-        opening_balance REAL NOT NULL,
-        cash_sales_total REAL NOT NULL DEFAULT 0,
-        credit_sales_total REAL NOT NULL DEFAULT 0,
-        returns_total REAL NOT NULL DEFAULT 0,
-        credit_returns_total REAL NOT NULL DEFAULT 0,
-        debt_collections_total REAL NOT NULL DEFAULT 0,
-        supplier_payments_total REAL NOT NULL DEFAULT 0,
-        cash_purchases_total REAL NOT NULL DEFAULT 0,
-        petty_cash_total REAL NOT NULL DEFAULT 0,
-        expected_drawer_cash REAL NOT NULL DEFAULT 0,
-        actual_drawer_cash REAL,
-        variance REAL,
-        safe_drop_amount REAL DEFAULT 0,
-        next_shift_float REAL DEFAULT 0,
-        branch_id TEXT NOT NULL
-      );
-    `);
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS shifts (
+      id TEXT PRIMARY KEY NOT NULL,
+      pharmacist_name TEXT NOT NULL,
+      opened_at TEXT NOT NULL,
+      closed_at TEXT,
+      status TEXT NOT NULL,
+      opening_balance REAL NOT NULL,
+      cash_sales_total REAL NOT NULL DEFAULT 0,
+      credit_sales_total REAL NOT NULL DEFAULT 0,
+      returns_total REAL NOT NULL DEFAULT 0,
+      credit_returns_total REAL NOT NULL DEFAULT 0,
+      debt_collections_total REAL NOT NULL DEFAULT 0,
+      supplier_payments_total REAL NOT NULL DEFAULT 0,
+      cash_purchases_total REAL NOT NULL DEFAULT 0,
+      petty_cash_total REAL NOT NULL DEFAULT 0,
+      expected_drawer_cash REAL NOT NULL DEFAULT 0,
+      actual_drawer_cash REAL,
+      variance REAL,
+      safe_drop_amount REAL DEFAULT 0,
+      next_shift_float REAL DEFAULT 0,
+      branch_id TEXT DEFAULT 'MAIN_BRANCH' NOT NULL
+    );
+  `);
+
+  // ترقية آمنة لجدول shifts إذا كانت قاعدة البيانات منشأة من إصدار أقدم
+  const alterShiftColumns = [
+    "ALTER TABLE shifts ADD COLUMN credit_returns_total REAL NOT NULL DEFAULT 0;",
+    "ALTER TABLE shifts ADD COLUMN debt_collections_total REAL NOT NULL DEFAULT 0;",
+    "ALTER TABLE shifts ADD COLUMN supplier_payments_total REAL NOT NULL DEFAULT 0;",
+    "ALTER TABLE shifts ADD COLUMN cash_purchases_total REAL NOT NULL DEFAULT 0;",
+    "ALTER TABLE shifts ADD COLUMN safe_drop_amount REAL DEFAULT 0;",
+    "ALTER TABLE shifts ADD COLUMN next_shift_float REAL DEFAULT 0;",
+  ];
+  for (const stmt of alterShiftColumns) {
+    try {
+      await db.execute(stmt);
+    } catch {
+      // العمود موجود مسبقاً
+    }
+  }
 
   await db.execute(`
     CREATE TABLE IF NOT EXISTS sync_queue (
@@ -150,24 +167,26 @@ const bootstrapSQLiteTables = async (db: Database) => {
       synced_at TEXT
     );
   `);
-  await sqliteRaw.execute(`
-      CREATE TABLE IF NOT EXISTS ledger_payments (
-        id TEXT PRIMARY KEY,
-        party_type TEXT NOT NULL,
-        party_name TEXT NOT NULL,
-        amount REAL NOT NULL,
-        notes TEXT,
-        created_at TEXT NOT NULL,
-        branch_id TEXT NOT NULL
-      );
-    `);
-  await sqliteRaw.execute(`
-      CREATE TABLE IF NOT EXISTS pharmacy_settings (
-        id TEXT PRIMARY KEY,
-        payload TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-    `);
+
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS ledger_payments (
+      id TEXT PRIMARY KEY NOT NULL,
+      party_type TEXT NOT NULL,
+      party_name TEXT NOT NULL,
+      amount REAL NOT NULL,
+      notes TEXT,
+      created_at TEXT NOT NULL,
+      branch_id TEXT DEFAULT 'MAIN_BRANCH' NOT NULL
+    );
+  `);
+
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS pharmacy_settings (
+      id TEXT PRIMARY KEY NOT NULL,
+      payload TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
 };
 
 // جسر Drizzle ORM المتصل بـ Tauri SQL Plugin

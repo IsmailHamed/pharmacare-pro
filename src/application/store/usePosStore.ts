@@ -27,6 +27,7 @@ import { SQLiteInvoiceRepository } from "../../infrastructure/persistence/SQLite
 import { printThermalReceipt } from "../../infrastructure/tauri/printer";
 import { pushBatchToCloudServer } from "../../infrastructure/tauri/system";
 import { SettingsService } from "../../infrastructure/config/SettingsService";
+import { BackupService } from "../../infrastructure/backup/BackupService";
 import {
   CURRENT_BRANCH_ID,
   sqliteEngine,
@@ -137,11 +138,13 @@ export interface PosState {
     openingBalance: number,
   ) => Promise<void>;
 
-  // إجراءات المزامنة السحابية (Batch Syncing)
+  // إجراءات المزامنة السحابية والنسخ الاحتياطي المحلي
   syncPendingBatchToCloud: () => Promise<{
     syncedCount: number;
     batchId: string;
   }>;
+  exportDatabaseBackup: () => void;
+  restoreDatabaseBackup: (file: File) => Promise<void>;
   resetDemoDatabase: () => Promise<void>;
 
   recordLedgerPayment: (
@@ -205,6 +208,7 @@ export const usePosStore = create<PosState>()(
           shifts,
           syncQueue,
           ledgerPayments,
+          syncedSettings,
         ] = await Promise.all([
           productRepo.getAllProducts(),
           invoiceRepo.getAllInvoices(),
@@ -214,6 +218,7 @@ export const usePosStore = create<PosState>()(
           invoiceRepo.getShifts(),
           invoiceRepo.getSyncQueue(),
           invoiceRepo.getLedgerPayments(),
+          SettingsService.syncFromSQLite(),
         ]);
         set({
           products,
@@ -224,7 +229,7 @@ export const usePosStore = create<PosState>()(
           shifts,
           syncQueue,
           ledgerPayments,
-          settings: SettingsService.getSettings(),
+          settings: syncedSettings,
         });
       },
 
@@ -840,6 +845,61 @@ export const usePosStore = create<PosState>()(
           },
         });
         return { syncedCount: result.syncedCount, batchId: result.batchId };
+      },
+
+      /**
+       * تصدير نسخة احتياطية كاملة بضغطة زر
+       */
+      exportDatabaseBackup: () => {
+        const state = get();
+        const fileName = BackupService.exportBackupFile(
+          {
+            products: state.products,
+            invoices: state.invoices,
+            purchaseInvoices: state.purchaseInvoices,
+            controlledLogs: state.controlledLogs,
+            expenses: state.expenses,
+            shifts: state.shifts,
+            syncQueue: state.syncQueue,
+            ledgerPayments: state.ledgerPayments,
+          },
+          state.settings,
+        );
+
+        set({
+          notification: {
+            type: "success",
+            message: `تم تصدير النسخة الاحتياطية الكاملة بنجاح (${fileName}).`,
+          },
+        });
+      },
+
+      /**
+       * استعادة قاعدة البيانات بالكامل من ملف نسخة احتياطية
+       */
+      restoreDatabaseBackup: async (file) => {
+        try {
+          const summary = await BackupService.restoreFromBackupFile(file);
+          get().clearCart();
+          await get().loadInitialData();
+          set({
+            heldInvoices: [],
+            notification: {
+              type: "success",
+              message: `تمت استعادة النسخة الاحتياطية بنجاح (${summary.productsCount} صنف دوائي، ${summary.invoicesCount} فاتورة).`,
+            },
+          });
+        } catch (err) {
+          set({
+            notification: {
+              type: "error",
+              message:
+                err instanceof Error
+                  ? err.message
+                  : "فشل استعادة النسخة الاحتياطية.",
+            },
+          });
+        }
       },
 
       resetDemoDatabase: async () => {

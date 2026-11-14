@@ -8,10 +8,19 @@ import { AlternativesModal } from "../components/AlternativesModal";
 import { HeldInvoicesBar } from "../components/HeldInvoicesBar";
 import { ThermalReceiptModal } from "../components/ThermalReceiptModal";
 import { SettingsModal } from "../components/SettingsModal";
+import { InvoicesHistoryModal } from "../components/InvoicesHistoryModal";
+import { ShortagesOrderModal } from "../components/ShortagesOrderModal";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useBarcodeScanner } from "../hooks/useBarcodeScanner";
 import { ProductEntity, DrugInteractionAlert } from "../../domain/entities";
-import { AlertTriangle, Inbox, Settings, Barcode } from "lucide-react";
+import {
+  AlertTriangle,
+  Inbox,
+  Settings,
+  Barcode,
+  FileText,
+  ClipboardList,
+} from "lucide-react";
 
 /**
  * شاشة نقطة البيع الموحدة (POS)
@@ -21,10 +30,20 @@ export const POSView: React.FC = () => {
   const store = usePosStore();
   const [searchQuery, setSearchQuery] = useState("");
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [isShortagesOpen, setIsShortagesOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  // الخطوة 1: تشغيل مستمع قارئ الباركود الليزري العالمي مع تفريغ حقل البحث تلقائياً عند اللقط
-  useBarcodeScanner(!isSettingsOpen, () => setSearchQuery(""));
+  // إيقاف لقط الباركود التلقائي للسلة عند فتح أي نافذة منبثقة فرعية
+  const isAnyModalOpen =
+    isSettingsOpen ||
+    isHistoryOpen ||
+    isShortagesOpen ||
+    Boolean(store.pendingControlledItem) ||
+    Boolean(store.selectedProductForAlternatives) ||
+    Boolean(store.lastPrintedInvoice);
+
+  useBarcodeScanner(!isAnyModalOpen, () => setSearchQuery(""));
 
   // البحث الذكي: باركود، اسم تجاري، أو مادة فعالة
   const filteredProducts = useMemo(() => {
@@ -38,6 +57,12 @@ export const POSView: React.FC = () => {
         p.scientificName.toLowerCase().includes(q),
     );
   }, [searchQuery, store.products]);
+
+  // حساب عدد النواقص تحت حد الطلب لعرضها على زر دفتر النواقص
+  const shortagesCount = useMemo(
+    () => store.products.filter((p) => p.stockPacks <= p.minLimit).length,
+    [store.products],
+  );
 
   const handleSearchEnter = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -104,7 +129,7 @@ export const POSView: React.FC = () => {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      {/* شريط حالة القارئ الليزري وزر إعدادات الصيدلية والطابعة */}
+      {/* شريط الأدوات العلوي: حالة الليزر + سجل الفواتير + دفتر النواقص + الإعدادات */}
       <div className="bg-slate-900/90 border-b border-slate-800 px-4 py-1.5 flex items-center justify-between text-[11px]">
         <div className="flex items-center gap-2 text-slate-300">
           <span className="bg-emerald-950 border border-emerald-800 text-emerald-300 px-2 py-0.5 rounded-full flex items-center gap-1 font-bold">
@@ -119,13 +144,39 @@ export const POSView: React.FC = () => {
           </span>
         </div>
 
-        <button
-          onClick={() => setIsSettingsOpen(true)}
-          className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 px-2.5 py-1 rounded-lg font-bold flex items-center gap-1.5 transition"
-        >
-          <Settings className="w-3.5 h-3.5 text-emerald-400" />
-          إعدادات الصيدلية والطابعة
-        </button>
+        <div className="flex items-center gap-2">
+          {/* زر الطلب 3: سجل الفواتير السابقة وإعادة الطباعة */}
+          <button
+            onClick={() => setIsHistoryOpen(true)}
+            className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 px-2.5 py-1 rounded-lg font-bold flex items-center gap-1.5 transition"
+          >
+            <FileText className="w-3.5 h-3.5 text-sky-400" />
+            سجل الفواتير ({store.invoices.length})
+          </button>
+
+          {/* زر الطلب 5: دفتر النواقص الذكي وتوليد طلبية المستودع */}
+          <button
+            onClick={() => setIsShortagesOpen(true)}
+            className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 px-2.5 py-1 rounded-lg font-bold flex items-center gap-1.5 transition"
+          >
+            <ClipboardList className="w-3.5 h-3.5 text-amber-400" />
+            دفتر النواقص والطلبيات
+            {shortagesCount > 0 && (
+              <span className="bg-rose-600 text-white font-mono text-[10px] px-1.5 rounded-full">
+                {shortagesCount}
+              </span>
+            )}
+          </button>
+
+          {/* زر إعدادات الصيدلية والنسخ الاحتياطي */}
+          <button
+            onClick={() => setIsSettingsOpen(true)}
+            className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 px-2.5 py-1 rounded-lg font-bold flex items-center gap-1.5 transition"
+          >
+            <Settings className="w-3.5 h-3.5 text-emerald-400" />
+            الإعدادات والنسخ الاحتياطي
+          </button>
+        </div>
       </div>
 
       {/* شريط التحذير الطبي الوامض (تداخل دوائي) */}
@@ -176,7 +227,7 @@ export const POSView: React.FC = () => {
         />
       </div>
 
-      {/* نافذة توثيق الوصفة للأدوية المراقبة - متطابقة مع ControlledDrugModal.tsx */}
+      {/* نافذة توثيق الوصفة للأدوية المراقبة */}
       <ControlledDrugModal
         pendingItem={store.pendingControlledItem}
         onClose={() => store.setPendingControlledItem(null)}
@@ -185,7 +236,7 @@ export const POSView: React.FC = () => {
         }
       />
 
-      {/* نافذة البدائل العلمية (F4) - متطابقة مع AlternativesModal.tsx */}
+      {/* نافذة البدائل العلمية (F4) */}
       <AlternativesModal
         targetProduct={store.selectedProductForAlternatives}
         alternatives={alternatives}
@@ -202,7 +253,19 @@ export const POSView: React.FC = () => {
         onClose={() => store.setLastPrintedInvoice(null)}
       />
 
-      {/* نافذة إعدادات الصيدلية والطابعة والمزامنة (الخطوة 4) */}
+      {/* نافذة سجل الفواتير السابقة وإعادة الطباعة (الطلب 3) */}
+      <InvoicesHistoryModal
+        isOpen={isHistoryOpen}
+        onClose={() => setIsHistoryOpen(false)}
+      />
+
+      {/* نافذة دفتر النواقص الذكي وتوليد طلبية المستودع (الطلب 5) */}
+      <ShortagesOrderModal
+        isOpen={isShortagesOpen}
+        onClose={() => setIsShortagesOpen(false)}
+      />
+
+      {/* نافذة إعدادات الصيدلية والطابعة والنسخ الاحتياطي */}
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}

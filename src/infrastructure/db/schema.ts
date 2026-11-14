@@ -130,7 +130,7 @@ export const shiftsTable = sqliteTable("shifts", {
   variance: real("variance"),
   safeDropAmount: real("safe_drop_amount").default(0),
   nextShiftFloat: real("next_shift_float").default(0),
-  branchId: text("branch_id").notNull(),
+  branchId: text("branch_id").notNull().default("MAIN_BRANCH"),
 });
 
 // ==========================================
@@ -148,6 +148,9 @@ export const syncQueueTable = sqliteTable("sync_queue", {
   syncedAt: text("synced_at"),
 });
 
+// ==========================================
+// 9. جدول سندات القبض والصرف لدفتر الديون (Ledger Payments Table)
+// ==========================================
 export const ledgerPaymentsTable = sqliteTable("ledger_payments", {
   id: text("id").primaryKey(),
   partyType: text("party_type").notNull(), // CUSTOMER | SUPPLIER
@@ -155,5 +158,14 @@ export const ledgerPaymentsTable = sqliteTable("ledger_payments", {
   amount: real("amount").notNull(),
   notes: text("notes"),
   createdAt: text("created_at").notNull(),
-  branchId: text("branch_id").notNull(),
+  branchId: text("branch_id").notNull().default("MAIN_BRANCH"),
+});
+
+// ==========================================
+// 10. جدول إعدادات الصيدلية والطابعة (Pharmacy Settings Table)
+// ==========================================
+export const pharmacySettingsTable = sqliteTable("pharmacy_settings", {
+  id: text("id").primaryKey(),
+  payload: text("payload").notNull(),
+  updatedAt: text("updated_at").notNull(),
 });

@@ -424,7 +424,7 @@ export const INITIAL_SEED_PRODUCTS: ProductEntity[] = [
 ];
 
 const createDefaultDatabase = (): LocalDatabaseSnapshot => {
-  const initialShiftId = "shift-default-01";
+  const nowIso = new Date().toISOString();
   return {
     walMode: true,
     journalMode: "WAL",
@@ -471,13 +471,27 @@ class LocalSQLiteEngine {
       if (typeof window !== "undefined" && window.localStorage) {
         const raw = window.localStorage.getItem(STORAGE_KEY);
         if (raw) {
-          const parsed = JSON.parse(raw) as LocalDatabaseSnapshot;
+          const parsed = JSON.parse(raw) as Partial<LocalDatabaseSnapshot>;
           if (
             parsed &&
             Array.isArray(parsed.products) &&
             parsed.products.length > 0
           ) {
-            return parsed;
+            const fallback = createDefaultDatabase();
+            return {
+              ...fallback,
+              ...parsed,
+              invoices: parsed.invoices || [],
+              purchaseInvoices: parsed.purchaseInvoices || [],
+              controlledLogs: parsed.controlledLogs || [],
+              expenses: parsed.expenses || [],
+              shifts:
+                parsed.shifts && parsed.shifts.length > 0
+                  ? parsed.shifts
+                  : fallback.shifts,
+              syncQueue: parsed.syncQueue || [],
+              ledgerPayments: parsed.ledgerPayments || [],
+            };
           }
         }
       }
