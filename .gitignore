@@ -23,3 +23,6 @@ src-tauri/WixTools/
 .DS_Store
 Thumbs.db
 *.log
+
+.vite/
+node_modules/.vite/
