@@ -111,20 +111,26 @@ export const cashExpensesTable = sqliteTable("cash_expenses", {
 // 7. جدول الورديات والصندوق (Shifts Table)
 // ==========================================
 export const shiftsTable = sqliteTable("shifts", {
-  id: text("id").primaryKey(), // UUID v4
+  id: text("id").primaryKey(),
   pharmacistName: text("pharmacist_name").notNull(),
   openedAt: text("opened_at").notNull(),
   closedAt: text("closed_at"),
   status: text("status").notNull(), // OPEN | CLOSED
-  openingBalance: real("opening_balance").notNull().default(0),
+  openingBalance: real("opening_balance").notNull(),
   cashSalesTotal: real("cash_sales_total").notNull().default(0),
   creditSalesTotal: real("credit_sales_total").notNull().default(0),
   returnsTotal: real("returns_total").notNull().default(0),
+  creditReturnsTotal: real("credit_returns_total").notNull().default(0),
+  debtCollectionsTotal: real("debt_collections_total").notNull().default(0),
+  supplierPaymentsTotal: real("supplier_payments_total").notNull().default(0),
+  cashPurchasesTotal: real("cash_purchases_total").notNull().default(0),
   pettyCashTotal: real("petty_cash_total").notNull().default(0),
   expectedDrawerCash: real("expected_drawer_cash").notNull().default(0),
   actualDrawerCash: real("actual_drawer_cash"),
   variance: real("variance"),
-  branchId: text("branch_id").notNull().default("MAIN_BRANCH"),
+  safeDropAmount: real("safe_drop_amount").default(0),
+  nextShiftFloat: real("next_shift_float").default(0),
+  branchId: text("branch_id").notNull(),
 });
 
 // ==========================================

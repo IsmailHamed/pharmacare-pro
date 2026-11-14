@@ -12,6 +12,34 @@ import { sqliteEngine } from "../db/database";
 import { isTauriDesktop, sqliteRaw } from "../db/connection";
 
 export class SQLiteInvoiceRepository implements IInvoiceRepository {
+  /**
+   * المعادلة المحاسبية الموحدة لحساب النقد المتوقع في درج الكاشير:
+   * النقد المتوقع = الرصيد الافتتاحي + المبيعات النقدية + مقبوضات ديون العملاء
+   *               - المرتجعات النقدية - المصاريف النثرية - المشتريات النقدية - دفعات الموردين النقدية
+   */
+  private recalculateShiftExpectedCash(shift: ShiftSummaryEntity): void {
+    const opening = Number(shift.openingBalance || 0);
+    const cashSales = Number(shift.cashSalesTotal || 0);
+    const debtIn = Number(shift.debtCollectionsTotal || 0);
+
+    const cashReturns = Number(shift.returnsTotal || 0);
+    const pettyExpenses = Number(shift.pettyCashTotal || 0);
+    const cashPurchases = Number(shift.cashPurchasesTotal || 0);
+    const supplierOut = Number(shift.supplierPaymentsTotal || 0);
+
+    shift.expectedDrawerCash = Number(
+      (
+        opening +
+        cashSales +
+        debtIn -
+        cashReturns -
+        pettyExpenses -
+        cashPurchases -
+        supplierOut
+      ).toFixed(2),
+    );
+  }
+
   async saveInvoice(invoice: InvoiceEntity): Promise<void> {
     let updatedOpenShift: ShiftSummaryEntity | null = null;
 
@@ -31,19 +59,21 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
             );
           }
         } else if (invoice.type === "RETURN") {
-          openShift.returnsTotal = Number(
-            (openShift.returnsTotal + invoice.totalAmount).toFixed(2),
-          );
+          // التفريق المحاسبي بين المرتجع النقدي والمرتجع الآجل
+          if (invoice.paymentMode === "CASH") {
+            openShift.returnsTotal = Number(
+              (openShift.returnsTotal + invoice.totalAmount).toFixed(2),
+            );
+          } else {
+            openShift.creditReturnsTotal = Number(
+              (
+                (openShift.creditReturnsTotal || 0) + invoice.totalAmount
+              ).toFixed(2),
+            );
+          }
         }
 
-        openShift.expectedDrawerCash = Number(
-          (
-            openShift.openingBalance +
-            openShift.cashSalesTotal -
-            openShift.returnsTotal -
-            openShift.pettyCashTotal
-          ).toFixed(2),
-        );
+        this.recalculateShiftExpectedCash(openShift);
         updatedOpenShift = { ...openShift };
       }
     });
@@ -85,12 +115,55 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
   }
 
   async getAllInvoices(): Promise<InvoiceEntity[]> {
+    if (isTauriDesktop() && sqliteRaw) {
+      try {
+        const rows = await sqliteRaw.select<Record<string, unknown>[]>(
+          "SELECT * FROM invoices ORDER BY created_at DESC;",
+        );
+        if (rows.length > 0) {
+          const mapped: InvoiceEntity[] = rows.map((r) => ({
+            id: String(r.id),
+            type: String(r.type) as "SALE" | "RETURN",
+            paymentMode: String(r.payment_mode) as "CASH" | "CREDIT",
+            customerName: String(r.customer_name),
+            subtotal: Number(r.subtotal),
+            discountPercent: Number(r.discount_percent),
+            totalAmount: Number(r.total_amount),
+            totalCostAmount: Number(r.total_cost_amount),
+            netProfit: Number(r.net_profit),
+            items: JSON.parse(String(r.items_json || "[]")),
+            createdAt: String(r.created_at),
+            branchId: String(r.branch_id),
+          }));
+          sqliteEngine.commit((draft) => {
+            draft.invoices = mapped;
+          });
+          return mapped;
+        }
+      } catch (err) {
+        console.warn("Invoices SQLite read fallback:", err);
+      }
+    }
     return [...sqliteEngine.getSnapshot().invoices];
   }
 
   async savePurchaseInvoice(purchase: PurchaseInvoiceEntity): Promise<void> {
+    let updatedOpenShift: ShiftSummaryEntity | null = null;
+
     sqliteEngine.commit((draft) => {
       draft.purchaseInvoices.unshift(purchase);
+
+      // إذا دُفعت فاتورة المشتريات نقداً من الدرج، تُخصم من النقد المتوقع للوردية
+      const openShift = draft.shifts.find((s) => s.status === "OPEN");
+      if (openShift && purchase.paymentMode === "CASH") {
+        openShift.cashPurchasesTotal = Number(
+          ((openShift.cashPurchasesTotal || 0) + purchase.totalAmount).toFixed(
+            2,
+          ),
+        );
+        this.recalculateShiftExpectedCash(openShift);
+        updatedOpenShift = { ...openShift };
+      }
     });
 
     if (isTauriDesktop() && sqliteRaw) {
@@ -111,6 +184,10 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
           purchase.branchId,
         ],
       );
+
+      if (updatedOpenShift) {
+        await this.persistShiftToDesktopSQLite(updatedOpenShift);
+      }
     }
 
     const syncItem = sqliteEngine.enqueueSync(
@@ -123,6 +200,32 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
   }
 
   async getAllPurchaseInvoices(): Promise<PurchaseInvoiceEntity[]> {
+    if (isTauriDesktop() && sqliteRaw) {
+      try {
+        const rows = await sqliteRaw.select<Record<string, unknown>[]>(
+          "SELECT * FROM purchase_invoices ORDER BY created_at DESC;",
+        );
+        if (rows.length > 0) {
+          const mapped: PurchaseInvoiceEntity[] = rows.map((r) => ({
+            id: String(r.id),
+            supplierName: String(r.supplier_name),
+            supplierInvoiceNumber: String(r.supplier_invoice_number),
+            paymentMode: String(r.payment_mode) as "CASH" | "CREDIT",
+            totalAmount: Number(r.total_amount),
+            totalBonusValue: Number(r.total_bonus_value),
+            items: JSON.parse(String(r.items_json || "[]")),
+            createdAt: String(r.created_at),
+            branchId: String(r.branch_id),
+          }));
+          sqliteEngine.commit((draft) => {
+            draft.purchaseInvoices = mapped;
+          });
+          return mapped;
+        }
+      } catch (err) {
+        console.warn("Purchase invoices SQLite read fallback:", err);
+      }
+    }
     return [...sqliteEngine.getSnapshot().purchaseInvoices];
   }
 
@@ -182,14 +285,7 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
         openShift.pettyCashTotal = Number(
           (openShift.pettyCashTotal + expense.amount).toFixed(2),
         );
-        openShift.expectedDrawerCash = Number(
-          (
-            openShift.openingBalance +
-            openShift.cashSalesTotal -
-            openShift.returnsTotal -
-            openShift.pettyCashTotal
-          ).toFixed(2),
-        );
+        this.recalculateShiftExpectedCash(openShift);
         updatedOpenShift = { ...openShift };
       }
     });
@@ -251,6 +347,50 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
   }
 
   async getShifts(): Promise<ShiftSummaryEntity[]> {
+    if (isTauriDesktop() && sqliteRaw) {
+      try {
+        const rows = await sqliteRaw.select<Record<string, unknown>[]>(
+          "SELECT * FROM shifts ORDER BY opened_at DESC;",
+        );
+        if (rows.length > 0) {
+          const mapped: ShiftSummaryEntity[] = rows.map((r) => ({
+            id: String(r.id),
+            pharmacistName: String(r.pharmacist_name),
+            openedAt: String(r.opened_at),
+            closedAt: r.closed_at ? String(r.closed_at) : undefined,
+            status: String(r.status) as "OPEN" | "CLOSED",
+            openingBalance: Number(r.opening_balance),
+            cashSalesTotal: Number(r.cash_sales_total),
+            creditSalesTotal: Number(r.credit_sales_total),
+            returnsTotal: Number(r.returns_total),
+            creditReturnsTotal: Number(r.credit_returns_total || 0),
+            debtCollectionsTotal: Number(r.debt_collections_total || 0),
+            supplierPaymentsTotal: Number(r.supplier_payments_total || 0),
+            cashPurchasesTotal: Number(r.cash_purchases_total || 0),
+            pettyCashTotal: Number(r.petty_cash_total),
+            expectedDrawerCash: Number(r.expected_drawer_cash),
+            actualDrawerCash:
+              r.actual_drawer_cash !== null &&
+              r.actual_drawer_cash !== undefined
+                ? Number(r.actual_drawer_cash)
+                : undefined,
+            variance:
+              r.variance !== null && r.variance !== undefined
+                ? Number(r.variance)
+                : undefined,
+            safeDropAmount: Number(r.safe_drop_amount || 0),
+            nextShiftFloat: Number(r.next_shift_float || 0),
+            branchId: String(r.branch_id),
+          }));
+          sqliteEngine.commit((draft) => {
+            draft.shifts = mapped;
+          });
+          return mapped;
+        }
+      } catch (err) {
+        console.warn("Shifts SQLite read fallback:", err);
+      }
+    }
     return [...sqliteEngine.getSnapshot().shifts];
   }
 
@@ -281,30 +421,28 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
   }
 
   async saveLedgerPayment(payment: LedgerPaymentEntity): Promise<void> {
+    let updatedOpenShift: ShiftSummaryEntity | null = null;
+
     sqliteEngine.commit((draft) => {
       if (!draft.ledgerPayments) draft.ledgerPayments = [];
       draft.ledgerPayments.unshift(payment);
 
-      // تحديث الصندوق في الوردية المفتوحة (قبض من عميل يزيد الكاش، صرف لمستودع ينقص الكاش)
+      // فصل مقبوضات العملاء ومدفوعات الموردين في بنود مستقلة داخل الوردية
       const openShift = draft.shifts.find((s) => s.status === "OPEN");
       if (openShift) {
         if (payment.partyType === "CUSTOMER") {
-          openShift.cashSalesTotal = Number(
-            (openShift.cashSalesTotal + payment.amount).toFixed(2),
+          openShift.debtCollectionsTotal = Number(
+            ((openShift.debtCollectionsTotal || 0) + payment.amount).toFixed(2),
           );
         } else {
-          openShift.pettyCashTotal = Number(
-            (openShift.pettyCashTotal + payment.amount).toFixed(2),
+          openShift.supplierPaymentsTotal = Number(
+            ((openShift.supplierPaymentsTotal || 0) + payment.amount).toFixed(
+              2,
+            ),
           );
         }
-        openShift.expectedDrawerCash = Number(
-          (
-            openShift.openingBalance +
-            openShift.cashSalesTotal -
-            openShift.returnsTotal -
-            openShift.pettyCashTotal
-          ).toFixed(2),
-        );
+        this.recalculateShiftExpectedCash(openShift);
+        updatedOpenShift = { ...openShift };
       }
     });
 
@@ -323,6 +461,10 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
           payment.branchId,
         ],
       );
+
+      if (updatedOpenShift) {
+        await this.persistShiftToDesktopSQLite(updatedOpenShift);
+      }
     }
 
     const syncItem = sqliteEngine.enqueueSync(
@@ -340,21 +482,28 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
         const rows = await sqliteRaw.select<Record<string, unknown>[]>(
           "SELECT * FROM ledger_payments ORDER BY created_at DESC;",
         );
-        return rows.map((r) => ({
-          id: String(r.id),
-          partyType: String(r.party_type) as "CUSTOMER" | "SUPPLIER",
-          partyName: String(r.party_name),
-          amount: Number(r.amount),
-          notes: r.notes ? String(r.notes) : undefined,
-          createdAt: String(r.created_at),
-          branchId: String(r.branch_id),
-        }));
+        if (rows.length > 0) {
+          const mapped: LedgerPaymentEntity[] = rows.map((r) => ({
+            id: String(r.id),
+            partyType: String(r.party_type) as "CUSTOMER" | "SUPPLIER",
+            partyName: String(r.party_name),
+            amount: Number(r.amount),
+            notes: r.notes ? String(r.notes) : undefined,
+            createdAt: String(r.created_at),
+            branchId: String(r.branch_id),
+          }));
+          sqliteEngine.commit((draft) => {
+            draft.ledgerPayments = mapped;
+          });
+          return mapped;
+        }
       } catch (err) {
         console.warn("Ledger payments SQLite read fallback:", err);
       }
     }
     return [...(sqliteEngine.getSnapshot().ledgerPayments || [])];
   }
+
   private async persistShiftToDesktopSQLite(
     shift: ShiftSummaryEntity,
   ): Promise<void> {
@@ -363,9 +512,11 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
       `INSERT OR REPLACE INTO shifts (
         id, pharmacist_name, opened_at, closed_at, status,
         opening_balance, cash_sales_total, credit_sales_total,
-        returns_total, petty_cash_total, expected_drawer_cash,
-        actual_drawer_cash, variance, branch_id
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14);`,
+        returns_total, credit_returns_total, debt_collections_total,
+        supplier_payments_total, cash_purchases_total, petty_cash_total,
+        expected_drawer_cash, actual_drawer_cash, variance,
+        safe_drop_amount, next_shift_float, branch_id
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20);`,
       [
         shift.id,
         shift.pharmacistName,
@@ -376,10 +527,16 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
         shift.cashSalesTotal,
         shift.creditSalesTotal,
         shift.returnsTotal,
+        shift.creditReturnsTotal ?? 0,
+        shift.debtCollectionsTotal ?? 0,
+        shift.supplierPaymentsTotal ?? 0,
+        shift.cashPurchasesTotal ?? 0,
         shift.pettyCashTotal,
         shift.expectedDrawerCash,
         shift.actualDrawerCash ?? null,
         shift.variance ?? null,
+        shift.safeDropAmount ?? 0,
+        shift.nextShiftFloat ?? 0,
         shift.branchId,
       ],
     );

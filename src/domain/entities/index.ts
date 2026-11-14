@@ -172,14 +172,20 @@ export interface ShiftSummaryEntity {
   openedAt: string;
   closedAt?: string;
   status: "OPEN" | "CLOSED";
-  openingBalance: number;
-  cashSalesTotal: number;
-  creditSalesTotal: number;
-  returnsTotal: number;
-  pettyCashTotal: number;
-  expectedDrawerCash: number; // الرصيد الدفتري المتوقع بالدرج
-  actualDrawerCash?: number; // الجرد الفعلي عند الإغلاق
-  variance?: number; // الفارق (عجز / زيادة)
+  openingBalance: number; // الرصيد الافتتاحي (العهدة المستلمة)
+  cashSalesTotal: number; // المبيعات النقدية فقط
+  creditSalesTotal: number; // المبيعات الآجلة (ذمم عملاء)
+  returnsTotal: number; // المرتجعات النقدية فقط (تُخصم من الدرج)
+  creditReturnsTotal?: number; // مرتجعات الآجل (تُخصم من دين العميل ولا تمس الدرج)
+  debtCollectionsTotal?: number; // سندات القبض النقدية المحصلة من ديون العملاء (+)
+  supplierPaymentsTotal?: number; // سندات الصرف النقدية المسددة للمستودعات (-)
+  cashPurchasesTotal?: number; // فواتير الشراء المسددة نقداً من الدرج (-)
+  pettyCashTotal: number; // المصاريف النثرية المسحوبة من الدرج (-)
+  expectedDrawerCash: number; // النقد المتوقع بالدرج حسب المعادلة المحاسبية
+  actualDrawerCash?: number; // النقد الفعلي المعدود بيد الصيدلي عند الإغلاق
+  variance?: number; // الفارق النقدي (+ فائض / - عجز)
+  safeDropAmount?: number; // المبلغ المورّد لخزنة الإدارة عند الإغلاق
+  nextShiftFloat?: number; // العهدة المتروكة في الدرج للوردية القادمة
   branchId: string;
 }
 

@@ -112,24 +112,30 @@ const bootstrapSQLiteTables = async (db: Database) => {
     );
   `);
 
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS shifts (
-      id TEXT PRIMARY KEY NOT NULL,
-      pharmacist_name TEXT NOT NULL,
-      opened_at TEXT NOT NULL,
-      closed_at TEXT,
-      status TEXT NOT NULL,
-      opening_balance REAL DEFAULT 0 NOT NULL,
-      cash_sales_total REAL DEFAULT 0 NOT NULL,
-      credit_sales_total REAL DEFAULT 0 NOT NULL,
-      returns_total REAL DEFAULT 0 NOT NULL,
-      petty_cash_total REAL DEFAULT 0 NOT NULL,
-      expected_drawer_cash REAL DEFAULT 0 NOT NULL,
-      actual_drawer_cash REAL,
-      variance REAL,
-      branch_id TEXT DEFAULT 'MAIN_BRANCH' NOT NULL
-    );
-  `);
+  await sqliteRaw.execute(`
+      CREATE TABLE IF NOT EXISTS shifts (
+        id TEXT PRIMARY KEY,
+        pharmacist_name TEXT NOT NULL,
+        opened_at TEXT NOT NULL,
+        closed_at TEXT,
+        status TEXT NOT NULL,
+        opening_balance REAL NOT NULL,
+        cash_sales_total REAL NOT NULL DEFAULT 0,
+        credit_sales_total REAL NOT NULL DEFAULT 0,
+        returns_total REAL NOT NULL DEFAULT 0,
+        credit_returns_total REAL NOT NULL DEFAULT 0,
+        debt_collections_total REAL NOT NULL DEFAULT 0,
+        supplier_payments_total REAL NOT NULL DEFAULT 0,
+        cash_purchases_total REAL NOT NULL DEFAULT 0,
+        petty_cash_total REAL NOT NULL DEFAULT 0,
+        expected_drawer_cash REAL NOT NULL DEFAULT 0,
+        actual_drawer_cash REAL,
+        variance REAL,
+        safe_drop_amount REAL DEFAULT 0,
+        next_shift_float REAL DEFAULT 0,
+        branch_id TEXT NOT NULL
+      );
+    `);
 
   await db.execute(`
     CREATE TABLE IF NOT EXISTS sync_queue (

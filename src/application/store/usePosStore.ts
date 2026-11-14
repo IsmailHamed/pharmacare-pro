@@ -120,7 +120,10 @@ export interface PosState {
     amount: number,
     notes?: string,
   ) => Promise<void>;
-  closeCurrentShift: (actualDrawerCash: number) => Promise<void>;
+  closeCurrentShift: (
+    actualDrawerCash: number,
+    safeDropAmount?: number,
+  ) => Promise<void>;
   openNewShift: (
     pharmacistName: string,
     openingBalance: number,
@@ -591,41 +594,65 @@ export const usePosStore = create<PosState>()(
         });
       },
 
-      closeCurrentShift: async (actualDrawerCash) => {
+      closeCurrentShift: async (actualDrawerCash, safeDropAmount = 0) => {
         const openShift = get().shifts.find((s) => s.status === "OPEN");
         if (!openShift) return;
+
+        const safeActual = Number(actualDrawerCash.toFixed(2));
+        const safeDrop = Math.max(
+          0,
+          Math.min(safeActual, Number(safeDropAmount.toFixed(2))),
+        );
+        const nextFloat = Number((safeActual - safeDrop).toFixed(2));
+        const variance = Number(
+          (safeActual - openShift.expectedDrawerCash).toFixed(2),
+        );
 
         const closedShift: ShiftSummaryEntity = {
           ...openShift,
           status: "CLOSED",
           closedAt: new Date().toISOString(),
-          actualDrawerCash: Number(actualDrawerCash.toFixed(2)),
-          variance: Number(
-            (actualDrawerCash - openShift.expectedDrawerCash).toFixed(2),
-          ),
+          actualDrawerCash: safeActual,
+          variance,
+          safeDropAmount: safeDrop,
+          nextShiftFloat: nextFloat,
         };
 
         await invoiceRepo.saveShift(closedShift);
         await get().loadInitialData();
+
+        const statusText =
+          variance === 0
+            ? "الصندوق مطابق تماماً (0.00)"
+            : variance > 0
+              ? `فائض في الصندوق (+${variance.toFixed(2)})`
+              : `عجز في الصندوق (${variance.toFixed(2)})`;
+
         set({
           notification: {
-            type: "warning",
-            message: `تم إغلاق الوردية (${closedShift.id}). الفارق النقدي: ${closedShift.variance}`,
+            type: variance < 0 ? "error" : "success",
+            message: `تم إغلاق الوردية (${closedShift.id}) — ${statusText} | المورّد للخزنة: ${safeDrop.toFixed(2)} | العهدة المرحلة: ${nextFloat.toFixed(2)}`,
           },
         });
       },
+
       openNewShift: async (pharmacistName, openingBalance) => {
+        const initial = Number(openingBalance.toFixed(2));
         const newShift: ShiftSummaryEntity = {
           id: `SHIFT-${Date.now().toString().slice(-4)}`,
           pharmacistName: pharmacistName.trim() || "د. صيدلي مناوب",
           openedAt: new Date().toISOString(),
           status: "OPEN",
-          openingBalance: Number(openingBalance.toFixed(2)),
+          openingBalance: initial,
           cashSalesTotal: 0,
           creditSalesTotal: 0,
           returnsTotal: 0,
+          creditReturnsTotal: 0,
+          debtCollectionsTotal: 0,
+          supplierPaymentsTotal: 0,
+          cashPurchasesTotal: 0,
           pettyCashTotal: 0,
-          expectedDrawerCash: Number(openingBalance.toFixed(2)),
+          expectedDrawerCash: initial,
           branchId: CURRENT_BRANCH_ID,
         };
         await invoiceRepo.saveShift(newShift);
@@ -633,7 +660,7 @@ export const usePosStore = create<PosState>()(
         set({
           notification: {
             type: "success",
-            message: `تم فتح وردية جديدة للصيدلي (${newShift.pharmacistName}).`,
+            message: `تم فتح وردية جديدة للصيدلي (${newShift.pharmacistName}) بعهدة افتتاحية ${initial.toFixed(2)}.`,
           },
         });
       },
