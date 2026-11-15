@@ -9,7 +9,15 @@ import {
 } from "../components/inventory/InventoryRadarBar";
 import { InventoryItemCard } from "../components/inventory/InventoryItemCard";
 import { AddProductModal } from "../components/inventory/AddProductModal";
-import { Clock, Tag, FileSpreadsheet, Upload, Plus } from "lucide-react";
+import { StockAdjustmentModal } from "../components/inventory/StockAdjustmentModal";
+import {
+  Clock,
+  Tag,
+  FileSpreadsheet,
+  Upload,
+  Plus,
+  ClipboardCheck,
+} from "lucide-react";
 
 const getNearestExpiryDays = (product: ProductEntity): number => {
   if (!product.batches || product.batches.length === 0) return 9999;
@@ -27,6 +35,7 @@ export const InventoryView: React.FC = () => {
   const {
     products,
     invoices,
+    expenses,
     applyBulkPricing,
     addNewProduct,
     importProductsBatch,
@@ -39,6 +48,8 @@ export const InventoryView: React.FC = () => {
   const [barcodeProduct, setBarcodeProduct] = useState<ProductEntity | null>(
     null,
   );
+  const [adjustmentProduct, setAdjustmentProduct] =
+    useState<ProductEntity | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const categories = useMemo(
@@ -47,6 +58,12 @@ export const InventoryView: React.FC = () => {
       ...Array.from(new Set(products.map((p) => p.category || "عام"))),
     ],
     [products],
+  );
+
+  // سجل التوالف والفروقات الجردية المقيدة مالياً
+  const inventoryLossLogs = useMemo(
+    () => expenses.filter((e) => e.shiftId === "INVENTORY-LOSS"),
+    [expenses],
   );
 
   const soldProductIdsLast60Days = useMemo(() => {
@@ -136,11 +153,11 @@ export const InventoryView: React.FC = () => {
         <div>
           <h2 className="text-lg font-bold text-white flex items-center gap-2">
             <Clock className="w-5 h-5 text-amber-400" /> المخزون، رادار
-            الصلاحيات، وطباعة الباركود (FIFO)
+            الصلاحيات، وتسوية الجرد (FIFO)
           </h2>
           <p className="text-slate-400 mt-1">
-            تنبيهات الصلاحية الاستباقية (30 / 90 / 180 يوماً)، كشف الأدوية
-            الراكدة، وتوليد لصاقات الباركود.
+            تنبيهات الصلاحية الاستباقية (30 / 90 / 180 يوماً)، تسوية الجرد
+            والتوالف، وتوليد لصاقات الباركود.
           </p>
         </div>
 
@@ -223,14 +240,72 @@ export const InventoryView: React.FC = () => {
               p.stockPacks > p.minLimit && !soldProductIdsLast60Days.has(p.id)
             }
             onPrintBarcode={setBarcodeProduct}
+            onAdjustStock={setAdjustmentProduct}
           />
         ))}
       </div>
 
-      {/* 3. النوافذ المنبثقة */}
+      {/* 3. سجل التوالف والخسائر المخزنية الموثقة */}
+      {inventoryLossLogs.length > 0 && (
+        <div className="mt-6 bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+            <h3 className="font-bold text-white text-sm flex items-center gap-2">
+              <ClipboardCheck className="w-4 h-4 text-amber-400" /> سجل التوالف
+              والكسور والفروقات الجردية المقيدة مالياً
+            </h3>
+            <span className="font-mono text-xs text-rose-400 font-bold">
+              إجمالي خسائر التوالف والعجز:{" "}
+              {inventoryLossLogs
+                .reduce((sum, e) => sum + e.amount, 0)
+                .toFixed(2)}{" "}
+              ر.س
+            </span>
+          </div>
+
+          <div className="overflow-x-auto max-h-52">
+            <table className="w-full text-right text-[11px]">
+              <thead>
+                <tr className="border-b border-slate-800 text-slate-400">
+                  <th className="py-1.5">رقم التسوية</th>
+                  <th className="py-1.5">البيان والصنف</th>
+                  <th className="py-1.5">التفاصيل والملاحظات</th>
+                  <th className="py-1.5">التاريخ</th>
+                  <th className="py-1.5">قيمة الخسارة بالتكلفة</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/60 font-mono">
+                {inventoryLossLogs.map((log) => (
+                  <tr key={log.id}>
+                    <td className="py-2 font-bold text-white">{log.id}</td>
+                    <td className="py-2 font-sans font-bold text-amber-300">
+                      {log.title}
+                    </td>
+                    <td className="py-2 font-sans text-slate-400">
+                      {log.notes || "—"}
+                    </td>
+                    <td className="py-2 text-slate-400">
+                      {new Date(log.createdAt).toLocaleString("ar-SA")}
+                    </td>
+                    <td className="py-2 font-bold text-rose-400">
+                      -{log.amount.toFixed(2)} ر.س
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* 4. النوافذ المنبثقة */}
       <BarcodeLabelModal
         product={barcodeProduct}
         onClose={() => setBarcodeProduct(null)}
+      />
+
+      <StockAdjustmentModal
+        product={adjustmentProduct}
+        onClose={() => setAdjustmentProduct(null)}
       />
 
       <AddProductModal

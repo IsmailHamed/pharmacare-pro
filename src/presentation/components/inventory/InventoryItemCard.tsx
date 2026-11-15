@@ -1,12 +1,13 @@
 import React from "react";
 import { ProductEntity } from "../../../domain/entities";
-import { Barcode } from "lucide-react";
+import { Barcode, ClipboardCheck } from "lucide-react";
 
 interface Props {
   product: ProductEntity;
   nearestDays: number;
   isDeadStock: boolean;
   onPrintBarcode: (product: ProductEntity) => void;
+  onAdjustStock: (product: ProductEntity) => void;
 }
 
 export const InventoryItemCard: React.FC<Props> = ({
@@ -14,6 +15,7 @@ export const InventoryItemCard: React.FC<Props> = ({
   nearestDays,
   isDeadStock,
   onPrintBarcode,
+  onAdjustStock,
 }) => {
   const profitMarginPercent = (
     ((p.packPrice - p.weightedCostPrice) /
@@ -75,7 +77,16 @@ export const InventoryItemCard: React.FC<Props> = ({
         </div>
       </div>
 
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2.5">
+        <button
+          onClick={() => onAdjustStock(p)}
+          className="bg-slate-800 hover:bg-amber-600 text-slate-200 hover:text-white border border-slate-700 px-3 py-2 rounded-xl flex items-center gap-1.5 font-bold transition"
+          title="تسوية الجرد الفعلي أو تسجيل كسر/إتلاف صلاحية"
+        >
+          <ClipboardCheck className="w-4 h-4 text-amber-400" />
+          تسوية جرد / تالف
+        </button>
+
         <button
           onClick={() => onPrintBarcode(p)}
           className="bg-slate-800 hover:bg-emerald-700 text-slate-200 hover:text-white border border-slate-700 px-3 py-2 rounded-xl flex items-center gap-1.5 font-bold transition"

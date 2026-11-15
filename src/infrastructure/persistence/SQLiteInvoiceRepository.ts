@@ -281,7 +281,8 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
       draft.expenses.unshift(expense);
 
       const openShift = draft.shifts.find((s) => s.status === "OPEN");
-      if (openShift) {
+      // التعديل الوحيد هنا: لا نخصم من نقد درج الكاشير إذا كان القيد خسارة تالف/جرد مخزني
+      if (openShift && expense.shiftId !== "INVENTORY-LOSS") {
         openShift.pettyCashTotal = Number(
           (openShift.pettyCashTotal + expense.amount).toFixed(2),
         );

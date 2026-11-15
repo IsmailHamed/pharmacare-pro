@@ -99,13 +99,22 @@ export interface PosState {
     lines: PurchaseLineInput[],
   ) => Promise<PurchaseInvoiceEntity>;
 
-  // إجراءات المخزون والتسعير الجماعي
+  // إجراءات المخزون والتسعير الجماعي وتسوية الجرد
   addNewProduct: (product: Omit<ProductEntity, "id">) => Promise<void>;
   importProductsBatch: (products: ProductEntity[]) => Promise<number>;
   applyBulkPricing: (
     percentChange: number,
     categoryFilter?: string,
   ) => Promise<void>;
+  adjustProductStock: (params: {
+    productId: string;
+    actualPacks: number;
+    actualLooseStrips: number;
+    targetBatchId: string;
+    reason: "STOCKTAKING" | "DAMAGED" | "EXPIRED" | "SHORTAGE";
+    notes: string;
+    recordLossInFinance: boolean;
+  }) => Promise<void>;
 
   // إجراءات الصندوق والوردية (Cash Drawer & Shift)
   addCashExpense: (
@@ -140,7 +149,4 @@ export interface PosState {
   ) => Promise<void>;
 }
 
-/**
- * نوع مساعد موحّد لإنشاء الشرائح (Slice Creator) مع وصول كامل لحالة PosState
- */
 export type PosSlice<T> = StateCreator<PosState, [], [], T>;
