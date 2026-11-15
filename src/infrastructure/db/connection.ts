@@ -187,6 +187,20 @@ const bootstrapSQLiteTables = async (db: Database) => {
       updated_at TEXT NOT NULL
     );
   `);
+
+  // فهارس عالية الأداء لتسريع البحث بالباركود والاسم والمادة الفعالة وربط الدفعات عند وجود 10,000+ دواء
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode);",
+  );
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_products_name ON products(name);",
+  );
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_products_scientific ON products(scientific_name);",
+  );
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_batches_product_id ON batches(product_id);",
+  );
 };
 
 // جسر Drizzle ORM المتصل بـ Tauri SQL Plugin

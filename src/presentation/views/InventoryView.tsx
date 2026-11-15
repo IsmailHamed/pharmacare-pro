@@ -17,7 +17,11 @@ import {
   Upload,
   Plus,
   ClipboardCheck,
+  Search,
+  ChevronDown,
 } from "lucide-react";
+
+const PAGE_SIZE = 50;
 
 const getNearestExpiryDays = (product: ProductEntity): number => {
   if (!product.batches || product.batches.length === 0) return 9999;
@@ -44,6 +48,9 @@ export const InventoryView: React.FC = () => {
   const [percent, setPercent] = useState(5);
   const [category, setCategory] = useState("ALL");
   const [filterMode, setFilterMode] = useState<InventoryFilterMode>("ALL");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [visibleLimit, setVisibleLimit] = useState(PAGE_SIZE);
+
   const [showAddModal, setShowAddModal] = useState(false);
   const [barcodeProduct, setBarcodeProduct] = useState<ProductEntity | null>(
     null,
@@ -106,7 +113,17 @@ export const InventoryView: React.FC = () => {
   }, [products, soldProductIdsLast60Days]);
 
   const filteredProducts = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
     return products.filter((p) => {
+      if (
+        q &&
+        !p.name.toLowerCase().includes(q) &&
+        !p.scientificName.toLowerCase().includes(q) &&
+        !p.barcode.toLowerCase().includes(q)
+      ) {
+        return false;
+      }
+
       const days = getNearestExpiryDays(p);
       if (filterMode === "LOW_STOCK") return p.stockPacks <= p.minLimit;
       if (filterMode === "EXP_30") return days <= 30;
@@ -116,7 +133,23 @@ export const InventoryView: React.FC = () => {
         return p.stockPacks > p.minLimit && !soldProductIdsLast60Days.has(p.id);
       return true;
     });
-  }, [products, filterMode, soldProductIdsLast60Days]);
+  }, [products, filterMode, soldProductIdsLast60Days, searchQuery]);
+
+  // اقتصاص العناصر المرئية لمنع تجمّد الـ DOM عند وجود 10,000+ دواء
+  const visibleProducts = useMemo(
+    () => filteredProducts.slice(0, visibleLimit),
+    [filteredProducts, visibleLimit],
+  );
+
+  const handleSelectFilter = (mode: InventoryFilterMode) => {
+    setFilterMode(mode);
+    setVisibleLimit(PAGE_SIZE);
+  };
+
+  const handleSearchChange = (val: string) => {
+    setSearchQuery(val);
+    setVisibleLimit(PAGE_SIZE);
+  };
 
   const handleBulkUpdate = () => {
     const scope = category === "ALL" ? "جميع الأدوية" : `فئة (${category})`;
@@ -226,12 +259,30 @@ export const InventoryView: React.FC = () => {
         totalProducts={products.length}
         filterMode={filterMode}
         radarStats={radarStats}
-        onSelectFilter={setFilterMode}
+        onSelectFilter={handleSelectFilter}
       />
 
-      {/* 2. قائمة بطاقات الأدوية */}
+      {/* 2. شريط البحث الفوري في المخزون وعداد العناصر المعروضة */}
+      <div className="mb-4 flex items-center justify-between gap-3 bg-slate-900 border border-slate-800 p-3 rounded-xl">
+        <div className="relative flex-1">
+          <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => handleSearchChange(e.target.value)}
+            placeholder="ابحث في المخزون بالاسم التجاري، المادة الفعالة، أو الباركود..."
+            className="w-full bg-slate-950 border border-slate-800 rounded-lg pr-9 pl-3 py-2 text-white outline-none focus:border-amber-500"
+          />
+        </div>
+        <div className="text-slate-400 font-mono shrink-0">
+          يعرض <b className="text-white">{visibleProducts.length}</b> من أصل{" "}
+          <b className="text-amber-400">{filteredProducts.length}</b> صنف مطابق
+        </div>
+      </div>
+
+      {/* 3. قائمة بطاقات الأدوية (محدودة بـ visibleLimit لأداء فائق) */}
       <div className="space-y-3">
-        {filteredProducts.map((p) => (
+        {visibleProducts.map((p) => (
           <InventoryItemCard
             key={p.id}
             product={p}
@@ -245,7 +296,21 @@ export const InventoryView: React.FC = () => {
         ))}
       </div>
 
-      {/* 3. سجل التوالف والخسائر المخزنية الموثقة */}
+      {/* زر تحميل المزيد عند وجود أصناف أكثر من الحد المعروض */}
+      {filteredProducts.length > visibleLimit && (
+        <div className="pt-4 text-center">
+          <button
+            onClick={() => setVisibleLimit((prev) => prev + PAGE_SIZE)}
+            className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-bold px-6 py-2.5 rounded-xl inline-flex items-center gap-2 shadow-lg transition"
+          >
+            <ChevronDown className="w-4 h-4 text-amber-400" />
+            عرض {PAGE_SIZE} صنفاً إضافياً (المتبقي:{" "}
+            {filteredProducts.length - visibleLimit} صنف)
+          </button>
+        </div>
+      )}
+
+      {/* 4. سجل التوالف والخسائر المخزنية الموثقة */}
       {inventoryLossLogs.length > 0 && (
         <div className="mt-6 bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
           <div className="flex items-center justify-between border-b border-slate-800 pb-2">
@@ -297,7 +362,7 @@ export const InventoryView: React.FC = () => {
         </div>
       )}
 
-      {/* 4. النوافذ المنبثقة */}
+      {/* 5. النوافذ المنبثقة */}
       <BarcodeLabelModal
         product={barcodeProduct}
         onClose={() => setBarcodeProduct(null)}

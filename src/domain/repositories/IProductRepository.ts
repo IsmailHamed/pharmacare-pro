@@ -16,6 +16,7 @@ export interface IProductRepository {
    */
   upsertProduct(product: ProductEntity): Promise<void>;
 
+  upsertProductsBulk(products: ProductEntity[]): Promise<void>;
   /**
    * تحديث رصيد الدواء بعد عملية البيع أو الشراء
    */

@@ -71,19 +71,16 @@ export const createInventoryPurchaseSlice: PosSlice<InventoryPurchaseSlice> = (
   },
 
   importProductsBatch: async (importedProducts) => {
-    for (const prod of importedProducts) {
-      await productRepo.upsertProduct(prod);
-    }
+    await productRepo.upsertProductsBulk(importedProducts);
     await get().loadInitialData();
     set({
       notification: {
         type: "success",
-        message: `تم استيراد وتحديث (${importedProducts.length}) صنف دوائي من ملف Excel بنجاح!`,
+        message: `تم استيراد وتحديث (${importedProducts.length}) صنف دوائي دفعة واحدة بنجاح!`,
       },
     });
     return importedProducts.length;
   },
-
   applyBulkPricing: async (percentChange, categoryFilter) => {
     await productRepo.applyBulkPriceAdjustment(percentChange, categoryFilter);
     await get().loadInitialData();

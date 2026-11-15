@@ -122,6 +122,94 @@ export const SettingsView: React.FC = () => {
     }
   };
 
+  const handleGenerateBulkTestData = async (count: number) => {
+    const confirmed = window.confirm(
+      `هل تريد توليد وإدخال (${count}) دواء تجريبي لاختبار سرعة النظام مع البيانات الضخمة؟`,
+    );
+    if (!confirmed) return;
+
+    const sampleNames = [
+      "Panadol Extra",
+      "Augmentin 1g",
+      "Brufen 600mg",
+      "Nexium 40mg",
+      "Concor 5mg",
+      "Lipitor 20mg",
+      "Glucophage 1000mg",
+      "Zyrtec 10mg",
+      "Voltaren 50mg",
+      "Amoxil 500mg",
+      "Cataflam 50mg",
+      "Claritine 10mg",
+    ];
+    const sampleScientific = [
+      "Paracetamol",
+      "Amoxicillin + Clavulanic Acid",
+      "Ibuprofen",
+      "Esomeprazole",
+      "Bisoprolol",
+      "Atorvastatin",
+      "Metformin",
+      "Cetirizine",
+      "Diclofenac Sodium",
+      "Amoxicillin",
+      "Diclofenac Potassium",
+      "Loratadine",
+    ];
+    const sampleCategories = [
+      "مسكنات",
+      "مضادات حيوية",
+      "أدوية المعدة",
+      "القلب والضغط",
+      "السكري",
+      "الحساسية",
+    ];
+    const expirySamples = [
+      "2026-12-05", // أقل من 30 يوماً
+      "2027-01-25", // أقل من 90 يوماً
+      "2027-04-15", // أقل من 180 يوماً
+      "2028-10-30", // صلاحية بعيدة
+      "2029-06-15",
+    ];
+
+    const generated = Array.from({ length: count }, (_, idx) => {
+      const i = idx + 1;
+      const baseIdx = idx % sampleNames.length;
+      const packPrice = Number((12 + (idx % 90)).toFixed(2));
+      const costPrice = Number((packPrice * 0.72).toFixed(2));
+      const stockPacks = idx % 7 === 0 ? 2 : 15 + (idx % 40); // بعضها نواقص تحت حد الطلب
+      const expiryDate = expirySamples[idx % expirySamples.length];
+
+      return {
+        id: `stress-prod-${i}`,
+        barcode: `628999${String(i).padStart(6, "0")}`,
+        name: `${sampleNames[baseIdx]} #${i}`,
+        scientificName: sampleScientific[baseIdx],
+        category: sampleCategories[idx % sampleCategories.length],
+        packPrice,
+        weightedCostPrice: costPrice,
+        stripsPerPack: (idx % 3) + 1,
+        stockPacks,
+        stockLooseStrips: 0,
+        minLimit: 5,
+        isControlled: false,
+        branchId: "branch-main-01",
+        updatedAt: new Date().toISOString(),
+        batches: [
+          {
+            id: `stress-batch-${i}`,
+            productId: `stress-prod-${i}`,
+            batchNumber: `B-${2026}-${(idx % 99) + 1}`,
+            expiryDate,
+            qtyPacks: stockPacks,
+            branchId: "branch-main-01",
+          },
+        ],
+      };
+    });
+
+    await usePosStore.getState().importProductsBatch(generated);
+  };
   return (
     <div className="flex-1 p-6 overflow-y-auto bg-slate-950 text-slate-200 text-xs">
       {/* ترويسة الصفحة */}
@@ -453,6 +541,13 @@ export const SettingsView: React.FC = () => {
               إعادة تهيئة قاعدة البيانات للبيانات الدوائية الافتراضية (Seed
               Data). احرص دائماً على تصدير نسخة احتياطية قبل استخدام هذا الخيار.
             </p>
+            <button
+              type="button"
+              onClick={() => void handleGenerateBulkTestData(5000)}
+              className="w-full bg-amber-600 hover:bg-amber-500 text-white font-bold py-2.5 px-4 rounded-xl flex items-center justify-center gap-2 transition shadow-md"
+            >
+              ⚡ توليد 5,000 دواء تجريبي (اختبار الأداء والـ Pagination)
+            </button>
             <button
               type="button"
               onClick={() => void handleFactoryReset()}

@@ -182,7 +182,91 @@ export class SQLiteProductRepository implements IProductRepository {
 
     sqliteEngine.enqueueSync("PRODUCT", "UPDATE", normalized.id, normalized);
   }
+  /**
+   * إدخال أو تحديث آلاف الأدوية دفعة واحدة (Bulk Upsert Transaction)
+   * يمنع تجمّد المتصفح أو قاعدة البيانات عند استيراد 10,000+ دواء من ملف Excel
+   */
+  async upsertProductsBulk(importedProducts: ProductEntity[]): Promise<void> {
+    if (importedProducts.length === 0) return;
 
+    // 1. تحديث المحرك المحلي بعملية حفظ (commit) واحدة فقط لجميع الأدوية!
+    sqliteEngine.commit((draft) => {
+      const existingMap = new Map(draft.products.map((p, idx) => [p.id, idx]));
+
+      for (const product of importedProducts) {
+        const idx = existingMap.get(product.id);
+        if (idx !== undefined) {
+          draft.products[idx] = product;
+        } else {
+          draft.products.push(product);
+          existingMap.set(product.id, draft.products.length - 1);
+        }
+      }
+    });
+
+    // 2. إذا كنا على تطبيق سطح المكتب (Tauri SQLite)، ننفذ الإدخال داخل Transaction واحدة سريعة
+    if (isTauriDesktop() && sqliteRaw) {
+      await sqliteRaw.execute("BEGIN TRANSACTION;");
+      try {
+        for (const product of importedProducts) {
+          await sqliteRaw.execute(
+            `INSERT OR REPLACE INTO products (
+              id, barcode, name, scientific_name, category,
+              pack_price, weighted_cost_price, strips_per_pack,
+              stock_packs, stock_loose_strips, min_limit,
+              is_controlled, branch_id, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14);`,
+            [
+              product.id,
+              product.barcode,
+              product.name,
+              product.scientificName,
+              product.category || "عام",
+              product.packPrice,
+              product.weightedCostPrice,
+              product.stripsPerPack,
+              product.stockPacks,
+              product.stockLooseStrips,
+              product.minLimit,
+              product.isControlled ? 1 : 0,
+              product.branchId || CURRENT_BRANCH_ID,
+              product.updatedAt || new Date().toISOString(),
+            ],
+          );
+
+          await sqliteRaw.execute(
+            "DELETE FROM batches WHERE product_id = $1;",
+            [product.id],
+          );
+
+          for (const b of product.batches || []) {
+            await sqliteRaw.execute(
+              `INSERT OR REPLACE INTO batches (
+                id, product_id, batch_number, expiry_date, qty_packs, branch_id
+              ) VALUES ($1, $2, $3, $4, $5, $6);`,
+              [
+                b.id,
+                product.id,
+                b.batchNumber,
+                b.expiryDate,
+                b.qtyPacks,
+                b.branchId || CURRENT_BRANCH_ID,
+              ],
+            );
+          }
+        }
+        await sqliteRaw.execute("COMMIT;");
+      } catch (err) {
+        await sqliteRaw.execute("ROLLBACK;");
+        throw err;
+      }
+    }
+
+    // 3. تسجيل عنصر مزامنة مجمع واحد بدلاً من 10,000 عنصر منفصل
+    sqliteEngine.enqueueSync("PRODUCT", "UPDATE", `BULK-IMPORT-${Date.now()}`, {
+      count: importedProducts.length,
+    });
+  }
   async updateStock(
     productId: string,
     newPacks: number,
