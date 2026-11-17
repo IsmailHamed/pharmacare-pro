@@ -5,6 +5,7 @@ import { InventoryView } from "./presentation/views/InventoryView";
 import { FinanceView } from "./presentation/views/FinanceView";
 import { ControlledRegistryView } from "./presentation/views/ControlledRegistryView";
 import { SettingsView } from "./presentation/views/SettingsView";
+import { UserSwitchModal } from "./presentation/components/auth/UserSwitchModal";
 import {
   ShoppingCart,
   PackagePlus,
@@ -14,6 +15,7 @@ import {
   ShieldAlert,
   RefreshCw,
   Settings,
+  User,
   X,
 } from "lucide-react";
 import {
@@ -70,6 +72,8 @@ const TABS: {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabType>("pos");
+  const [showUserModal, setShowUserModal] = useState(false);
+
   const isOffline = !navigator.onLine;
   const pendingSyncCount = usePosStore(selectPendingSyncCount);
   const {
@@ -77,11 +81,38 @@ export default function App() {
     notification,
     setNotification,
     loadInitialData,
+    currentUser,
   } = usePosStore();
 
   useEffect(() => {
     void loadInitialData();
   }, [loadInitialData]);
+
+  // فلترة التبويبات حسب صلاحيات المستخدم الحالي (مثلاً إخفاء المشتريات عن الكاشير)
+  const visibleTabs = TABS.filter((tab) => {
+    if (
+      tab.id === "purchases" &&
+      currentUser &&
+      !currentUser.permissions.canManagePurchases
+    ) {
+      return false;
+    }
+    return true;
+  });
+
+  const roleLabel =
+    currentUser?.role === "ADMIN"
+      ? "مدير النظام"
+      : currentUser?.role === "PHARMACIST"
+        ? "صيدلي"
+        : "كاشير";
+
+  const roleBadgeCls =
+    currentUser?.role === "ADMIN"
+      ? "text-amber-400"
+      : currentUser?.role === "PHARMACIST"
+        ? "text-emerald-400"
+        : "text-sky-400";
 
   return (
     <div className="flex flex-col h-screen bg-slate-950 text-slate-100 select-none overflow-hidden">
@@ -103,7 +134,7 @@ export default function App() {
 
         {/* التبويبات الموحدة */}
         <nav className="flex items-center gap-1.5 bg-slate-950 p-1.5 rounded-xl border border-slate-800 shadow-inner">
-          {TABS.map(({ id, label, activeCls, icon: Icon }) => (
+          {visibleTabs.map(({ id, label, activeCls, icon: Icon }) => (
             <button
               key={id}
               onClick={() => setActiveTab(id)}
@@ -118,8 +149,27 @@ export default function App() {
           ))}
         </nav>
 
-        {/* أزرار الاتصال والمزامنة */}
-        <div className="flex items-center gap-3 text-xs">
+        {/* أزرار المستخدم، الاتصال، والمزامنة */}
+        <div className="flex items-center gap-2.5 text-xs">
+          {/* زر المستخدم الحالي والتبديل السريع (Fast User Switching) */}
+          <button
+            onClick={() => setShowUserModal(true)}
+            title="اضغط لتبديل المستخدم السريع عبر الرمز السري (PIN)"
+            className="flex items-center gap-2 bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-amber-500/40 px-3 py-1.5 rounded-lg transition"
+          >
+            <div className="bg-amber-500/15 p-1.5 rounded-md border border-amber-500/30">
+              <User className="w-3.5 h-3.5 text-amber-400" />
+            </div>
+            <div className="text-right leading-tight">
+              <div className="font-bold text-white text-xs">
+                {currentUser?.name || "تسجيل الدخول"}
+              </div>
+              <div className={`text-[10px] font-bold ${roleBadgeCls}`}>
+                {roleLabel}
+              </div>
+            </div>
+          </button>
+
           <button
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold border transition ${
               isOffline
@@ -130,6 +180,7 @@ export default function App() {
             <Activity className="w-3.5 h-3.5" />
             {isOffline ? "محلي (Offline)" : "متصل (Online)"}
           </button>
+
           <button
             onClick={() => void syncPendingBatchToCloud()}
             className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5"
@@ -168,6 +219,11 @@ export default function App() {
         {activeTab === "controlled" && <ControlledRegistryView />}
         {activeTab === "settings" && <SettingsView />}
       </main>
+
+      {/* نافذة التبديل السريع للمستخدمين (Numpad PIN) */}
+      {showUserModal && (
+        <UserSwitchModal onClose={() => setShowUserModal(false)} />
+      )}
     </div>
   );
 }

@@ -45,6 +45,12 @@ export const InventoryView: React.FC = () => {
     importProductsBatch,
   } = usePosStore();
 
+  const canBulkPricing = usePosStore(
+    (s) => s.currentUser?.permissions.canBulkPricing ?? false,
+  );
+  const canViewCost = usePosStore(
+    (s) => s.currentUser?.permissions.canViewCostAndProfit ?? false,
+  );
   const [percent, setPercent] = useState(5);
   const [category, setCategory] = useState("ALL");
   const [filterMode, setFilterMode] = useState<InventoryFilterMode>("ALL");
@@ -222,35 +228,36 @@ export const InventoryView: React.FC = () => {
           >
             <FileSpreadsheet className="w-4 h-4" /> تصدير الجرد (Excel)
           </button>
-
-          <div className="bg-slate-900 border border-slate-800 p-2 rounded-xl flex items-center gap-2 shadow-lg">
-            <Tag className="w-4 h-4 text-amber-500" />
-            <span className="font-bold text-slate-300">تسعير جماعي:</span>
-            <select
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
-              className="bg-slate-800 border border-slate-700 rounded p-1.5 text-white outline-none"
-            >
-              {categories.map((c) => (
-                <option key={c} value={c}>
-                  {c === "ALL" ? "جميع الفئات" : c}
-                </option>
-              ))}
-            </select>
-            <input
-              type="number"
-              value={percent}
-              onChange={(e) => setPercent(Number(e.target.value))}
-              className="w-14 bg-slate-800 border border-slate-700 rounded p-1.5 text-center text-white font-mono"
-            />
-            <span className="text-slate-400">%</span>
-            <button
-              onClick={handleBulkUpdate}
-              className="bg-amber-600 hover:bg-amber-500 text-white font-bold px-3 py-1.5 rounded-lg"
-            >
-              تطبيق
-            </button>
-          </div>
+          {canBulkPricing && (
+            <div className="bg-slate-900 border border-slate-800 p-2 rounded-xl flex items-center gap-2 shadow-lg">
+              <Tag className="w-4 h-4 text-amber-500" />
+              <span className="font-bold text-slate-300">تسعير جماعي:</span>
+              <select
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                className="bg-slate-800 border border-slate-700 rounded p-1.5 text-white outline-none"
+              >
+                {categories.map((c) => (
+                  <option key={c} value={c}>
+                    {c === "ALL" ? "جميع الفئات" : c}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="number"
+                value={percent}
+                onChange={(e) => setPercent(Number(e.target.value))}
+                className="w-14 bg-slate-800 border border-slate-700 rounded p-1.5 text-center text-white font-mono"
+              />
+              <span className="text-slate-400">%</span>
+              <button
+                onClick={handleBulkUpdate}
+                className="bg-amber-600 hover:bg-amber-500 text-white font-bold px-3 py-1.5 rounded-lg"
+              >
+                تطبيق
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -311,7 +318,7 @@ export const InventoryView: React.FC = () => {
       )}
 
       {/* 4. سجل التوالف والخسائر المخزنية الموثقة */}
-      {inventoryLossLogs.length > 0 && (
+      {canViewCost && inventoryLossLogs.length > 0 && (
         <div className="mt-6 bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
           <div className="flex items-center justify-between border-b border-slate-800 pb-2">
             <h3 className="font-bold text-white text-sm flex items-center gap-2">

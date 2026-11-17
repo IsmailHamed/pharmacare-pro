@@ -12,7 +12,8 @@ export interface SyncQueueItemEntity {
     | "EXPENSE"
     | "SHIFT"
     | "BULK_PRICING"
-    | "LEDGER_PAYMENT";
+    | "LEDGER_PAYMENT"
+    | "USER";
   operation: "INSERT" | "UPDATE" | "DELETE";
   recordId: string;
   payload: string; // JSON serialized

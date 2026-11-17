@@ -12,16 +12,18 @@ import {
   SyncQueueItemEntity,
   LedgerPaymentEntity,
   PharmacySettingsEntity,
+  UserEntity,
 } from "../../domain/entities";
 import { InvoiceEntity } from "../../domain/entities/Invoice";
 import { PurchaseLineInput } from "../use-cases/AddPurchaseWithBonus";
 import { SQLiteProductRepository } from "../../infrastructure/persistence/SQLiteProductRepository";
 import { SQLiteBatchRepository } from "../../infrastructure/persistence/SQLiteBatchRepository";
 import { SQLiteInvoiceRepository } from "../../infrastructure/persistence/SQLiteInvoiceRepository";
-
+import { SQLiteUserRepository } from "../../infrastructure/persistence/SQLiteUserRepository";
 export const productRepo = new SQLiteProductRepository();
 export const batchRepo = new SQLiteBatchRepository();
 export const invoiceRepo = new SQLiteInvoiceRepository();
+export const userRepo = new SQLiteUserRepository();
 
 export interface PosState {
   // البيانات المتزامنة مع SQLite المحلي
@@ -54,6 +56,10 @@ export interface PosState {
     type: "success" | "error" | "warning" | "info";
     message: string;
   } | null;
+
+  users: UserEntity[];
+  currentUser: UserEntity | null;
+  activeRole: "CASHIER" | "ADMIN"; // قيمة مستنتجة ديناميكياً للتوافق مع الكود السابق
 
   // الإجراءات الأساسية (Actions)
   loadInitialData: () => Promise<void>;
@@ -147,6 +153,12 @@ export interface PosState {
     amount: number,
     notes?: string,
   ) => Promise<void>;
+
+  // إجراءات إدارة المستخدمين والصلاحيات (RBAC)
+  loadUsers: () => Promise<void>;
+  addOrUpdateUser: (user: UserEntity) => Promise<void>;
+  toggleUserStatus: (userId: string) => Promise<void>;
+  loginWithPinOrBarcode: (credential: string) => Promise<boolean>;
 }
 
 export type PosSlice<T> = StateCreator<PosState, [], [], T>;

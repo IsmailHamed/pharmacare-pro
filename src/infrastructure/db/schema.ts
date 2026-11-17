@@ -169,3 +169,13 @@ export const pharmacySettingsTable = sqliteTable("pharmacy_settings", {
   payload: text("payload").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
+
+export const usersTable = sqliteTable("users", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  role: text("role").notNull(), // "ADMIN" | "PHARMACIST" | "CASHIER"
+  pinCode: text("pin_code").notNull().unique(),
+  isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+  permissionsJson: text("permissions_json").notNull(),
+  createdAt: text("created_at").notNull(),
+});

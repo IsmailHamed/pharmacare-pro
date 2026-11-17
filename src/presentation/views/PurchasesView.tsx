@@ -25,6 +25,9 @@ const emptyLine = (productId: string): DraftLine => ({
 });
 
 export const PurchasesView: React.FC = () => {
+  const canManagePurchases = usePosStore(
+    (s) => s.currentUser?.permissions.canManagePurchases ?? false,
+  );
   const { products, purchaseInvoices, createPurchaseWithBonus } = usePosStore();
 
   const [supplier, setSupplier] = useState("");
@@ -117,6 +120,22 @@ export const PurchasesView: React.FC = () => {
 
   const inputCls =
     "w-full bg-slate-800 border border-slate-700 rounded-lg p-2.5 text-white outline-none focus:border-indigo-500";
+
+  if (!canManagePurchases) {
+    return (
+      <div className="flex-1 flex items-center justify-center bg-slate-950 p-6">
+        <div className="p-8 bg-rose-950/20 border border-rose-900/60 rounded-2xl text-rose-300 text-center max-w-md">
+          <h3 className="font-bold text-sm">
+            غير مصرح لك بالوصول لقسم المشتريات
+          </h3>
+          <p className="text-xs text-rose-400/80 mt-1">
+            يرجى التبديل إلى حساب صيدلي أو مدير نظام يمتلك صلاحية إدارة
+            المشتريات.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex-1 p-6 overflow-y-auto bg-slate-950 text-slate-200 text-xs">

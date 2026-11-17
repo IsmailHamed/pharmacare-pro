@@ -7,6 +7,9 @@ import { LedgerAccountsSection } from "../components/finance/LedgerAccountsSecti
 import { ClosedShiftsTable } from "../components/finance/ClosedShiftsTable";
 
 export const FinanceView: React.FC = () => {
+  const canViewCostAndProfit = usePosStore(
+    (s) => s.currentUser?.permissions.canViewCostAndProfit ?? false,
+  );
   const {
     invoices,
     purchaseInvoices,
@@ -162,11 +165,17 @@ export const FinanceView: React.FC = () => {
   return (
     <div className="flex-1 p-6 overflow-y-auto bg-slate-950 text-slate-200 text-xs space-y-6">
       <div className="grid grid-cols-3 gap-6">
-        <IncomeAndExpensesRow
-          incomeStatement={incomeStatement}
-          expenses={expenses}
-          onAddExpense={addCashExpense}
-        />
+        {canViewCostAndProfit ? (
+          <IncomeAndExpensesRow
+            incomeStatement={incomeStatement}
+            expenses={expenses}
+            onAddExpense={addCashExpense}
+          />
+        ) : (
+          <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 flex items-center justify-center text-slate-500 text-xs">
+            بيانات التكلفة وصافي الربح مخفية حسب صلاحيات المستخدم الحالي
+          </div>
+        )}
 
         <ShiftZReportCard
           openShift={openShift}

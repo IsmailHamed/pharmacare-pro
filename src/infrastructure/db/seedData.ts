@@ -1,5 +1,8 @@
 import { ProductEntity } from "../../domain/entities";
-
+import {
+  UserEntity,
+  ROLE_DEFAULT_PERMISSIONS,
+} from "../../domain/entities/User";
 export const CURRENT_BRANCH_ID = "MAIN_BRANCH";
 
 /**
@@ -396,3 +399,13 @@ export const INITIAL_SEED_PRODUCTS: ProductEntity[] = [
     ],
   },
 ];
+
+export const DEFAULT_ADMIN_USER: UserEntity = {
+  id: "user-admin-001",
+  name: "مدير النظام",
+  role: "ADMIN",
+  pinCode: "0000", // الرمز الافتراضي
+  isActive: true,
+  permissions: ROLE_DEFAULT_PERMISSIONS["ADMIN"],
+  createdAt: new Date().toISOString(),
+};

@@ -7,8 +7,13 @@ import {
   SyncQueueItemEntity,
   LedgerPaymentEntity,
   InvoiceEntity,
+  UserEntity,
 } from "../../domain/entities";
-import { INITIAL_SEED_PRODUCTS, CURRENT_BRANCH_ID } from "./seedData";
+import {
+  INITIAL_SEED_PRODUCTS,
+  DEFAULT_ADMIN_USER,
+  CURRENT_BRANCH_ID,
+} from "./seedData";
 import { v4 as uuidv4 } from "uuid";
 
 const STORAGE_KEY = "PHARMACARE_SQLITE_WAL_STORAGE_V2";
@@ -26,6 +31,7 @@ export interface LocalDatabaseSnapshot {
   shifts: ShiftSummaryEntity[];
   syncQueue: SyncQueueItemEntity[];
   ledgerPayments: LedgerPaymentEntity[];
+  users: UserEntity[];
 }
 
 const createDefaultDatabase = (): LocalDatabaseSnapshot => {
@@ -61,6 +67,7 @@ const createDefaultDatabase = (): LocalDatabaseSnapshot => {
     ],
     syncQueue: [],
     ledgerPayments: [],
+    users: [DEFAULT_ADMIN_USER],
   };
 };
 

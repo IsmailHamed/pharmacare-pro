@@ -1,5 +1,6 @@
 import React from "react";
 import { ProductEntity } from "../../../domain/entities";
+import { usePosStore } from "../../../application/store/usePosStore";
 import { Barcode, ClipboardCheck } from "lucide-react";
 
 interface Props {
@@ -17,6 +18,13 @@ export const InventoryItemCard: React.FC<Props> = ({
   onPrintBarcode,
   onAdjustStock,
 }) => {
+  const canViewCost = usePosStore(
+    (s) => s.currentUser?.permissions.canViewCostAndProfit ?? false,
+  );
+  const canAdjustStock = usePosStore(
+    (s) => s.currentUser?.permissions.canAdjustStock ?? false,
+  );
+
   const profitMarginPercent = (
     ((p.packPrice - p.weightedCostPrice) /
       Math.max(0.01, p.weightedCostPrice)) *
@@ -64,28 +72,38 @@ export const InventoryItemCard: React.FC<Props> = ({
         </div>
 
         <div className="text-slate-400 mt-1.5">
-          التكلفة المرجحة (بعد البونص):{" "}
-          <b className="font-mono text-amber-400">
-            {p.weightedCostPrice.toFixed(2)}
-          </b>
-          <span className="mx-2 text-slate-600">|</span>
+          {canViewCost && (
+            <>
+              التكلفة المرجحة (بعد البونص):{" "}
+              <b className="font-mono text-amber-400">
+                {p.weightedCostPrice.toFixed(2)}
+              </b>
+              <span className="mx-2 text-slate-600">|</span>
+            </>
+          )}
           سعر البيع:{" "}
           <b className="font-mono text-emerald-400">{p.packPrice.toFixed(2)}</b>
-          <span className="mx-2 text-slate-600">|</span>
-          هامش الربح:{" "}
-          <b className="font-mono text-sky-400">{profitMarginPercent}%</b>
+          {canViewCost && (
+            <>
+              <span className="mx-2 text-slate-600">|</span>
+              هامش الربح:{" "}
+              <b className="font-mono text-sky-400">{profitMarginPercent}%</b>
+            </>
+          )}
         </div>
       </div>
 
       <div className="flex items-center gap-2.5">
-        <button
-          onClick={() => onAdjustStock(p)}
-          className="bg-slate-800 hover:bg-amber-600 text-slate-200 hover:text-white border border-slate-700 px-3 py-2 rounded-xl flex items-center gap-1.5 font-bold transition"
-          title="تسوية الجرد الفعلي أو تسجيل كسر/إتلاف صلاحية"
-        >
-          <ClipboardCheck className="w-4 h-4 text-amber-400" />
-          تسوية جرد / تالف
-        </button>
+        {canAdjustStock && (
+          <button
+            onClick={() => onAdjustStock(p)}
+            className="bg-slate-800 hover:bg-amber-600 text-slate-200 hover:text-white border border-slate-700 px-3 py-2 rounded-xl flex items-center gap-1.5 font-bold transition"
+            title="تسوية الجرد الفعلي أو تسجيل كسر/إتلاف صلاحية"
+          >
+            <ClipboardCheck className="w-4 h-4 text-amber-400" />
+            تسوية جرد / تالف
+          </button>
+        )}
 
         <button
           onClick={() => onPrintBarcode(p)}

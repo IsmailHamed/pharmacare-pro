@@ -188,6 +188,19 @@ const bootstrapSQLiteTables = async (db: Database) => {
     );
   `);
 
+  // إضافة جدول المستخدمين (نظام الصلاحيات RBAC)
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      role TEXT NOT NULL,
+      pin_code TEXT UNIQUE NOT NULL,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      permissions_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+  `);
+
   // فهارس عالية الأداء لتسريع البحث بالباركود والاسم والمادة الفعالة وربط الدفعات عند وجود 10,000+ دواء
   await db.execute(
     "CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode);",
@@ -200,6 +213,11 @@ const bootstrapSQLiteTables = async (db: Database) => {
   );
   await db.execute(
     "CREATE INDEX IF NOT EXISTS idx_batches_product_id ON batches(product_id);",
+  );
+
+  // فهرس لتسريع البحث عن المستخدم بواسطة الرمز السري (PIN) أثناء تسجيل الدخول
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_users_pin_code ON users(pin_code);",
   );
 };
 
