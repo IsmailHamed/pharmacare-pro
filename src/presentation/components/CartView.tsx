@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { CartItemEntity, ProductEntity } from "../../domain/entities";
 import { InvoiceEntity } from "../../domain/entities/Invoice";
 import { usePosStore } from "../../application/store/usePosStore";
@@ -15,7 +15,11 @@ import {
   SearchCheck,
   Keyboard,
   AlertTriangle,
+  Banknote,
+  RotateCcw,
 } from "lucide-react";
+
+const CASH_DENOMINATIONS = [10, 50, 100, 200, 500] as const;
 
 interface Props {
   cart: CartItemEntity[];
@@ -61,6 +65,7 @@ export const CartView: React.FC<Props> = ({
   onHold,
 }) => {
   const [lookupId, setLookupId] = useState("");
+  const [cashTenderedInput, setCashTenderedInput] = useState("");
 
   // التحقق من صلاحية المستخدم الحالي لإجراء مرتجعات المبيعات (القيمة الافتراضية الآمنة: false)
   const canProcessReturn = usePosStore(
@@ -78,8 +83,43 @@ export const CartView: React.FC<Props> = ({
     return buildLasaRiskGroupSet(Array.from(uniqueById.values()));
   }, [cart]);
 
-  const discountAmount = (subtotal * discountPercent) / 100;
-  const total = subtotal - discountAmount;
+  const discountAmount = Number(
+    ((subtotal * discountPercent) / 100).toFixed(2),
+  );
+  const total = Number(Math.max(0, subtotal - discountAmount).toFixed(2));
+
+  // تصفير حاسبة الباقي تلقائياً عند إفراغ السلة أو التبديل لوضع آجل/مرتجع
+  useEffect(() => {
+    if (cart.length === 0 || paymentMode !== "CASH" || invoiceMode !== "SALE") {
+      setCashTenderedInput("");
+    }
+  }, [cart.length, paymentMode, invoiceMode]);
+
+  const showCashCalculator =
+    paymentMode === "CASH" &&
+    invoiceMode === "SALE" &&
+    cart.length > 0 &&
+    total > 0;
+
+  const hasCashInput = cashTenderedInput.trim() !== "";
+  const tenderedAmount = hasCashInput
+    ? Math.max(0, Number(cashTenderedInput) || 0)
+    : 0;
+  const diffHalalas =
+    Math.round(tenderedAmount * 100) - Math.round(total * 100);
+  const isCashSufficient = diffHalalas >= 0;
+  const changeDue = Math.max(0, diffHalalas) / 100;
+  const remainingDue = Math.max(0, -diffHalalas) / 100;
+
+  const handleAddDenomination = (noteValue: number) => {
+    const current = Math.max(0, Number(cashTenderedInput) || 0);
+    const next = Number((current + noteValue).toFixed(2));
+    setCashTenderedInput(String(next));
+  };
+
+  const handleExactCash = () => {
+    setCashTenderedInput(total.toFixed(2));
+  };
 
   // منع تفعيل وضع المرتجع لغير المخولين، مع السماح دائماً بالعودة من وضع المرتجع إلى وضع البيع
   const isReturnToggleDisabled = !canProcessReturn && invoiceMode === "SALE";
@@ -429,6 +469,92 @@ export const CartView: React.FC<Props> = ({
             {total.toFixed(2)} ر.س
           </span>
         </div>
+
+        {/* حاسبة الفئات النقدية السريعة والباقي للزبون (تظهر في وضع البيع النقدي فقط) */}
+        {showCashCalculator && (
+          <div className="p-2.5 bg-slate-950/70 border border-slate-800 rounded-xl space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-bold text-slate-300 flex items-center gap-1.5 shrink-0">
+                <Banknote className="w-3.5 h-3.5 text-emerald-400" />
+                المدفوع نقداً:
+              </span>
+              <div className="flex items-center gap-1.5 flex-1 justify-end">
+                <input
+                  type="number"
+                  min={0}
+                  step="any"
+                  value={cashTenderedInput}
+                  onChange={(e) => setCashTenderedInput(e.target.value)}
+                  placeholder="0.00"
+                  dir="ltr"
+                  className="w-28 bg-slate-900 border border-slate-700 focus:border-emerald-500 rounded-lg px-2.5 py-1 text-left font-mono font-bold text-white outline-none"
+                />
+                {hasCashInput && (
+                  <button
+                    type="button"
+                    onClick={() => setCashTenderedInput("")}
+                    title="تصفير المبلغ المدفوع"
+                    className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white p-1.5 rounded-lg transition"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* أزرار الفئات النقدية السريعة */}
+            <div className="grid grid-cols-6 gap-1">
+              <button
+                type="button"
+                onClick={handleExactCash}
+                title="تعيين المبلغ المستلم مطابقاً للصافي تماماً"
+                className="py-1 rounded-lg bg-sky-950/80 hover:bg-sky-900 border border-sky-800/80 text-sky-300 font-bold text-[10px] transition"
+              >
+                تماماً
+              </button>
+              {CASH_DENOMINATIONS.map((note) => (
+                <button
+                  key={note}
+                  type="button"
+                  onClick={() => handleAddDenomination(note)}
+                  title={`إضافة ورقة فئة ${note} ر.س للمبلغ المستلم`}
+                  className="py-1 rounded-lg bg-slate-800 hover:bg-emerald-950 hover:border-emerald-700 border border-slate-700 text-slate-200 hover:text-emerald-300 font-mono font-bold text-[11px] transition"
+                >
+                  +{note}
+                </button>
+              ))}
+            </div>
+
+            {/* شاشة عرض الباقي للزبون بخط ضخم */}
+            {hasCashInput && (
+              <div
+                className={`rounded-lg px-3 py-2 border flex items-center justify-between ${
+                  isCashSufficient
+                    ? "bg-emerald-950/55 border-emerald-600/70"
+                    : "bg-amber-950/45 border-amber-600/70"
+                }`}
+              >
+                <span
+                  className={`font-bold text-xs ${
+                    isCashSufficient ? "text-emerald-200" : "text-amber-200"
+                  }`}
+                >
+                  {isCashSufficient ? "الباقي للزبون:" : "المتبقي على الزبون:"}
+                </span>
+                <span
+                  dir="ltr"
+                  className={`font-mono font-black tracking-tight ${
+                    isCashSufficient
+                      ? "text-2xl text-emerald-300"
+                      : "text-lg text-amber-300"
+                  }`}
+                >
+                  {(isCashSufficient ? changeDue : remainingDue).toFixed(2)} ر.س
+                </span>
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="flex gap-2">
           <button
