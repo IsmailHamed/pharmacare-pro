@@ -9,7 +9,14 @@ import {
   PharmacySettingsEntity,
 } from "../../domain/entities";
 import { InvoiceEntity } from "../../domain/entities/Invoice";
+import {
+  UserEntity,
+  UserRole,
+  UserPermissions,
+  ROLE_DEFAULT_PERMISSIONS,
+} from "../../domain/entities/User";
 import { CURRENT_BRANCH_ID, sqliteEngine } from "../db/database";
+import { DEFAULT_ADMIN_USER } from "../db/seedData";
 import { isTauriDesktop, sqliteRaw } from "../db/connection";
 import { SettingsService } from "../config/SettingsService";
 
@@ -30,108 +37,60 @@ export interface FullBackupPayload {
     shifts: ShiftSummaryEntity[];
     syncQueue: SyncQueueItemEntity[];
     ledgerPayments: LedgerPaymentEntity[];
+    // حقل اختياري للحفاظ على التوافق العكسي مع ملفات النسخ الاحتياطي القديمة
+    users?: UserEntity[];
   };
 }
 
+/**
+ * تطبيع سجل موظف مستعاد من ملف النسخة الاحتياطية لضمان توافق الدور ومفاتيح الصلاحيات
+ */
+const normalizeBackupUser = (raw: UserEntity): UserEntity => {
+  const role: UserRole =
+    raw.role === "ADMIN" || raw.role === "PHARMACIST" || raw.role === "CASHIER"
+      ? raw.role
+      : "CASHIER";
+
+  const incomingPermissions = (raw.permissions ||
+    {}) as Partial<UserPermissions>;
+
+  return {
+    id: String(raw.id),
+    name: String(raw.name || "موظف"),
+    role,
+    pinCode: String(raw.pinCode || ""),
+    isActive: raw.isActive !== false,
+    permissions: {
+      ...ROLE_DEFAULT_PERMISSIONS[role],
+      ...incomingPermissions,
+    },
+    createdAt: raw.createdAt || new Date().toISOString(),
+  };
+};
+
 export class BackupService {
   /**
-   * تصدير نسخة احتياطية كاملة لجميع جداول قاعدة البيانات وإعدادات الصيدلية كملف JSON
+   * دالة مساعدة موحدة لكتابة كامل الجداول داخل pharmacare.db على سطح المكتب ضمن Transaction ذرية واحدة
+   * (تُستخدم في كلٍ من الاستعادة من ملف وإعادة ضبط المصنع)
    */
-  static exportBackupFile(
-    stateData: FullBackupPayload["data"],
-    settings: PharmacySettingsEntity,
-  ): string {
-    const now = new Date();
-    const datePart = now.toISOString().slice(0, 10);
-    const timePart = now.toTimeString().slice(0, 5).replace(":", "-");
-    const fileName = `PharmaCare_Backup_${datePart}_${timePart}.json`;
+  private static async writeSnapshotToDesktopSQLite(
+    payload: {
+      products: ProductEntity[];
+      invoices: InvoiceEntity[];
+      purchaseInvoices: PurchaseInvoiceEntity[];
+      controlledLogs: ControlledDrugLogEntity[];
+      expenses: CashExpenseEntity[];
+      shifts: ShiftSummaryEntity[];
+      syncQueue: SyncQueueItemEntity[];
+      ledgerPayments: LedgerPaymentEntity[];
+      users?: UserEntity[];
+    },
+    overwriteUsersTable: boolean,
+  ): Promise<void> {
+    if (!isTauriDesktop() || !sqliteRaw) return;
 
-    const backupObject: FullBackupPayload = {
-      meta: {
-        app: "PharmaCare Pro",
-        version: "1.0.0",
-        branchId: CURRENT_BRANCH_ID,
-        exportedAt: now.toISOString(),
-      },
-      settings,
-      data: stateData,
-    };
-
-    const jsonString = JSON.stringify(backupObject, null, 2);
-    const blob = new Blob([jsonString], {
-      type: "application/json;charset=utf-8",
-    });
-    const url = URL.createObjectURL(blob);
-
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = fileName;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-
-    return fileName;
-  }
-
-  /**
-   * قراءة ملف النسخة الاحتياطية والتحقق من سلامته واستعادة كافة الجداول في الذاكرة وفي SQLite (pharmacare.db)
-   */
-  static async restoreFromBackupFile(file: File): Promise<{
-    productsCount: number;
-    invoicesCount: number;
-    exportedAt: string;
-  }> {
-    const rawText = await file.text();
-    let parsed: FullBackupPayload;
-
+    await sqliteRaw.execute("BEGIN TRANSACTION;");
     try {
-      parsed = JSON.parse(rawText) as FullBackupPayload;
-    } catch {
-      throw new Error("ملف النسخة الاحتياطية تالف أو ليس بصيغة JSON صالحة.");
-    }
-
-    if (
-      !parsed ||
-      !parsed.data ||
-      !Array.isArray(parsed.data.products) ||
-      !Array.isArray(parsed.data.invoices)
-    ) {
-      throw new Error(
-        "تركيب ملف النسخة الاحتياطية غير متوافق مع نظام PharmaCare Pro.",
-      );
-    }
-
-    const {
-      products = [],
-      invoices = [],
-      purchaseInvoices = [],
-      controlledLogs = [],
-      expenses = [],
-      shifts = [],
-      syncQueue = [],
-      ledgerPayments = [],
-    } = parsed.data;
-
-    // 1. استعادة إعدادات الصيدلية إن وجدت داخل النسخة الاحتياطية
-    if (parsed.settings) {
-      SettingsService.saveSettings(parsed.settings);
-    }
-
-    // 2. تحديث المحرك المحلي (sqliteEngine)
-    sqliteEngine.commit((draft) => {
-      draft.products = products;
-      draft.invoices = invoices;
-      draft.purchaseInvoices = purchaseInvoices;
-      draft.controlledLogs = controlledLogs;
-      draft.expenses = expenses;
-      draft.shifts = shifts;
-      draft.syncQueue = syncQueue;
-      draft.ledgerPayments = ledgerPayments;
-    });
-
-    // 3. إذا كنا على تطبيق سطح المكتب (Tauri SQLite pharmacare.db)، نعيد كتابة الجداول الفعلية
-    if (isTauriDesktop() && sqliteRaw) {
       await sqliteRaw.execute("DELETE FROM batches;");
       await sqliteRaw.execute("DELETE FROM products;");
       await sqliteRaw.execute("DELETE FROM invoices;");
@@ -142,8 +101,13 @@ export class BackupService {
       await sqliteRaw.execute("DELETE FROM sync_queue;");
       await sqliteRaw.execute("DELETE FROM ledger_payments;");
 
-      // استعادة المنتجات والدفعات (Batches)
-      for (const p of products) {
+      // استبدال جدول الموظفين فقط عند وجود بيانات موظفين في النسخة أو أثناء إعادة ضبط المصنع
+      if (overwriteUsersTable) {
+        await sqliteRaw.execute("DELETE FROM users;");
+      }
+
+      // 1. المنتجات والدفعات (Batches)
+      for (const p of payload.products) {
         await sqliteRaw.execute(
           `INSERT OR REPLACE INTO products (
             id, barcode, name, scientific_name, category, pack_price,
@@ -185,8 +149,8 @@ export class BackupService {
         }
       }
 
-      // استعادة فواتير المبيعات والمرتجعات
-      for (const inv of invoices) {
+      // 2. فواتير المبيعات والمرتجعات
+      for (const inv of payload.invoices) {
         await sqliteRaw.execute(
           `INSERT OR REPLACE INTO invoices (
             id, type, payment_mode, customer_name, subtotal, discount_percent,
@@ -209,8 +173,8 @@ export class BackupService {
         );
       }
 
-      // استعادة فواتير المشتريات
-      for (const pur of purchaseInvoices) {
+      // 3. فواتير المشتريات
+      for (const pur of payload.purchaseInvoices) {
         await sqliteRaw.execute(
           `INSERT OR REPLACE INTO purchase_invoices (
             id, supplier_name, supplier_invoice_number, payment_mode,
@@ -230,8 +194,8 @@ export class BackupService {
         );
       }
 
-      // استعادة سجل الأدوية المراقبة
-      for (const log of controlledLogs) {
+      // 4. سجل الأدوية المراقبة
+      for (const log of payload.controlledLogs) {
         await sqliteRaw.execute(
           `INSERT OR REPLACE INTO controlled_drug_logs (
             id, invoice_id, product_id, product_name, scientific_name,
@@ -258,8 +222,8 @@ export class BackupService {
         );
       }
 
-      // استعادة المصاريف النثرية
-      for (const exp of expenses) {
+      // 5. المصاريف النثرية وخسائر الجرد
+      for (const exp of payload.expenses) {
         await sqliteRaw.execute(
           `INSERT OR REPLACE INTO cash_expenses (
             id, title, category, amount, notes, shift_id, created_at, branch_id
@@ -277,8 +241,8 @@ export class BackupService {
         );
       }
 
-      // استعادة الورديات
-      for (const s of shifts) {
+      // 6. الورديات والصندوق
+      for (const s of payload.shifts) {
         await sqliteRaw.execute(
           `INSERT OR REPLACE INTO shifts (
             id, pharmacist_name, opened_at, closed_at, status,
@@ -313,8 +277,8 @@ export class BackupService {
         );
       }
 
-      // استعادة سندات القبض والصرف (دفتر الديون)
-      for (const pay of ledgerPayments) {
+      // 7. سندات القبض والصرف (دفتر الديون)
+      for (const pay of payload.ledgerPayments) {
         await sqliteRaw.execute(
           `INSERT OR REPLACE INTO ledger_payments (
             id, party_type, party_name, amount, notes, created_at, branch_id
@@ -331,8 +295,8 @@ export class BackupService {
         );
       }
 
-      // استعادة طابور المزامنة
-      for (const item of syncQueue) {
+      // 8. طابور المزامنة السحابية
+      for (const item of payload.syncQueue) {
         await sqliteRaw.execute(
           `INSERT OR REPLACE INTO sync_queue (
             id, entity_type, operation, record_id, payload, branch_id, status, created_at, synced_at
@@ -350,12 +314,207 @@ export class BackupService {
           ],
         );
       }
+
+      // 9. جدول الموظفين والصلاحيات (users)
+      if (overwriteUsersTable && payload.users) {
+        for (const u of payload.users) {
+          await sqliteRaw.execute(
+            `INSERT OR REPLACE INTO users (
+              id, name, role, pin_code, is_active, permissions_json, created_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7);`,
+            [
+              u.id,
+              u.name,
+              u.role,
+              u.pinCode,
+              u.isActive ? 1 : 0,
+              JSON.stringify(u.permissions),
+              u.createdAt,
+            ],
+          );
+        }
+      }
+
+      await sqliteRaw.execute("COMMIT;");
+    } catch (err) {
+      await sqliteRaw.execute("ROLLBACK;");
+      throw err;
     }
+  }
+
+  /**
+   * تصدير نسخة احتياطية كاملة لجميع جداول قاعدة البيانات والموظفين وإعدادات الصيدلية كملف JSON
+   */
+  static exportBackupFile(
+    stateData: FullBackupPayload["data"],
+    settings: PharmacySettingsEntity,
+  ): string {
+    const now = new Date();
+    const datePart = now.toISOString().slice(0, 10);
+    const timePart = now.toTimeString().slice(0, 5).replace(":", "-");
+    const fileName = `PharmaCare_Backup_${datePart}_${timePart}.json`;
+
+    const resolvedUsers =
+      stateData.users && stateData.users.length > 0
+        ? stateData.users
+        : sqliteEngine.getSnapshot().users || [DEFAULT_ADMIN_USER];
+
+    const backupObject: FullBackupPayload = {
+      meta: {
+        app: "PharmaCare Pro",
+        version: "1.0.0",
+        branchId: CURRENT_BRANCH_ID,
+        exportedAt: now.toISOString(),
+      },
+      settings,
+      data: {
+        ...stateData,
+        users: resolvedUsers,
+      },
+    };
+
+    const jsonString = JSON.stringify(backupObject, null, 2);
+    const blob = new Blob([jsonString], {
+      type: "application/json;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    return fileName;
+  }
+
+  /**
+   * قراءة ملف النسخة الاحتياطية والتحقق من سلامته واستعادة كافة الجداول (بما فيها الموظفين)
+   * في SQLite (pharmacare.db) وفي الذاكرة المحلية بأمان كامل
+   */
+  static async restoreFromBackupFile(file: File): Promise<{
+    productsCount: number;
+    invoicesCount: number;
+    usersCount: number;
+    exportedAt: string;
+  }> {
+    const rawText = await file.text();
+    let parsed: FullBackupPayload;
+
+    try {
+      parsed = JSON.parse(rawText) as FullBackupPayload;
+    } catch {
+      throw new Error("ملف النسخة الاحتياطية تالف أو ليس بصيغة JSON صالحة.");
+    }
+
+    if (
+      !parsed ||
+      !parsed.data ||
+      !Array.isArray(parsed.data.products) ||
+      !Array.isArray(parsed.data.invoices)
+    ) {
+      throw new Error(
+        "تركيب ملف النسخة الاحتياطية غير متوافق مع نظام PharmaCare Pro.",
+      );
+    }
+
+    const {
+      products = [],
+      invoices = [],
+      purchaseInvoices = [],
+      controlledLogs = [],
+      expenses = [],
+      shifts = [],
+      syncQueue = [],
+      ledgerPayments = [],
+      users: rawUsers,
+    } = parsed.data;
+
+    // معالجة الموظفين: إذا كان الملف يحتوي على قائمة موظفين نُطبّع صلاحياتهم ونستعيدهم،
+    // وإذا كان ملفاً قديماً بدون users نُبقي على الموظفين الحاليين لتجنب قفل النظام
+    const hasUsersInBackup = Array.isArray(rawUsers) && rawUsers.length > 0;
+    let normalizedUsers: UserEntity[] | undefined;
+
+    if (hasUsersInBackup) {
+      normalizedUsers = rawUsers.map(normalizeBackupUser);
+      // ضمان وجود مدير نشط واحد على الأقل لتفادي إغلاق النظام بالكامل
+      const hasActiveAdmin = normalizedUsers.some(
+        (u) => u.role === "ADMIN" && u.isActive,
+      );
+      if (!hasActiveAdmin) {
+        normalizedUsers.unshift(DEFAULT_ADMIN_USER);
+      }
+    }
+
+    // 1. تنفيذ الاستعادة أولاً داخل SQLite (pharmacare.db) في معاملة ذرية واحدة
+    await BackupService.writeSnapshotToDesktopSQLite(
+      {
+        products,
+        invoices,
+        purchaseInvoices,
+        controlledLogs,
+        expenses,
+        shifts,
+        syncQueue,
+        ledgerPayments,
+        users: normalizedUsers,
+      },
+      hasUsersInBackup,
+    );
+
+    // 2. استعادة إعدادات الصيدلية إن وجدت داخل النسخة الاحتياطية
+    if (parsed.settings) {
+      SettingsService.saveSettings(parsed.settings);
+    }
+
+    // 3. تحديث المحرك المحلي (sqliteEngine) بعد نجاح الكتابة على سطح المكتب
+    sqliteEngine.commit((draft) => {
+      draft.products = products;
+      draft.invoices = invoices;
+      draft.purchaseInvoices = purchaseInvoices;
+      draft.controlledLogs = controlledLogs;
+      draft.expenses = expenses;
+      draft.shifts = shifts;
+      draft.syncQueue = syncQueue;
+      draft.ledgerPayments = ledgerPayments;
+      if (normalizedUsers) {
+        draft.users = normalizedUsers;
+      }
+    });
 
     return {
       productsCount: products.length,
       invoicesCount: invoices.length,
+      usersCount:
+        normalizedUsers?.length ??
+        sqliteEngine.getSnapshot().users?.length ??
+        1,
       exportedAt: parsed.meta?.exportedAt || new Date().toISOString(),
     };
+  }
+
+  /**
+   * إعادة ضبط المصنع الكاملة (تصفير الذاكرة و localStorage وكافة الجداول التشغيلية في pharmacare.db
+   * وإعادة زرع البيانات الأولية والوردية الافتراضية والمدير الافتراضي مع الحفاظ على إعدادات الصيدلية والطابعة)
+   */
+  static async resetDatabaseToFactory(): Promise<void> {
+    const freshSnapshot = sqliteEngine.resetToFactory();
+
+    await BackupService.writeSnapshotToDesktopSQLite(
+      {
+        products: freshSnapshot.products,
+        invoices: freshSnapshot.invoices,
+        purchaseInvoices: freshSnapshot.purchaseInvoices,
+        controlledLogs: freshSnapshot.controlledLogs,
+        expenses: freshSnapshot.expenses,
+        shifts: freshSnapshot.shifts,
+        syncQueue: freshSnapshot.syncQueue,
+        ledgerPayments: freshSnapshot.ledgerPayments,
+        users: freshSnapshot.users,
+      },
+      true,
+    );
   }
 }

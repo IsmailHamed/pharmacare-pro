@@ -169,6 +169,7 @@ export const createSystemSyncSlice: PosSlice<SystemSyncSlice> = (set, get) => ({
         shifts: state.shifts,
         syncQueue: state.syncQueue,
         ledgerPayments: state.ledgerPayments,
+        users: state.users,
       },
       state.settings,
     );
@@ -190,7 +191,7 @@ export const createSystemSyncSlice: PosSlice<SystemSyncSlice> = (set, get) => ({
         heldInvoices: [],
         notification: {
           type: "success",
-          message: `تمت استعادة النسخة الاحتياطية بنجاح (${summary.productsCount} صنف دوائي، ${summary.invoicesCount} فاتورة).`,
+          message: `تمت استعادة النسخة الاحتياطية بنجاح (${summary.productsCount} صنف دوائي، ${summary.invoicesCount} فاتورة، ${summary.usersCount} موظف).`,
         },
       });
     } catch (err) {
@@ -207,16 +208,29 @@ export const createSystemSyncSlice: PosSlice<SystemSyncSlice> = (set, get) => ({
   },
 
   resetDemoDatabase: async () => {
-    sqliteEngine.resetToFactory();
-    get().clearCart();
-    await get().loadInitialData();
-    set({
-      heldInvoices: [],
-      notification: {
-        type: "info",
-        message: "تمت إعادة ضبط قاعدة البيانات المحلية للبيانات الافتراضية.",
-      },
-    });
+    try {
+      await BackupService.resetDatabaseToFactory();
+      get().clearCart();
+      await get().loadInitialData();
+      set({
+        heldInvoices: [],
+        notification: {
+          type: "info",
+          message:
+            "تمت إعادة ضبط قاعدة البيانات المحلية (SQLite) للبيانات الافتراضية بنجاح.",
+        },
+      });
+    } catch (err) {
+      set({
+        notification: {
+          type: "error",
+          message:
+            err instanceof Error
+              ? err.message
+              : "فشل إعادة ضبط قاعدة البيانات المحلية.",
+        },
+      });
+    }
   },
 
   loadUsers: async () => {

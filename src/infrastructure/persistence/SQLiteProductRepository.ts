@@ -230,38 +230,122 @@ export class SQLiteProductRepository implements IProductRepository {
 
   /**
    * إدخال أو تحديث آلاف الأدوية دفعة واحدة (Bulk Upsert Transaction)
-   * يمنع تجمّد المتصفح أو قاعدة البيانات عند استيراد 10,000+ دواء من ملف Excel
+   * يطابق الأصناف بالـ id والـ barcode معاً لمنع التكرار أو فقدان الدفعات القائمة
    */
   async upsertProductsBulk(importedProducts: ProductEntity[]): Promise<void> {
     if (importedProducts.length === 0) return;
 
-    // 1. تحديث المحرك المحلي بعملية حفظ (commit) واحدة فقط لجميع الأدوية
-    sqliteEngine.commit((draft) => {
-      const existingMap = new Map(draft.products.map((p, idx) => [p.id, idx]));
+    const now = new Date().toISOString();
+    const resolvedForSQLite: {
+      product: ProductEntity;
+      replaceBatches: boolean;
+    }[] = [];
 
-      for (const product of importedProducts) {
-        const idx = existingMap.get(product.id);
-        if (idx !== undefined) {
-          draft.products[idx] = product;
+    // إزالة التكرار داخل ملف الاستيراد نفسه حسب الباركود (الاحتفاظ بآخر سطر لكل باركود)
+    const dedupedByBarcode = new Map<string, ProductEntity>();
+    for (const raw of importedProducts) {
+      const cleanBarcode = raw.barcode.trim();
+      if (!cleanBarcode) continue;
+      dedupedByBarcode.set(cleanBarcode, {
+        ...raw,
+        barcode: cleanBarcode,
+        branchId: raw.branchId || CURRENT_BRANCH_ID,
+        updatedAt: raw.updatedAt || now,
+      });
+    }
+
+    const normalizedList = Array.from(dedupedByBarcode.values());
+    if (normalizedList.length === 0) return;
+
+    // 1. تحديث المحرك المحلي بعملية حفظ (commit) واحدة مع المطابقة بالمعرّف والباركود
+    sqliteEngine.commit((draft) => {
+      const existingById = new Map<string, number>();
+      const existingByBarcode = new Map<string, number>();
+
+      draft.products.forEach((p, idx) => {
+        existingById.set(p.id, idx);
+        existingByBarcode.set(p.barcode.trim(), idx);
+      });
+
+      for (const incoming of normalizedList) {
+        const matchedIdx =
+          existingByBarcode.get(incoming.barcode) ??
+          existingById.get(incoming.id);
+
+        const hasIncomingBatches =
+          Array.isArray(incoming.batches) && incoming.batches.length > 0;
+
+        if (matchedIdx !== undefined) {
+          const existing = draft.products[matchedIdx];
+          const resolvedId = existing.id;
+
+          // الاحتفاظ بالدفعات القديمة إذا لم يتضمن سطر الاستيراد دفعات جديدة
+          const resolvedBatches = hasIncomingBatches
+            ? incoming.batches.map((b) => ({
+                ...b,
+                productId: resolvedId,
+                branchId: b.branchId || CURRENT_BRANCH_ID,
+              }))
+            : existing.batches;
+
+          const merged: ProductEntity = {
+            ...incoming,
+            id: resolvedId,
+            batches: resolvedBatches,
+          };
+
+          draft.products[matchedIdx] = merged;
+          resolvedForSQLite.push({
+            product: merged,
+            replaceBatches: hasIncomingBatches,
+          });
         } else {
-          draft.products.push(product);
-          existingMap.set(product.id, draft.products.length - 1);
+          const prepared: ProductEntity = {
+            ...incoming,
+            batches: (incoming.batches || []).map((b) => ({
+              ...b,
+              productId: incoming.id,
+              branchId: b.branchId || CURRENT_BRANCH_ID,
+            })),
+          };
+
+          draft.products.push(prepared);
+          const newIdx = draft.products.length - 1;
+          existingById.set(prepared.id, newIdx);
+          existingByBarcode.set(prepared.barcode, newIdx);
+
+          resolvedForSQLite.push({
+            product: prepared,
+            replaceBatches: prepared.batches.length > 0,
+          });
         }
       }
     });
 
-    // 2. إذا كنا على تطبيق سطح المكتب (Tauri SQLite)، ننفذ الإدخال داخل Transaction واحدة سريعة
+    // 2. التنفيذ داخل Transaction واحدة في SQLite باستخدام ON CONFLICT(barcode) لتفادي حذف الدفعات عبر CASCADE
     if (isTauriDesktop() && sqliteRaw) {
       await sqliteRaw.execute("BEGIN TRANSACTION;");
       try {
-        for (const product of importedProducts) {
+        for (const { product, replaceBatches } of resolvedForSQLite) {
           await sqliteRaw.execute(
-            `INSERT OR REPLACE INTO products (
+            `INSERT INTO products (
               id, barcode, name, scientific_name, category,
               pack_price, weighted_cost_price, strips_per_pack,
               stock_packs, stock_loose_strips, min_limit,
               is_controlled, branch_id, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14);`,
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            ON CONFLICT(barcode) DO UPDATE SET
+              name = excluded.name,
+              scientific_name = excluded.scientific_name,
+              category = excluded.category,
+              pack_price = excluded.pack_price,
+              weighted_cost_price = excluded.weighted_cost_price,
+              strips_per_pack = excluded.strips_per_pack,
+              stock_packs = excluded.stock_packs,
+              stock_loose_strips = excluded.stock_loose_strips,
+              min_limit = excluded.min_limit,
+              is_controlled = excluded.is_controlled,
+              updated_at = excluded.updated_at;`,
             [
               product.id,
               product.barcode,
@@ -276,29 +360,31 @@ export class SQLiteProductRepository implements IProductRepository {
               product.minLimit,
               product.isControlled ? 1 : 0,
               product.branchId || CURRENT_BRANCH_ID,
-              product.updatedAt || new Date().toISOString(),
+              product.updatedAt || now,
             ],
           );
 
-          await sqliteRaw.execute(
-            "DELETE FROM batches WHERE product_id = $1;",
-            [product.id],
-          );
-
-          for (const b of product.batches || []) {
+          if (replaceBatches) {
             await sqliteRaw.execute(
-              `INSERT OR REPLACE INTO batches (
-                id, product_id, batch_number, expiry_date, qty_packs, branch_id
-              ) VALUES ($1, $2, $3, $4, $5, $6);`,
-              [
-                b.id,
-                product.id,
-                b.batchNumber,
-                b.expiryDate,
-                b.qtyPacks,
-                b.branchId || CURRENT_BRANCH_ID,
-              ],
+              "DELETE FROM batches WHERE product_id = $1;",
+              [product.id],
             );
+
+            for (const b of product.batches || []) {
+              await sqliteRaw.execute(
+                `INSERT OR REPLACE INTO batches (
+                  id, product_id, batch_number, expiry_date, qty_packs, branch_id
+                ) VALUES ($1, $2, $3, $4, $5, $6);`,
+                [
+                  b.id,
+                  product.id,
+                  b.batchNumber,
+                  b.expiryDate,
+                  b.qtyPacks,
+                  b.branchId || CURRENT_BRANCH_ID,
+                ],
+              );
+            }
           }
         }
         await sqliteRaw.execute("COMMIT;");
@@ -314,7 +400,7 @@ export class SQLiteProductRepository implements IProductRepository {
       "UPDATE",
       `BULK-IMPORT-${Date.now()}`,
       {
-        count: importedProducts.length,
+        count: resolvedForSQLite.length,
       },
     );
     await this.persistSyncItemToDesktopSQLite(syncItem);
