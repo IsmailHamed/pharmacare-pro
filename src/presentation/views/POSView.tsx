@@ -19,11 +19,10 @@ import { AlternativesModal } from "../components/AlternativesModal";
 import { HeldInvoicesBar } from "../components/HeldInvoicesBar";
 import { ThermalReceiptModal } from "../components/ThermalReceiptModal";
 import { InvoicesHistoryModal } from "../components/InvoicesHistoryModal";
-import { ShortagesOrderModal } from "../components/ShortagesOrderModal";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useBarcodeScanner } from "../hooks/useBarcodeScanner";
 import { ProductEntity, DrugInteractionAlert } from "../../domain/entities";
-import { AlertTriangle, Inbox, FileText, ClipboardList } from "lucide-react";
+import { AlertTriangle, Inbox } from "lucide-react";
 
 /**
  * شاشة نقطة البيع الموحدة (POS)
@@ -33,14 +32,12 @@ export const POSView: React.FC = () => {
   const store = usePosStore();
   const [searchQuery, setSearchQuery] = useState("");
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
-  const [isShortagesOpen, setIsShortagesOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const lastScannerCharAtRef = useRef<number>(0);
 
   // إيقاف لقط الباركود التلقائي والاختصارات عند فتح أي نافذة منبثقة فرعية
   const isAnyModalOpen =
     isHistoryOpen ||
-    isShortagesOpen ||
     Boolean(store.pendingControlledItem) ||
     Boolean(store.selectedProductForAlternatives) ||
     Boolean(store.lastPrintedInvoice);
@@ -72,7 +69,7 @@ export const POSView: React.FC = () => {
           target.tagName === "SELECT" ||
           target.isContentEditable);
 
-      // لا نتدخل إذا كان المستخدم يكتب داخل حقل آخر (مثل اسم العميل أو نسبة الخصم)
+      // لا نتدخل إذا كان المستخدم يكتب داخل حقل آخر (مثل اسم العميل أو نسبة الخصم أو حاسبة الباقي)
       if (isOtherEditable) return;
 
       // إذا كان المؤشر داخل خانة البحث وفيها نص قيد الكتابة، نترك المفاتيح تعمل بشكلها الطبيعي
@@ -173,12 +170,6 @@ export const POSView: React.FC = () => {
     [cartSubtotal, store.discountPercent],
   );
 
-  // حساب عدد النواقص تحت حد الطلب لعرضها على زر دفتر النواقص
-  const shortagesCount = useMemo(
-    () => store.products.filter((p) => p.stockPacks <= p.minLimit).length,
-    [store.products],
-  );
-
   const handleSearchEnter = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
       if (e.key !== "Enter") return;
@@ -250,38 +241,12 @@ export const POSView: React.FC = () => {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      {/* شريط إجراءات نقطة البيع السريعة: سجل الفواتير + دفتر النواقص */}
-      <div className="bg-slate-900/90 border-b border-slate-800 px-4 py-1.5 flex items-center justify-end gap-2 text-[11px]">
-        {/* زر سجل الفواتير السابقة وإعادة الطباعة */}
-        <button
-          onClick={() => setIsHistoryOpen(true)}
-          className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 px-2.5 py-1 rounded-lg font-bold flex items-center gap-1.5 transition"
-        >
-          <FileText className="w-3.5 h-3.5 text-sky-400" />
-          سجل الفواتير ({store.invoices.length})
-        </button>
-
-        {/* زر دفتر النواقص الذكي وتوليد طلبية المستودع */}
-        <button
-          onClick={() => setIsShortagesOpen(true)}
-          className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 px-2.5 py-1 rounded-lg font-bold flex items-center gap-1.5 transition"
-        >
-          <ClipboardList className="w-3.5 h-3.5 text-amber-400" />
-          دفتر النواقص والطلبيات
-          {shortagesCount > 0 && (
-            <span className="bg-rose-600 text-white font-mono text-[10px] px-1.5 rounded-full">
-              {shortagesCount}
-            </span>
-          )}
-        </button>
-      </div>
-
       {/* شريط التحذير الطبي الوامض (تداخل دوائي) */}
       {store.interactionAlerts.length > 0 && (
         <InteractionAlertBar alerts={store.interactionAlerts} />
       )}
 
-      {/* شريط تبويبات الزبائن والفواتير المعلقة (Alt+1 .. Alt+9) */}
+      {/* شريط تبويبات الزبائن والفواتير المعلقة (Alt+1..9) + زر سجل الفواتير المدمج */}
       <HeldInvoicesBar
         heldInvoices={store.heldInvoices}
         onResume={(id) => store.resumeInvoice(id)}
@@ -289,6 +254,8 @@ export const POSView: React.FC = () => {
         activeCartCount={store.cart.length}
         activeCartTotal={cartNetTotal}
         onHoldCurrent={() => store.holdCurrentInvoice()}
+        invoicesCount={store.invoices.length}
+        onOpenHistory={() => setIsHistoryOpen(true)}
       />
 
       <div className="flex-1 flex overflow-hidden">
@@ -313,6 +280,7 @@ export const POSView: React.FC = () => {
           heldCount={store.heldInvoices.length}
           returnSourceInvoiceId={store.returnSourceInvoiceId}
           recentSaleInvoices={recentSaleInvoices}
+          isShortcutsPaused={isAnyModalOpen}
           onLoadInvoiceForReturn={store.loadInvoiceForReturn}
           onSetDiscount={store.setDiscountPercent}
           onSetPaymentMode={store.setPaymentMode}
@@ -356,12 +324,6 @@ export const POSView: React.FC = () => {
       <InvoicesHistoryModal
         isOpen={isHistoryOpen}
         onClose={() => setIsHistoryOpen(false)}
-      />
-
-      {/* نافذة دفتر النواقص الذكي وتوليد طلبية المستودع */}
-      <ShortagesOrderModal
-        isOpen={isShortagesOpen}
-        onClose={() => setIsShortagesOpen(false)}
       />
     </div>
   );

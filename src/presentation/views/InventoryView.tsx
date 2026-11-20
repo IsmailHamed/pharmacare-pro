@@ -6,10 +6,11 @@ import { AddProductModal } from "../components/inventory/AddProductModal";
 import { StockAdjustmentModal } from "../components/inventory/StockAdjustmentModal";
 import { InventoryHeaderActions } from "../components/inventory/InventoryHeaderActions";
 import { InventoryStockTab } from "../components/inventory/InventoryStockTab";
+import { InventoryShortagesTab } from "../components/inventory/InventoryShortagesTab";
 import { InventoryLossesTab } from "../components/inventory/InventoryLossesTab";
-import { ClipboardCheck, Package } from "lucide-react";
+import { ClipboardCheck, ClipboardList, Package } from "lucide-react";
 
-type InventorySubTab = "stock" | "losses";
+type InventorySubTab = "stock" | "shortages" | "losses";
 
 export const InventoryView: React.FC = () => {
   const {
@@ -43,6 +44,15 @@ export const InventoryView: React.FC = () => {
     }
   }, [canViewCost, activeSubTab]);
 
+  // استخراج وترتيب الأصناف الواقعة عند أو تحت حد الطلب لتبويب دفتر النواقص والطلبيات
+  const shortageProducts = useMemo(
+    () =>
+      products
+        .filter((p) => p.stockPacks <= p.minLimit)
+        .sort((a, b) => a.stockPacks - b.stockPacks),
+    [products],
+  );
+
   // سجل التوالف والفروقات الجردية المقيدة مالياً
   const inventoryLossLogs = useMemo(
     () => expenses.filter((e) => e.shiftId === "INVENTORY-LOSS"),
@@ -60,31 +70,55 @@ export const InventoryView: React.FC = () => {
         onApplyBulkPricing={applyBulkPricing}
       />
 
-      {/* شريط التبويبات الداخلية (يظهر عند توفر صلاحية عرض التكلفة وسجل التوالف) */}
-      {canViewCost && (
-        <div className="mb-5 flex items-center gap-2 bg-slate-900 p-1.5 rounded-xl border border-slate-800 w-fit">
-          <button
-            type="button"
-            onClick={() => setActiveSubTab("stock")}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-bold transition ${
+      {/* شريط التبويبات الداخلية: المخزون + دفتر النواقص + سجل التوالف (وفق الصلاحيات) */}
+      <div className="mb-5 flex items-center gap-2 flex-wrap bg-slate-900 p-1.5 rounded-xl border border-slate-800 w-fit">
+        <button
+          type="button"
+          onClick={() => setActiveSubTab("stock")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg font-bold transition ${
+            activeSubTab === "stock"
+              ? "bg-amber-600 text-white shadow-md"
+              : "text-slate-400 hover:text-white hover:bg-slate-800"
+          }`}
+        >
+          <Package className="w-4 h-4" />
+          المخزون ورادار الصلاحيات
+          <span
+            className={`font-mono text-[10px] px-1.5 py-0.5 rounded-full ${
               activeSubTab === "stock"
-                ? "bg-amber-600 text-white shadow-md"
-                : "text-slate-400 hover:text-white hover:bg-slate-800"
+                ? "bg-amber-950/50 text-amber-100"
+                : "bg-slate-800 text-slate-300"
             }`}
           >
-            <Package className="w-4 h-4" />
-            المخزون ورادار الصلاحيات
-            <span
-              className={`font-mono text-[10px] px-1.5 py-0.5 rounded-full ${
-                activeSubTab === "stock"
-                  ? "bg-amber-950/50 text-amber-100"
-                  : "bg-slate-800 text-slate-300"
-              }`}
-            >
-              {products.length}
-            </span>
-          </button>
+            {products.length}
+          </span>
+        </button>
 
+        <button
+          type="button"
+          onClick={() => setActiveSubTab("shortages")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg font-bold transition ${
+            activeSubTab === "shortages"
+              ? "bg-sky-600 text-white shadow-md"
+              : "text-slate-400 hover:text-white hover:bg-slate-800"
+          }`}
+        >
+          <ClipboardList className="w-4 h-4" />
+          دفتر النواقص والطلبيات
+          <span
+            className={`font-mono text-[10px] px-1.5 py-0.5 rounded-full ${
+              activeSubTab === "shortages"
+                ? "bg-sky-950/60 text-sky-100"
+                : shortageProducts.length > 0
+                  ? "bg-rose-600 text-white"
+                  : "bg-slate-800 text-slate-400"
+            }`}
+          >
+            {shortageProducts.length}
+          </span>
+        </button>
+
+        {canViewCost && (
           <button
             type="button"
             onClick={() => setActiveSubTab("losses")}
@@ -108,8 +142,8 @@ export const InventoryView: React.FC = () => {
               {inventoryLossLogs.length}
             </span>
           </button>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* التبويب الأول: المخزون ورادار الصلاحيات */}
       {activeSubTab === "stock" && (
@@ -121,7 +155,15 @@ export const InventoryView: React.FC = () => {
         />
       )}
 
-      {/* التبويب الثاني: سجل التوالف والكسور والفروقات الجردية المقيدة مالياً */}
+      {/* التبويب الثاني: دفتر النواقص الذكي وتوليد طلبية المستودع */}
+      {activeSubTab === "shortages" && (
+        <InventoryShortagesTab
+          shortageProducts={shortageProducts}
+          canViewCost={canViewCost}
+        />
+      )}
+
+      {/* التبويب الثالث: سجل التوالف والكسور والفروقات الجردية المقيدة مالياً */}
       {canViewCost && activeSubTab === "losses" && (
         <InventoryLossesTab logs={inventoryLossLogs} />
       )}
