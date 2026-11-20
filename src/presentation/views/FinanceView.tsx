@@ -190,13 +190,17 @@ export const FinanceView: React.FC = () => {
     }));
   }, [purchaseInvoices, ledgerPayments]);
 
-  // عدّاد حسابات الذمم المفتوحة (عملاء + مستودعات) لعرضه على زر تبويب الذمم
-  const openLedgerCount = useMemo(
-    () =>
-      customerAccounts.filter((a) => a.remainingBalance > 0).length +
-      supplierAccounts.filter((a) => a.remainingBalance > 0).length,
-    [customerAccounts, supplierAccounts],
-  );
+  // عدّاد حسابات الذمم المفتوحة وفق صلاحية المستخدم الحالي (العملاء فقط لغير المخولين بالمستودعات)
+  const openLedgerCount = useMemo(() => {
+    const openCustomers = customerAccounts.filter(
+      (a) => a.remainingBalance > 0,
+    ).length;
+    if (!canViewCostAndProfit) return openCustomers;
+    const openSuppliers = supplierAccounts.filter(
+      (a) => a.remainingBalance > 0,
+    ).length;
+    return openCustomers + openSuppliers;
+  }, [customerAccounts, supplierAccounts, canViewCostAndProfit]);
 
   return (
     <div className="flex-1 p-6 overflow-y-auto bg-slate-950 text-slate-200 text-xs">
@@ -337,12 +341,17 @@ export const FinanceView: React.FC = () => {
         </div>
       )}
 
-      {/* التبويب الثاني: دفتر ديون العملاء وذمم المستودعات */}
+      {/* التبويب الثاني: الذمم والآجل بنظام القائمة + كشف الحساب التفاعلي وسجل السندات */}
       {activeSubTab === "ledger" && (
         <LedgerAccountsSection
           customerAccounts={customerAccounts}
           supplierAccounts={supplierAccounts}
           onRecordPayment={recordLedgerPayment}
+          invoices={invoices}
+          purchaseInvoices={purchaseInvoices}
+          ledgerPayments={ledgerPayments || []}
+          openShift={openShift}
+          canViewSuppliers={canViewCostAndProfit}
         />
       )}
 
