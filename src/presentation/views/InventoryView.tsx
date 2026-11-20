@@ -12,6 +12,11 @@ import { ClipboardCheck, ClipboardList, Package } from "lucide-react";
 
 type InventorySubTab = "stock" | "shortages" | "losses";
 
+interface AdjustmentTarget {
+  product: ProductEntity;
+  batchId?: string;
+}
+
 export const InventoryView: React.FC = () => {
   const {
     products,
@@ -34,8 +39,8 @@ export const InventoryView: React.FC = () => {
   const [barcodeProduct, setBarcodeProduct] = useState<ProductEntity | null>(
     null,
   );
-  const [adjustmentProduct, setAdjustmentProduct] =
-    useState<ProductEntity | null>(null);
+  const [adjustmentTarget, setAdjustmentTarget] =
+    useState<AdjustmentTarget | null>(null);
 
   // إغلاق آمن: العودة تلقائياً لتبويب المخزون إذا تم تبديل المستخدم لحساب لا يملك صلاحية عرض التكلفة والخسائر
   useEffect(() => {
@@ -59,9 +64,12 @@ export const InventoryView: React.FC = () => {
     [expenses],
   );
 
+  const isExternalModalOpen =
+    showAddModal || Boolean(barcodeProduct) || Boolean(adjustmentTarget);
+
   return (
     <div className="flex-1 p-6 overflow-y-auto bg-slate-950 text-slate-200 text-xs">
-      {/* الترويسة العليا وإجراءات الإضافة والإكسل والتسعير الجماعي */}
+      {/* الترويسة العليا المدمجة: زر إضافة رئيسي + قائمة أدوات المخزون المنسدلة */}
       <InventoryHeaderActions
         products={products}
         canBulkPricing={canBulkPricing}
@@ -71,7 +79,7 @@ export const InventoryView: React.FC = () => {
       />
 
       {/* شريط التبويبات الداخلية: المخزون + دفتر النواقص + سجل التوالف (وفق الصلاحيات) */}
-      <div className="mb-5 flex items-center gap-2 flex-wrap bg-slate-900 p-1.5 rounded-xl border border-slate-800 w-fit">
+      <div className="mb-4 flex items-center gap-2 flex-wrap bg-slate-900 p-1.5 rounded-xl border border-slate-800 w-fit">
         <button
           type="button"
           onClick={() => setActiveSubTab("stock")}
@@ -145,13 +153,16 @@ export const InventoryView: React.FC = () => {
         )}
       </div>
 
-      {/* التبويب الأول: المخزون ورادار الصلاحيات */}
+      {/* التبويب الأول: المخزون ورادار الصلاحيات بالجدول الكامل ونافذة التفاصيل */}
       {activeSubTab === "stock" && (
         <InventoryStockTab
           products={products}
           invoices={invoices}
+          isExternalModalOpen={isExternalModalOpen}
           onPrintBarcode={setBarcodeProduct}
-          onAdjustStock={setAdjustmentProduct}
+          onAdjustStock={(product, batchId) =>
+            setAdjustmentTarget({ product, batchId })
+          }
         />
       )}
 
@@ -175,8 +186,9 @@ export const InventoryView: React.FC = () => {
       />
 
       <StockAdjustmentModal
-        product={adjustmentProduct}
-        onClose={() => setAdjustmentProduct(null)}
+        product={adjustmentTarget?.product ?? null}
+        initialBatchId={adjustmentTarget?.batchId}
+        onClose={() => setAdjustmentTarget(null)}
       />
 
       <AddProductModal

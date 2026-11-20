@@ -12,12 +12,17 @@ import {
 
 interface Props {
   product: ProductEntity | null;
+  initialBatchId?: string;
   onClose: () => void;
 }
 
 type AdjustmentReasonType = "STOCKTAKING" | "DAMAGED" | "EXPIRED" | "SHORTAGE";
 
-export const StockAdjustmentModal: React.FC<Props> = ({ product, onClose }) => {
+export const StockAdjustmentModal: React.FC<Props> = ({
+  product,
+  initialBatchId,
+  onClose,
+}) => {
   const { adjustProductStock } = usePosStore();
 
   // قراءة صلاحيتي رؤية التكلفة وتسوية الجرد من المستخدم الحالي (القيمة الافتراضية الآمنة: false)
@@ -39,11 +44,29 @@ export const StockAdjustmentModal: React.FC<Props> = ({ product, onClose }) => {
     if (!product) return;
     setActualPacks(String(product.stockPacks));
     setActualLooseStrips(String(product.stockLooseStrips));
-    setTargetBatchId("AUTO_FIFO");
+
+    const hasInitialBatch =
+      Boolean(initialBatchId) &&
+      product.batches.some((b) => b.id === initialBatchId);
+    setTargetBatchId(hasInitialBatch ? initialBatchId! : "AUTO_FIFO");
+
     setReason("STOCKTAKING");
     setNotes("");
     setRecordLossInFinance(true);
-  }, [product]);
+  }, [product, initialBatchId]);
+
+  // إغلاق النافذة بزر Escape
+  useEffect(() => {
+    if (!product) return;
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleEsc);
+    return () => window.removeEventListener("keydown", handleEsc);
+  }, [product, onClose]);
 
   if (!product) return null;
 
@@ -98,7 +121,12 @@ export const StockAdjustmentModal: React.FC<Props> = ({ product, onClose }) => {
   };
 
   return (
-    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4 text-xs">
+    <div
+      className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4 text-xs"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
       <form
         onSubmit={(e) => void handleSubmit(e)}
         className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl"
