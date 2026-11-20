@@ -24,6 +24,9 @@ import {
   Clock,
   CheckCircle2,
   Keyboard,
+  X,
+  Eye,
+  HandCoins,
 } from "lucide-react";
 
 type LedgerScope = "customers" | "suppliers" | "vouchers";
@@ -61,8 +64,8 @@ const sortLedgerAccounts = (
   });
 
 /**
- * تبويب الذمم والآجل بتصميم القائمة + كشف الحساب (Master–Detail)
- * يضم ذمم العملاء، ذمم المستودعات (محمية بالصلاحيات)، وسجل السندات الموحد مع اختصارات الكيبورد
+ * تبويب الذمم والآجل بجدول كامل العرض (Full-Width Table)
+ * النقر على أي عميل أو مستودع يفتح نافذة منبثقة (Modal) بكشف الحساب وتفاصيل العمليات
  */
 export const LedgerAccountsSection: React.FC<Props> = ({
   customerAccounts,
@@ -95,9 +98,10 @@ export const LedgerAccountsSection: React.FC<Props> = ({
   const [activeScope, setActiveScope] = useState<LedgerScope>("customers");
   const [searchQuery, setSearchQuery] = useState("");
   const [balanceFilter, setBalanceFilter] = useState<BalanceFilter>("ALL");
-  const [selectedPartyName, setSelectedPartyName] = useState<string | null>(
-    null,
-  );
+  const [highlightedPartyName, setHighlightedPartyName] = useState<
+    string | null
+  >(null);
+  const [modalPartyName, setModalPartyName] = useState<string | null>(null);
 
   const [paymentParty, setPaymentParty] = useState<PartyAccountSummary | null>(
     null,
@@ -106,12 +110,14 @@ export const LedgerAccountsSection: React.FC<Props> = ({
     useState<LedgerVoucherReceiptData | null>(null);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const itemButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
 
   // إغلاق آمن: العودة تلقائياً لذمم العملاء إذا تبدّل المستخدم لحساب لا يملك صلاحية ذمم المستودعات
   useEffect(() => {
     if (!hasSuppliersAccess && activeScope === "suppliers") {
       setActiveScope("customers");
+      setModalPartyName(null);
+      setHighlightedPartyName(null);
     }
   }, [hasSuppliersAccess, activeScope]);
 
@@ -173,28 +179,53 @@ export const LedgerAccountsSection: React.FC<Props> = ({
     );
   }, [activeSourceAccounts, searchQuery, balanceFilter]);
 
-  // اختيار الطرف النشط تلقائياً مع تحديث بياناته اللحظية بعد أي سند
-  const selectedAccount = useMemo<PartyAccountSummary | null>(() => {
+  // الصف المظلّل للتنقل السريع بالكيبورد
+  const highlightedAccount = useMemo<PartyAccountSummary | null>(() => {
     if (filteredAccounts.length === 0) return null;
-    if (selectedPartyName) {
+    if (highlightedPartyName) {
       const match = filteredAccounts.find(
-        (acc) => acc.partyName === selectedPartyName,
+        (acc) => acc.partyName === highlightedPartyName,
       );
       if (match) return match;
     }
     return filteredAccounts[0];
-  }, [filteredAccounts, selectedPartyName]);
+  }, [filteredAccounts, highlightedPartyName]);
 
-  // تمرير البطاقة المحددة داخل القائمة تلقائياً عند التنقل بالأسهم
-  useEffect(() => {
-    if (!selectedAccount || activeScope === "vouchers") return;
-    const btn = itemButtonRefs.current[selectedAccount.partyName];
-    btn?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }, [selectedAccount, activeScope]);
+  // الطرف المفتوح داخل نافذة تفاصيل العمليات (يتحدث لحظياً بعد أي سند حتى لو أصبح الرصيد 0)
+  const modalParty = useMemo<PartyAccountSummary | null>(() => {
+    if (!modalPartyName) return null;
+    return (
+      activeSourceAccounts.find((acc) => acc.partyName === modalPartyName) ||
+      null
+    );
+  }, [activeSourceAccounts, modalPartyName]);
 
-  // اختصارات «صفر ماوس»: ↑ و ↓ للتنقل، Enter لفتح السند، / أو F2 للبحث
+  // تمرير الصف المحدد تلقائياً عند التنقل بالأسهم
   useEffect(() => {
-    const isModalOpen = Boolean(paymentParty) || Boolean(receiptVoucher);
+    if (!highlightedAccount || activeScope === "vouchers") return;
+    const row = rowRefs.current[highlightedAccount.partyName];
+    row?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [highlightedAccount, activeScope]);
+
+  // إغلاق نافذة تفاصيل العمليات بزر Escape (فقط عند عدم فتح نافذة السند أو الإيصال فوقها)
+  useEffect(() => {
+    if (!modalPartyName || paymentParty || receiptVoucher) return;
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setModalPartyName(null);
+      }
+    };
+    window.addEventListener("keydown", handleEsc);
+    return () => window.removeEventListener("keydown", handleEsc);
+  }, [modalPartyName, paymentParty, receiptVoucher]);
+
+  // اختصارات «صفر ماوس»: ↑ و ↓ للتنقل، Enter لفتح نافذة التفاصيل، / أو F2 للبحث
+  useEffect(() => {
+    const isModalOpen =
+      Boolean(modalPartyName) ||
+      Boolean(paymentParty) ||
+      Boolean(receiptVoucher);
     if (isModalOpen || activeScope === "vouchers") return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -222,9 +253,9 @@ export const LedgerAccountsSection: React.FC<Props> = ({
         if (isEditable && !isSearchInput) return;
         e.preventDefault();
 
-        const currentIndex = selectedAccount
+        const currentIndex = highlightedAccount
           ? filteredAccounts.findIndex(
-              (a) => a.partyName === selectedAccount.partyName,
+              (a) => a.partyName === highlightedAccount.partyName,
             )
           : -1;
         const delta = e.key === "ArrowDown" ? 1 : -1;
@@ -234,7 +265,7 @@ export const LedgerAccountsSection: React.FC<Props> = ({
             : (currentIndex + delta + filteredAccounts.length) %
               filteredAccounts.length;
 
-        setSelectedPartyName(filteredAccounts[nextIndex].partyName);
+        setHighlightedPartyName(filteredAccounts[nextIndex].partyName);
         return;
       }
 
@@ -249,9 +280,9 @@ export const LedgerAccountsSection: React.FC<Props> = ({
           return;
         }
         if (isEditable && !isSearchInput) return;
-        if (selectedAccount && selectedAccount.remainingBalance > 0) {
+        if (highlightedAccount) {
           e.preventDefault();
-          setPaymentParty(selectedAccount);
+          setModalPartyName(highlightedAccount.partyName);
         }
       }
     };
@@ -259,16 +290,18 @@ export const LedgerAccountsSection: React.FC<Props> = ({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [
+    modalPartyName,
     paymentParty,
     receiptVoucher,
     activeScope,
     filteredAccounts,
-    selectedAccount,
+    highlightedAccount,
   ]);
 
   const handleSwitchScope = (nextScope: LedgerScope) => {
     setActiveScope(nextScope);
-    setSelectedPartyName(null);
+    setHighlightedPartyName(null);
+    setModalPartyName(null);
     setSearchQuery("");
   };
 
@@ -370,14 +403,14 @@ export const LedgerAccountsSection: React.FC<Props> = ({
             <Keyboard className="w-3.5 h-3.5 text-sky-400" />
             <span>↑/↓ تنقل</span>
             <span>•</span>
-            <span>Enter سند</span>
+            <span>Enter تفاصيل العمليات</span>
             <span>•</span>
             <span>F2 / بحث</span>
           </div>
         )}
       </div>
 
-      {/* عرض سجل السندات الموحد أو شاشة القائمة + كشف الحساب (Master–Detail) */}
+      {/* عرض سجل السندات الموحد أو جدول الحسابات بعرض الصفحة الكامل */}
       {activeScope === "vouchers" ? (
         <LedgerVouchersLog
           ledgerPayments={resolvedLedgerPayments}
@@ -385,11 +418,10 @@ export const LedgerAccountsSection: React.FC<Props> = ({
           onReprintVoucher={setReceiptVoucher}
         />
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
-          {/* العمود الأيمن (~38%): قائمة الحسابات المدمجة مع البحث والفلاتر وعمر الدين */}
-          <div className="lg:col-span-5 bg-slate-900 border border-slate-800 rounded-2xl p-3.5 space-y-3">
-            {/* خانة البحث السريع */}
-            <div className="relative">
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3.5">
+          {/* شريط البحث وفلاتر الحالة */}
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="relative flex-1 min-w-[240px]">
               <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
               <input
                 ref={searchInputRef}
@@ -405,7 +437,6 @@ export const LedgerAccountsSection: React.FC<Props> = ({
               />
             </div>
 
-            {/* فلاتر الحالة وعمر الدين */}
             <div className="flex items-center gap-1.5 flex-wrap">
               {(
                 [
@@ -429,7 +460,7 @@ export const LedgerAccountsSection: React.FC<Props> = ({
                   key={pill.id}
                   type="button"
                   onClick={() => setBalanceFilter(pill.id)}
-                  className={`px-2.5 py-1 rounded-lg text-[10.5px] font-bold border transition ${
+                  className={`px-3 py-1.5 rounded-lg text-[11px] font-bold border transition ${
                     balanceFilter === pill.id
                       ? pill.id === "OVERDUE_30"
                         ? "bg-rose-950/70 border-rose-700 text-rose-300"
@@ -443,128 +474,197 @@ export const LedgerAccountsSection: React.FC<Props> = ({
                 </button>
               ))}
             </div>
-
-            {/* قائمة بطاقات الأطراف */}
-            {activeSourceAccounts.length === 0 ? (
-              <div className="py-14 text-center text-slate-500">
-                {isSupplierScope
-                  ? "لا توجد فواتير شراء آجلة مستحقة للمستودعات حالياً."
-                  : "لا توجد فواتير مبيعات آجلة مسجلة على العملاء حالياً."}
-              </div>
-            ) : filteredAccounts.length === 0 ? (
-              <div className="py-12 text-center text-slate-500">
-                لا توجد حسابات مطابقة لخيارات البحث أو الفلترة الحالية.
-              </div>
-            ) : (
-              <div className="space-y-2 max-h-[460px] overflow-y-auto pr-0.5">
-                {filteredAccounts.map((acc) => {
-                  const isSelected =
-                    selectedAccount?.partyName === acc.partyName;
-                  const ageDays = getDebtAgeDays(acc.lastTransactionAt);
-                  const settledPercent =
-                    acc.totalCreditAmount > 0
-                      ? Math.min(
-                          100,
-                          Math.round(
-                            (acc.totalPaidAmount / acc.totalCreditAmount) * 100,
-                          ),
-                        )
-                      : 100;
-
-                  return (
-                    <button
-                      key={acc.partyName}
-                      ref={(el) => {
-                        itemButtonRefs.current[acc.partyName] = el;
-                      }}
-                      type="button"
-                      onClick={() => setSelectedPartyName(acc.partyName)}
-                      className={`w-full text-right rounded-xl p-3 border transition space-y-2 ${
-                        isSelected
-                          ? isSupplierScope
-                            ? "bg-purple-950/35 border-purple-500 shadow-[0_0_12px_rgba(168,85,247,0.16)]"
-                            : "bg-sky-950/35 border-sky-500 shadow-[0_0_12px_rgba(14,165,233,0.16)]"
-                          : "bg-slate-950 border-slate-800 hover:border-slate-700"
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0 flex-1">
-                          <div className="font-bold text-white truncate">
-                            {acc.partyName}
-                          </div>
-                          <div className="mt-1 flex items-center gap-1.5 flex-wrap">
-                            {acc.remainingBalance > 0 ? (
-                              <span
-                                className={`inline-flex items-center gap-1 text-[9.5px] font-mono font-bold px-1.5 py-0.5 rounded border ${
-                                  ageDays > 60
-                                    ? "bg-rose-950/70 border-rose-800 text-rose-300"
-                                    : ageDays > 30
-                                      ? "bg-amber-950/70 border-amber-800 text-amber-300"
-                                      : "bg-emerald-950/50 border-emerald-800 text-emerald-300"
-                                }`}
-                              >
-                                <Clock className="w-2.5 h-2.5" />
-                                {ageDays === 0 ? "اليوم" : `${ageDays} يوم`}
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 text-[9.5px] font-bold px-1.5 py-0.5 rounded bg-emerald-950/60 border border-emerald-800 text-emerald-300">
-                                <CheckCircle2 className="w-2.5 h-2.5" /> مسدد
-                              </span>
-                            )}
-
-                            <span className="text-[10px] text-slate-500 font-mono">
-                              آجل: {acc.totalCreditAmount.toFixed(0)}
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="text-left shrink-0">
-                          <div className="text-[9.5px] text-slate-400">
-                            المتبقي
-                          </div>
-                          <div
-                            className={`font-mono font-extrabold text-sm ${
-                              acc.remainingBalance > 0
-                                ? isSupplierScope
-                                  ? "text-rose-400"
-                                  : "text-amber-400"
-                                : "text-emerald-400"
-                            }`}
-                          >
-                            {acc.remainingBalance.toFixed(2)}
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* شريط نسبة السداد الرفيع */}
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1 h-1 bg-slate-800 rounded-full overflow-hidden">
-                          <div
-                            className="h-full bg-emerald-500 rounded-full transition-all"
-                            style={{ width: `${settledPercent}%` }}
-                          />
-                        </div>
-                        <span className="font-mono text-[9.5px] text-slate-400">
-                          {settledPercent}%
-                        </span>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
           </div>
 
-          {/* العمود الأيسر (~62%): كشف الحساب التفاعلي للطرف المحدد */}
-          <div className="lg:col-span-7">
-            <LedgerPartyStatement
-              party={selectedAccount}
-              invoices={resolvedInvoices}
-              purchaseInvoices={resolvedPurchaseInvoices}
-              ledgerPayments={resolvedLedgerPayments}
-              onOpenPayment={setPaymentParty}
-              onReprintVoucher={setReceiptVoucher}
-            />
+          {/* جدول الحسابات بعرض الصفحة الكامل (بدون شريط نسبة التسديد) */}
+          {activeSourceAccounts.length === 0 ? (
+            <div className="py-16 text-center text-slate-500">
+              {isSupplierScope
+                ? "لا توجد فواتير شراء آجلة مستحقة للمستودعات حالياً."
+                : "لا توجد فواتير مبيعات آجلة مسجلة على العملاء حالياً."}
+            </div>
+          ) : filteredAccounts.length === 0 ? (
+            <div className="py-14 text-center text-slate-500">
+              لا توجد حسابات مطابقة لخيارات البحث أو الفلترة الحالية.
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-xl border border-slate-800">
+              <table className="w-full text-right text-xs">
+                <thead className="bg-slate-950 text-slate-400 border-b border-slate-800 text-[11px]">
+                  <tr>
+                    <th className="py-2.5 px-3">
+                      {isSupplierScope ? "اسم المستودع" : "اسم العميل"}
+                    </th>
+                    <th className="py-2.5 px-3">الحالة وعمر الدين</th>
+                    <th className="py-2.5 px-3">آخر حركة</th>
+                    <th className="py-2.5 px-3">إجمالي الآجل</th>
+                    <th className="py-2.5 px-3">إجمالي المسدد</th>
+                    <th className="py-2.5 px-3">الرصيد المتبقي</th>
+                    <th className="py-2.5 px-3 text-left">إجراءات</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/70">
+                  {filteredAccounts.map((acc) => {
+                    const isHighlighted =
+                      highlightedAccount?.partyName === acc.partyName;
+                    const ageDays = getDebtAgeDays(acc.lastTransactionAt);
+
+                    return (
+                      <tr
+                        key={acc.partyName}
+                        ref={(el) => {
+                          rowRefs.current[acc.partyName] = el;
+                        }}
+                        onClick={() => {
+                          setHighlightedPartyName(acc.partyName);
+                          setModalPartyName(acc.partyName);
+                        }}
+                        className={`cursor-pointer transition ${
+                          isHighlighted
+                            ? isSupplierScope
+                              ? "bg-purple-950/30"
+                              : "bg-sky-950/30"
+                            : "bg-slate-950/40 hover:bg-slate-800/60"
+                        }`}
+                      >
+                        <td className="py-3 px-3 font-bold text-white">
+                          {acc.partyName}
+                        </td>
+
+                        <td className="py-3 px-3">
+                          {acc.remainingBalance > 0 ? (
+                            <span
+                              className={`inline-flex items-center gap-1 text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border ${
+                                ageDays > 60
+                                  ? "bg-rose-950/70 border-rose-800 text-rose-300"
+                                  : ageDays > 30
+                                    ? "bg-amber-950/70 border-amber-800 text-amber-300"
+                                    : "bg-emerald-950/50 border-emerald-800 text-emerald-300"
+                              }`}
+                            >
+                              <Clock className="w-3 h-3" />
+                              {ageDays === 0 ? "اليوم" : `${ageDays} يوم`}
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-950/60 border border-emerald-800 text-emerald-300">
+                              <CheckCircle2 className="w-3 h-3" /> مسدد بالكامل
+                            </span>
+                          )}
+                        </td>
+
+                        <td className="py-3 px-3 font-mono text-[11px] text-slate-400">
+                          {new Date(acc.lastTransactionAt).toLocaleDateString(
+                            "ar-SA",
+                          )}
+                        </td>
+
+                        <td className="py-3 px-3 font-mono text-slate-200">
+                          {acc.totalCreditAmount.toFixed(2)} ر.س
+                        </td>
+
+                        <td className="py-3 px-3 font-mono text-emerald-400">
+                          {acc.totalPaidAmount.toFixed(2)} ر.س
+                        </td>
+
+                        <td
+                          className={`py-3 px-3 font-mono font-extrabold text-sm ${
+                            acc.remainingBalance > 0
+                              ? isSupplierScope
+                                ? "text-rose-400"
+                                : "text-amber-400"
+                              : "text-emerald-400"
+                          }`}
+                        >
+                          {acc.remainingBalance.toFixed(2)} ر.س
+                        </td>
+
+                        <td className="py-3 px-3">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setHighlightedPartyName(acc.partyName);
+                                setModalPartyName(acc.partyName);
+                              }}
+                              className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-bold text-[11px] inline-flex items-center gap-1 transition"
+                            >
+                              <Eye className="w-3.5 h-3.5 text-sky-400" />
+                              التفاصيل
+                            </button>
+
+                            {acc.remainingBalance > 0 && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setHighlightedPartyName(acc.partyName);
+                                  setPaymentParty(acc);
+                                }}
+                                className={`px-2.5 py-1.5 rounded-lg text-white font-bold text-[11px] inline-flex items-center gap-1 transition ${
+                                  isSupplierScope
+                                    ? "bg-purple-600 hover:bg-purple-500"
+                                    : "bg-sky-600 hover:bg-sky-500"
+                                }`}
+                              >
+                                <HandCoins className="w-3.5 h-3.5" />
+                                {isSupplierScope ? "سند صرف" : "سند قبض"}
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* نافذة تفاصيل العمليات وكشف الحساب التراكمي عند الضغط على صف العميل / المستودع */}
+      {modalParty && (
+        <div
+          className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-40 p-4 text-xs"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setModalPartyName(null);
+            }
+          }}
+        >
+          <div className="bg-slate-950 border border-slate-700 rounded-2xl w-full max-w-4xl max-h-[88vh] flex flex-col overflow-hidden shadow-2xl">
+            <div className="px-4 py-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-2 min-w-0">
+                {modalParty.partyType === "SUPPLIER" ? (
+                  <Building2 className="w-4 h-4 text-purple-400 shrink-0" />
+                ) : (
+                  <Users className="w-4 h-4 text-sky-400 shrink-0" />
+                )}
+                <h3 className="font-bold text-white text-sm truncate">
+                  تفاصيل العمليات وكشف حساب: {modalParty.partyName}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setModalPartyName(null)}
+                className="text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 p-1.5 rounded-lg transition"
+                title="إغلاق (Esc)"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-4 overflow-y-auto flex-1">
+              <LedgerPartyStatement
+                party={modalParty}
+                invoices={resolvedInvoices}
+                purchaseInvoices={resolvedPurchaseInvoices}
+                ledgerPayments={resolvedLedgerPayments}
+                onOpenPayment={setPaymentParty}
+                onReprintVoucher={setReceiptVoucher}
+              />
+            </div>
           </div>
         </div>
       )}
