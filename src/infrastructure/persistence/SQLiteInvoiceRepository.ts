@@ -334,8 +334,9 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
     if (isTauriDesktop() && sqliteRaw) {
       await sqliteRaw.execute(
         `INSERT OR REPLACE INTO cash_expenses (
-          id, title, category, amount, notes, shift_id, created_at, branch_id
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8);`,
+          id, title, category, amount, notes, shift_id,
+          performed_by_user_id, performed_by_name, created_at, branch_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);`,
         [
           expense.id,
           expense.title,
@@ -343,6 +344,8 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
           expense.amount,
           expense.notes || null,
           expense.shiftId,
+          expense.performedByUserId || null,
+          expense.performedByName || null,
           expense.createdAt,
           expense.branchId,
         ],
@@ -381,6 +384,12 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
           amount: Number(r.amount),
           notes: r.notes ? String(r.notes) : undefined,
           shiftId: String(r.shift_id),
+          performedByUserId: r.performed_by_user_id
+            ? String(r.performed_by_user_id)
+            : undefined,
+          performedByName: r.performed_by_name
+            ? String(r.performed_by_name)
+            : undefined,
           createdAt: String(r.created_at),
           branchId: String(r.branch_id),
         }));
@@ -430,8 +439,17 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
           const mapped: ShiftSummaryEntity[] = rows.map((r) => ({
             id: String(r.id),
             pharmacistName: String(r.pharmacist_name),
+            openedByUserId: r.opened_by_user_id
+              ? String(r.opened_by_user_id)
+              : undefined,
             openedAt: String(r.opened_at),
             closedAt: r.closed_at ? String(r.closed_at) : undefined,
+            closedByUserId: r.closed_by_user_id
+              ? String(r.closed_by_user_id)
+              : undefined,
+            closedByName: r.closed_by_name
+              ? String(r.closed_by_name)
+              : undefined,
             status: String(r.status) as "OPEN" | "CLOSED",
             openingBalance: Number(r.opening_balance),
             cashSalesTotal: Number(r.cash_sales_total),
@@ -569,14 +587,18 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
     if (isTauriDesktop() && sqliteRaw) {
       await sqliteRaw.execute(
         `INSERT OR REPLACE INTO ledger_payments (
-          id, party_type, party_name, amount, notes, created_at, branch_id
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7);`,
+          id, party_type, party_name, amount, notes, shift_id,
+          performed_by_user_id, performed_by_name, created_at, branch_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);`,
         [
           payment.id,
           payment.partyType,
           payment.partyName,
           payment.amount,
           payment.notes || null,
+          payment.shiftId || null,
+          payment.performedByUserId || null,
+          payment.performedByName || null,
           payment.createdAt,
           payment.branchId,
         ],
@@ -609,6 +631,13 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
             partyName: String(r.party_name),
             amount: Number(r.amount),
             notes: r.notes ? String(r.notes) : undefined,
+            shiftId: r.shift_id ? String(r.shift_id) : undefined,
+            performedByUserId: r.performed_by_user_id
+              ? String(r.performed_by_user_id)
+              : undefined,
+            performedByName: r.performed_by_name
+              ? String(r.performed_by_name)
+              : undefined,
             createdAt: String(r.created_at),
             branchId: String(r.branch_id),
           }));
@@ -630,18 +659,25 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
     if (!isTauriDesktop() || !sqliteRaw) return;
     await sqliteRaw.execute(
       `INSERT OR REPLACE INTO shifts (
-        id, pharmacist_name, opened_at, closed_at, status,
+        id, pharmacist_name, opened_by_user_id, opened_at, closed_at,
+        closed_by_user_id, closed_by_name, status,
         opening_balance, cash_sales_total, credit_sales_total,
         returns_total, credit_returns_total, debt_collections_total,
         supplier_payments_total, cash_purchases_total, petty_cash_total,
         expected_drawer_cash, actual_drawer_cash, variance,
         safe_drop_amount, next_shift_float, branch_id
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20);`,
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+        $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23
+      );`,
       [
         shift.id,
         shift.pharmacistName,
+        shift.openedByUserId || null,
         shift.openedAt,
         shift.closedAt || null,
+        shift.closedByUserId || null,
+        shift.closedByName || null,
         shift.status,
         shift.openingBalance,
         shift.cashSalesTotal,

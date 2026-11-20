@@ -12,7 +12,7 @@ export const isTauriDesktop = (): boolean => {
   );
 };
 
-// إنشاء الجداول الـ 10 تلقائياً وتفعيل WAL Mode عند الإقلاع بما يطابق schema.ts
+// إنشاء الجداول تلقائياً وتفعيل WAL Mode عند الإقلاع بما يطابق schema.ts
 const bootstrapSQLiteTables = async (db: Database) => {
   await db.execute("PRAGMA journal_mode = WAL;");
   await db.execute("PRAGMA synchronous = NORMAL;");
@@ -107,6 +107,8 @@ const bootstrapSQLiteTables = async (db: Database) => {
       amount REAL NOT NULL,
       notes TEXT,
       shift_id TEXT NOT NULL,
+      performed_by_user_id TEXT,
+      performed_by_name TEXT,
       created_at TEXT NOT NULL,
       branch_id TEXT DEFAULT 'MAIN_BRANCH' NOT NULL
     );
@@ -116,8 +118,11 @@ const bootstrapSQLiteTables = async (db: Database) => {
     CREATE TABLE IF NOT EXISTS shifts (
       id TEXT PRIMARY KEY NOT NULL,
       pharmacist_name TEXT NOT NULL,
+      opened_by_user_id TEXT,
       opened_at TEXT NOT NULL,
       closed_at TEXT,
+      closed_by_user_id TEXT,
+      closed_by_name TEXT,
       status TEXT NOT NULL,
       opening_balance REAL NOT NULL,
       cash_sales_total REAL NOT NULL DEFAULT 0,
@@ -136,23 +141,6 @@ const bootstrapSQLiteTables = async (db: Database) => {
       branch_id TEXT DEFAULT 'MAIN_BRANCH' NOT NULL
     );
   `);
-
-  // ترقية آمنة لجدول shifts إذا كانت قاعدة البيانات منشأة من إصدار أقدم
-  const alterShiftColumns = [
-    "ALTER TABLE shifts ADD COLUMN credit_returns_total REAL NOT NULL DEFAULT 0;",
-    "ALTER TABLE shifts ADD COLUMN debt_collections_total REAL NOT NULL DEFAULT 0;",
-    "ALTER TABLE shifts ADD COLUMN supplier_payments_total REAL NOT NULL DEFAULT 0;",
-    "ALTER TABLE shifts ADD COLUMN cash_purchases_total REAL NOT NULL DEFAULT 0;",
-    "ALTER TABLE shifts ADD COLUMN safe_drop_amount REAL DEFAULT 0;",
-    "ALTER TABLE shifts ADD COLUMN next_shift_float REAL DEFAULT 0;",
-  ];
-  for (const stmt of alterShiftColumns) {
-    try {
-      await db.execute(stmt);
-    } catch {
-      // العمود موجود مسبقاً
-    }
-  }
 
   await db.execute(`
     CREATE TABLE IF NOT EXISTS sync_queue (
@@ -175,6 +163,9 @@ const bootstrapSQLiteTables = async (db: Database) => {
       party_name TEXT NOT NULL,
       amount REAL NOT NULL,
       notes TEXT,
+      shift_id TEXT,
+      performed_by_user_id TEXT,
+      performed_by_name TEXT,
       created_at TEXT NOT NULL,
       branch_id TEXT DEFAULT 'MAIN_BRANCH' NOT NULL
     );
@@ -201,6 +192,34 @@ const bootstrapSQLiteTables = async (db: Database) => {
     );
   `);
 
+  // ترقية آمنة للأعمدة المضافة إذا كانت قاعدة البيانات منشأة من إصدار أقدم
+  const safeAlterStatements = [
+    // أعمدة جدول الورديات (shifts)
+    "ALTER TABLE shifts ADD COLUMN credit_returns_total REAL NOT NULL DEFAULT 0;",
+    "ALTER TABLE shifts ADD COLUMN debt_collections_total REAL NOT NULL DEFAULT 0;",
+    "ALTER TABLE shifts ADD COLUMN supplier_payments_total REAL NOT NULL DEFAULT 0;",
+    "ALTER TABLE shifts ADD COLUMN cash_purchases_total REAL NOT NULL DEFAULT 0;",
+    "ALTER TABLE shifts ADD COLUMN safe_drop_amount REAL DEFAULT 0;",
+    "ALTER TABLE shifts ADD COLUMN next_shift_float REAL DEFAULT 0;",
+    "ALTER TABLE shifts ADD COLUMN opened_by_user_id TEXT;",
+    "ALTER TABLE shifts ADD COLUMN closed_by_user_id TEXT;",
+    "ALTER TABLE shifts ADD COLUMN closed_by_name TEXT;",
+    // أعمدة توثيق المنفّذ في جدول المصاريف النثرية (cash_expenses)
+    "ALTER TABLE cash_expenses ADD COLUMN performed_by_user_id TEXT;",
+    "ALTER TABLE cash_expenses ADD COLUMN performed_by_name TEXT;",
+    // أعمدة ربط الوردية وتوثيق المنفّذ في جدول سندات الذمم (ledger_payments)
+    "ALTER TABLE ledger_payments ADD COLUMN shift_id TEXT;",
+    "ALTER TABLE ledger_payments ADD COLUMN performed_by_user_id TEXT;",
+    "ALTER TABLE ledger_payments ADD COLUMN performed_by_name TEXT;",
+  ];
+  for (const stmt of safeAlterStatements) {
+    try {
+      await db.execute(stmt);
+    } catch {
+      // العمود موجود مسبقاً
+    }
+  }
+
   // فهارس عالية الأداء لتسريع البحث بالباركود والاسم والمادة الفعالة وربط الدفعات عند وجود 10,000+ دواء
   await db.execute(
     "CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode);",
@@ -218,6 +237,14 @@ const bootstrapSQLiteTables = async (db: Database) => {
   // فهرس لتسريع البحث عن المستخدم بواسطة الرمز السري (PIN) أثناء تسجيل الدخول
   await db.execute(
     "CREATE INDEX IF NOT EXISTS idx_users_pin_code ON users(pin_code);",
+  );
+
+  // فهارس لربط وتسريع استعلامات المصاريف وسندات الذمم حسب الوردية
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_cash_expenses_shift_id ON cash_expenses(shift_id);",
+  );
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_ledger_payments_shift_id ON ledger_payments(shift_id);",
   );
 };
 

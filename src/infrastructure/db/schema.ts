@@ -103,6 +103,8 @@ export const cashExpensesTable = sqliteTable("cash_expenses", {
   amount: real("amount").notNull(),
   notes: text("notes"),
   shiftId: text("shift_id").notNull(),
+  performedByUserId: text("performed_by_user_id"),
+  performedByName: text("performed_by_name"),
   createdAt: text("created_at").notNull(),
   branchId: text("branch_id").notNull().default("MAIN_BRANCH"),
 });
@@ -113,8 +115,11 @@ export const cashExpensesTable = sqliteTable("cash_expenses", {
 export const shiftsTable = sqliteTable("shifts", {
   id: text("id").primaryKey(),
   pharmacistName: text("pharmacist_name").notNull(),
+  openedByUserId: text("opened_by_user_id"),
   openedAt: text("opened_at").notNull(),
   closedAt: text("closed_at"),
+  closedByUserId: text("closed_by_user_id"),
+  closedByName: text("closed_by_name"),
   status: text("status").notNull(), // OPEN | CLOSED
   openingBalance: real("opening_balance").notNull(),
   cashSalesTotal: real("cash_sales_total").notNull().default(0),
@@ -157,6 +162,9 @@ export const ledgerPaymentsTable = sqliteTable("ledger_payments", {
   partyName: text("party_name").notNull(),
   amount: real("amount").notNull(),
   notes: text("notes"),
+  shiftId: text("shift_id"),
+  performedByUserId: text("performed_by_user_id"),
+  performedByName: text("performed_by_name"),
   createdAt: text("created_at").notNull(),
   branchId: text("branch_id").notNull().default("MAIN_BRANCH"),
 });
