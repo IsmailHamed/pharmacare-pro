@@ -4,6 +4,7 @@ import {
   LedgerPaymentEntity,
 } from "../../../domain/entities";
 import { CURRENT_BRANCH_ID } from "../../../infrastructure/db/database";
+import { SoundFeedbackService } from "../../../infrastructure/audio/SoundFeedbackService";
 import { PosState, PosSlice, invoiceRepo } from "../storeTypes";
 
 export type FinanceShiftSlice = Pick<
@@ -20,6 +21,19 @@ export const createFinanceShiftSlice: PosSlice<FinanceShiftSlice> = (
 ) => ({
   addCashExpense: async (title, category, amount, notes) => {
     const openShift = get().shifts.find((s) => s.status === "OPEN");
+    if (!openShift) {
+      SoundFeedbackService.playWarningBuzzer();
+      set({
+        notification: {
+          type: "error",
+          message:
+            "لا يمكن تسجيل مصروف نثري والوردية مغلقة! يرجى فتح وردية أولاً.",
+        },
+      });
+      return;
+    }
+
+    const currentUser = get().currentUser;
     const expense: CashExpenseEntity = {
       id: `EXP-${Date.now().toString().slice(-6)}`,
       title: title.trim(),
@@ -27,7 +41,9 @@ export const createFinanceShiftSlice: PosSlice<FinanceShiftSlice> = (
       amount: Number(amount.toFixed(2)),
       notes: notes?.trim(),
       createdAt: new Date().toISOString(),
-      shiftId: openShift?.id || "shift-default-01",
+      shiftId: openShift.id,
+      performedByUserId: currentUser?.id,
+      performedByName: currentUser?.name,
       branchId: CURRENT_BRANCH_ID,
     };
 
@@ -45,6 +61,7 @@ export const createFinanceShiftSlice: PosSlice<FinanceShiftSlice> = (
     const openShift = get().shifts.find((s) => s.status === "OPEN");
     if (!openShift) return;
 
+    const currentUser = get().currentUser;
     const safeActual = Number(actualDrawerCash.toFixed(2));
     const safeDrop = Math.max(
       0,
@@ -59,6 +76,8 @@ export const createFinanceShiftSlice: PosSlice<FinanceShiftSlice> = (
       ...openShift,
       status: "CLOSED",
       closedAt: new Date().toISOString(),
+      closedByUserId: currentUser?.id,
+      closedByName: currentUser?.name,
       actualDrawerCash: safeActual,
       variance,
       safeDropAmount: safeDrop,
@@ -84,10 +103,27 @@ export const createFinanceShiftSlice: PosSlice<FinanceShiftSlice> = (
   },
 
   openNewShift: async (pharmacistName, openingBalance) => {
-    const initial = Number(openingBalance.toFixed(2));
+    const existingOpenShift = get().shifts.find((s) => s.status === "OPEN");
+    if (existingOpenShift) {
+      SoundFeedbackService.playWarningBuzzer();
+      set({
+        notification: {
+          type: "warning",
+          message: `توجد وردية مفتوحة حالياً باسم (${existingOpenShift.pharmacistName}) — أغلقها أولاً قبل فتح وردية جديدة.`,
+        },
+      });
+      return;
+    }
+
+    const currentUser = get().currentUser;
+    const ownerName =
+      currentUser?.name?.trim() || pharmacistName.trim() || "د. صيدلي مناوب";
+    const initial = Math.max(0, Number(openingBalance.toFixed(2)));
+
     const newShift: ShiftSummaryEntity = {
       id: `SHIFT-${Date.now().toString().slice(-4)}`,
-      pharmacistName: pharmacistName.trim() || "د. صيدلي مناوب",
+      pharmacistName: ownerName,
+      openedByUserId: currentUser?.id,
       openedAt: new Date().toISOString(),
       status: "OPEN",
       openingBalance: initial,
@@ -102,18 +138,34 @@ export const createFinanceShiftSlice: PosSlice<FinanceShiftSlice> = (
       expectedDrawerCash: initial,
       branchId: CURRENT_BRANCH_ID,
     };
+
     await invoiceRepo.saveShift(newShift);
     await get().loadInitialData();
     set({
       notification: {
         type: "success",
-        message: `تم فتح وردية جديدة للصيدلي (${newShift.pharmacistName}) بعهدة افتتاحية ${initial.toFixed(2)}.`,
+        message: `تم فتح وردية جديدة باسم (${newShift.pharmacistName}) بعهدة افتتاحية ${initial.toFixed(2)}.`,
       },
     });
   },
 
   recordLedgerPayment: async (partyType, partyName, amount, notes) => {
     if (!partyName.trim() || amount <= 0) return;
+
+    const openShift = get().shifts.find((s) => s.status === "OPEN");
+    if (!openShift) {
+      SoundFeedbackService.playWarningBuzzer();
+      set({
+        notification: {
+          type: "error",
+          message:
+            "لا يمكن تسجيل سند قبض أو صرف والوردية مغلقة! يرجى فتح وردية أولاً لربط الحركة بالدرج.",
+        },
+      });
+      return;
+    }
+
+    const currentUser = get().currentUser;
     const payment: LedgerPaymentEntity = {
       id: `PAY-${Date.now().toString().slice(-6)}`,
       partyType,
@@ -121,8 +173,12 @@ export const createFinanceShiftSlice: PosSlice<FinanceShiftSlice> = (
       amount: Number(amount.toFixed(2)),
       notes: notes?.trim(),
       createdAt: new Date().toISOString(),
+      shiftId: openShift.id,
+      performedByUserId: currentUser?.id,
+      performedByName: currentUser?.name,
       branchId: CURRENT_BRANCH_ID,
     };
+
     await invoiceRepo.saveLedgerPayment(payment);
     await get().loadInitialData();
     set({

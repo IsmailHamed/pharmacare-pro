@@ -9,6 +9,8 @@ export interface CashExpenseEntity {
   notes?: string;
   createdAt: string;
   shiftId: string;
+  performedByUserId?: string; // معرّف المستخدم الذي سجّل المصروف
+  performedByName?: string; // اسم المستخدم الذي سجّل المصروف
   branchId: string;
 }
 
@@ -17,9 +19,12 @@ export interface CashExpenseEntity {
  */
 export interface ShiftSummaryEntity {
   id: string;
-  pharmacistName: string;
+  pharmacistName: string; // اسم صاحب العهدة (المستخدم الذي فتح الوردية)
+  openedByUserId?: string; // معرّف المستخدم الذي فتح الوردية
   openedAt: string;
   closedAt?: string;
+  closedByUserId?: string; // معرّف المستخدم الذي أغلق الوردية
+  closedByName?: string; // اسم المستخدم الذي أغلق الوردية
   status: "OPEN" | "CLOSED";
   openingBalance: number; // الرصيد الافتتاحي (العهدة المستلمة)
   cashSalesTotal: number; // المبيعات النقدية فقط
@@ -47,8 +52,12 @@ export interface LedgerPaymentEntity {
   amount: number;
   notes?: string;
   createdAt: string;
+  shiftId?: string; // رقم الوردية التي سُجّل خلالها السند
+  performedByUserId?: string; // معرّف المستخدم الذي نفّذ السند
+  performedByName?: string; // اسم المستخدم الذي نفّذ السند
   branchId: string;
 }
+
 export interface PartyAccountSummary {
   partyName: string;
   partyType: LedgerPartyType;

@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { CashExpenseEntity } from "../../../domain/entities";
 import { usePosStore } from "../../../application/store/usePosStore";
-import { Wallet, PlusCircle, Search, Filter } from "lucide-react";
+import { Wallet, PlusCircle, Search, Filter, Lock, User } from "lucide-react";
 
 const EXPENSE_CATEGORY_LABELS: Record<CashExpenseEntity["category"], string> = {
   SUPPLIES: "مستلزمات وأكياس",
@@ -24,7 +24,7 @@ interface Props {
 
 /**
  * بطاقة تسجيل ومتابعة مصروفات الصيدلية النثرية للوردية
- * مفصولة عن قائمة الدخل لإبقاء الكاشير على العمليات اليومية فقط
+ * مقفلة بصرياً عند إغلاق الوردية وتوثّق اسم المستخدم المنفّذ لكل قيد
  */
 export const CashExpensesPanel: React.FC<Props> = ({
   expenses,
@@ -37,6 +37,7 @@ export const CashExpensesPanel: React.FC<Props> = ({
     (s) => s.currentUser?.permissions.canViewCostAndProfit ?? false,
   );
   const hasCostAndProfitAccess = canViewCostAndProfit ?? storeCanViewCost;
+  const isShiftClosed = !activeShiftId;
 
   const [title, setTitle] = useState("");
   const [category, setCategory] =
@@ -70,7 +71,8 @@ export const CashExpensesPanel: React.FC<Props> = ({
       if (
         q &&
         !exp.title.toLowerCase().includes(q) &&
-        !(exp.notes || "").toLowerCase().includes(q)
+        !(exp.notes || "").toLowerCase().includes(q) &&
+        !(exp.performedByName || "").toLowerCase().includes(q)
       ) {
         return false;
       }
@@ -91,6 +93,7 @@ export const CashExpensesPanel: React.FC<Props> = ({
 
   const handleCreateExpense = (e: React.FormEvent) => {
     e.preventDefault();
+    if (isShiftClosed) return;
     const numericAmount = Number(amountInput);
     if (
       !title.trim() ||
@@ -116,23 +119,36 @@ export const CashExpensesPanel: React.FC<Props> = ({
         </span>
       </div>
 
+      {/* تنبيه قفل الصرف عند إغلاق الوردية */}
+      {isShiftClosed && (
+        <div className="p-2.5 rounded-xl bg-amber-950/35 border border-amber-800/80 text-amber-200 text-[11px] flex items-center gap-2">
+          <Lock className="w-4 h-4 text-amber-400 shrink-0" />
+          <span>
+            الوردية مغلقة حالياً — افتح وردية أولاً للسماح بخصم مصروفات نثرية من
+            درج الكاشير.
+          </span>
+        </div>
+      )}
+
       {/* نموذج إضافة مصروف نثري جديد */}
       <form onSubmit={handleCreateExpense} className="space-y-2.5">
         <input
           type="text"
+          disabled={isShiftClosed}
           placeholder="بيان المصروف (مثال: فاتورة كهرباء / أكياس)"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
-          className="w-full bg-slate-800 border border-slate-700 focus:border-amber-500 rounded-lg p-2.5 text-white outline-none"
+          className="w-full bg-slate-800 border border-slate-700 focus:border-amber-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg p-2.5 text-white outline-none"
         />
 
         <div className="grid grid-cols-2 gap-2">
           <select
+            disabled={isShiftClosed}
             value={category}
             onChange={(e) =>
               setCategory(e.target.value as CashExpenseEntity["category"])
             }
-            className="bg-slate-800 border border-slate-700 focus:border-amber-500 rounded-lg p-2.5 text-white outline-none"
+            className="bg-slate-800 border border-slate-700 focus:border-amber-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg p-2.5 text-white outline-none"
           >
             {Object.entries(EXPENSE_CATEGORY_LABELS).map(([key, label]) => (
               <option key={key} value={key}>
@@ -145,19 +161,28 @@ export const CashExpensesPanel: React.FC<Props> = ({
             type="number"
             min={0}
             step="any"
+            disabled={isShiftClosed}
             placeholder="المبلغ"
             value={amountInput}
             onChange={(e) => setAmountInput(e.target.value)}
-            className="bg-slate-800 border border-slate-700 focus:border-amber-500 rounded-lg p-2.5 text-white font-mono outline-none"
+            className="bg-slate-800 border border-slate-700 focus:border-amber-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg p-2.5 text-white font-mono outline-none"
           />
         </div>
 
         <button
           type="submit"
-          disabled={!title.trim() || Number(amountInput) <= 0}
+          disabled={isShiftClosed || !title.trim() || Number(amountInput) <= 0}
           className="w-full bg-amber-600 hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold py-2.5 rounded-lg flex items-center justify-center gap-1.5 transition"
         >
-          <PlusCircle className="w-4 h-4" /> خصم من درج الكاشير
+          {isShiftClosed ? (
+            <>
+              <Lock className="w-4 h-4" /> الصرف مقفل (الوردية مغلقة)
+            </>
+          ) : (
+            <>
+              <PlusCircle className="w-4 h-4" /> خصم من درج الكاشير
+            </>
+          )}
         </button>
       </form>
 
@@ -192,7 +217,7 @@ export const CashExpensesPanel: React.FC<Props> = ({
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="بحث في المصروفات..."
+                placeholder="بحث بالبيان أو اسم الموظف..."
                 className="w-full bg-slate-950 border border-slate-800 focus:border-amber-500 rounded-lg pr-8 pl-2.5 py-1.5 text-[11px] text-white outline-none"
               />
             </div>
@@ -254,6 +279,12 @@ export const CashExpensesPanel: React.FC<Props> = ({
                     <span className="font-mono">
                       {new Date(exp.createdAt).toLocaleString("ar-SA")}
                     </span>
+                    {exp.performedByName && (
+                      <span className="inline-flex items-center gap-0.5 text-sky-400/90">
+                        <User className="w-2.5 h-2.5" />
+                        {exp.performedByName}
+                      </span>
+                    )}
                     {exp.notes && (
                       <span className="truncate text-slate-400">
                         • {exp.notes}

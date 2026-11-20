@@ -12,6 +12,7 @@ import {
   Wallet,
   Printer,
   RotateCcw,
+  Lock,
 } from "lucide-react";
 
 const QUICK_ADD_AMOUNTS = [50, 100] as const;
@@ -34,7 +35,7 @@ interface Props {
 
 /**
  * نافذة تسجيل سند قبض (عميل) أو سند صرف (مستودع)
- * تدعم التسديد السريع، إظهار أثر الحركة على درج الوردية المفتوحة، وطباعة السند الحراري فور الاعتماد
+ * مقفلة عند إغلاق الوردية لضمان ربط كل حركة نقدية بالدرج المفتوح وتوثيق المنفّذ الفعلي
  */
 export const LedgerPaymentModal: React.FC<Props> = ({
   party,
@@ -43,6 +44,8 @@ export const LedgerPaymentModal: React.FC<Props> = ({
   onRecordPayment,
   onPaymentSuccess,
 }) => {
+  const currentUser = usePosStore((s) => s.currentUser);
+
   const [paymentAmount, setPaymentAmount] = useState("");
   const [paymentNotes, setPaymentNotes] = useState("");
   const [printAfterSave, setPrintAfterSave] = useState(true);
@@ -71,6 +74,7 @@ export const LedgerPaymentModal: React.FC<Props> = ({
 
   if (!party) return null;
 
+  const isShiftClosed = !openShift;
   const isCustomer = party.partyType === "CUSTOMER";
   const numericAmount = Number(paymentAmount) || 0;
   const isValidAmount =
@@ -97,6 +101,15 @@ export const LedgerPaymentModal: React.FC<Props> = ({
     openShift !== undefined &&
     numericAmount > openShift.expectedDrawerCash;
 
+  const isDifferentPerformer = Boolean(
+    openShift &&
+    currentUser &&
+    ((openShift.openedByUserId &&
+      openShift.openedByUserId !== currentUser.id) ||
+      (!openShift.openedByUserId &&
+        openShift.pharmacistName.trim() !== currentUser.name.trim())),
+  );
+
   const handleSetFull = () => {
     setPaymentAmount(String(party.remainingBalance));
   };
@@ -117,7 +130,7 @@ export const LedgerPaymentModal: React.FC<Props> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isValidAmount || isSubmitting) return;
+    if (isShiftClosed || !isValidAmount || isSubmitting) return;
 
     const cleanNotes = paymentNotes.trim() || undefined;
     const prevIds = new Set(
@@ -133,7 +146,7 @@ export const LedgerPaymentModal: React.FC<Props> = ({
         cleanNotes,
       );
 
-      // التقاط السند المُنشأ فعلياً من المتجر لاستخدام رقمه وتاريخه الدقيق في الإيصال الحراري
+      // التحقق من تسجيل السند فعلياً قبل إغلاق النافذة أو عرض الإيصال الحراري
       const latestPayments = usePosStore.getState().ledgerPayments || [];
       const createdPayment = latestPayments.find(
         (p) =>
@@ -142,17 +155,21 @@ export const LedgerPaymentModal: React.FC<Props> = ({
           p.partyName.trim() === party.partyName.trim(),
       );
 
+      if (!createdPayment) return;
+
       const receiptData: LedgerVoucherReceiptData = {
-        id: createdPayment?.id || `VCH-${Date.now().toString().slice(-6)}`,
+        id: createdPayment.id,
         partyType: party.partyType,
         partyName: party.partyName,
         amount: numericAmount,
-        createdAt: createdPayment?.createdAt || new Date().toISOString(),
+        createdAt: createdPayment.createdAt,
         notes: cleanNotes,
         previousBalance: party.remainingBalance,
         remainingBalance: projectedRemaining,
         pharmacistName:
-          openShift?.pharmacistName || usePosStore.getState().currentUser?.name,
+          createdPayment.performedByName ||
+          usePosStore.getState().currentUser?.name ||
+          openShift.pharmacistName,
       };
 
       onClose();
@@ -225,9 +242,10 @@ export const LedgerPaymentModal: React.FC<Props> = ({
             <label className="text-slate-300 font-bold">المبلغ المسدد</label>
             <button
               type="button"
+              disabled={isShiftClosed}
               onClick={() => setPaymentAmount("")}
               title="تصفير الحقل"
-              className="text-[10px] text-slate-400 hover:text-white flex items-center gap-1 transition"
+              className="text-[10px] text-slate-400 hover:text-white disabled:opacity-40 flex items-center gap-1 transition"
             >
               <RotateCcw className="w-3 h-3" /> تصفير
             </button>
@@ -239,25 +257,28 @@ export const LedgerPaymentModal: React.FC<Props> = ({
             min={0.01}
             max={party.remainingBalance}
             required
-            autoFocus
+            autoFocus={!isShiftClosed}
+            disabled={isShiftClosed}
             value={paymentAmount}
             onChange={(e) => setPaymentAmount(e.target.value)}
             placeholder="0.00"
-            className="w-full bg-slate-800 border border-slate-700 focus:border-emerald-500 rounded-xl p-2.5 text-white font-mono font-bold text-sm outline-none"
+            className="w-full bg-slate-800 border border-slate-700 focus:border-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl p-2.5 text-white font-mono font-bold text-sm outline-none"
           />
 
           <div className="grid grid-cols-4 gap-1.5">
             <button
               type="button"
+              disabled={isShiftClosed}
               onClick={handleSetFull}
-              className="py-1.5 rounded-lg bg-emerald-950/60 hover:bg-emerald-900/70 border border-emerald-800/80 text-emerald-300 font-bold text-[11px] transition"
+              className="py-1.5 rounded-lg bg-emerald-950/60 hover:bg-emerald-900/70 disabled:opacity-40 border border-emerald-800/80 text-emerald-300 font-bold text-[11px] transition"
             >
               كامل الرصيد
             </button>
             <button
               type="button"
+              disabled={isShiftClosed}
               onClick={handleSetHalf}
-              className="py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-bold text-[11px] transition"
+              className="py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 border border-slate-700 text-slate-200 font-bold text-[11px] transition"
             >
               50%
             </button>
@@ -265,8 +286,9 @@ export const LedgerPaymentModal: React.FC<Props> = ({
               <button
                 key={val}
                 type="button"
+                disabled={isShiftClosed}
                 onClick={() => handleAddQuickAmount(val)}
-                className="py-1.5 rounded-lg bg-slate-800 hover:bg-sky-950 hover:border-sky-700 border border-slate-700 text-slate-200 hover:text-sky-300 font-mono font-bold text-[11px] transition"
+                className="py-1.5 rounded-lg bg-slate-800 hover:bg-sky-950 hover:border-sky-700 disabled:opacity-40 border border-slate-700 text-slate-200 hover:text-sky-300 font-mono font-bold text-[11px] transition"
               >
                 +{val}
               </button>
@@ -279,6 +301,7 @@ export const LedgerPaymentModal: React.FC<Props> = ({
           <label className="block text-slate-400 mb-1">ملاحظات السند</label>
           <input
             type="text"
+            disabled={isShiftClosed}
             value={paymentNotes}
             onChange={(e) => setPaymentNotes(e.target.value)}
             placeholder={
@@ -286,11 +309,11 @@ export const LedgerPaymentModal: React.FC<Props> = ({
                 ? "مثال: دفعة نقدية من الحساب الجاري"
                 : "مثال: تسديد دفعة لمندوب المستودع"
             }
-            className="w-full bg-slate-800 border border-slate-700 focus:border-emerald-500 rounded-xl p-2.5 text-white outline-none"
+            className="w-full bg-slate-800 border border-slate-700 focus:border-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl p-2.5 text-white outline-none"
           />
         </div>
 
-        {/* بيان أثر السند على درج الوردية المفتوحة */}
+        {/* بيان أثر السند على درج الوردية أو قفل الإغلاق */}
         {openShift ? (
           <div
             className={`rounded-xl p-2.5 border text-[11px] space-y-1 ${
@@ -321,6 +344,11 @@ export const LedgerPaymentModal: React.FC<Props> = ({
                 الدرج بعد السند: {(projectedDrawerCash ?? 0).toFixed(2)} ر.س
               </span>
             </div>
+            {isDifferentPerformer && currentUser && (
+              <div className="text-[10px] text-amber-300 font-semibold">
+                سيُوثّق السند باسم المنفّذ النشط: {currentUser.name}
+              </div>
+            )}
             {exceedsDrawerCash && (
               <div className="text-[10px] text-rose-300 font-semibold">
                 تنبيه: مبلغ الصرف أكبر من النقد المتوقع بالدرج حالياً.
@@ -328,11 +356,11 @@ export const LedgerPaymentModal: React.FC<Props> = ({
             )}
           </div>
         ) : (
-          <div className="rounded-xl p-2.5 bg-amber-950/35 border border-amber-800/80 text-amber-200 text-[11px] flex items-start gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+          <div className="rounded-xl p-2.5 bg-rose-950/35 border border-rose-800/80 text-rose-200 text-[11px] flex items-start gap-2">
+            <Lock className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
             <span>
-              لا توجد وردية مفتوحة حالياً؛ سيتم تحديث رصيد الذمة في الدفتر دون
-              ربطه بدرج وردية نشطة.
+              الوردية مغلقة حالياً — لا يمكن اعتماد سند قبض أو صرف قبل فتح وردية
+              من تبويب الوردية لربط الحركة النقدية بدرج الكاشير.
             </span>
           </div>
         )}
@@ -341,6 +369,7 @@ export const LedgerPaymentModal: React.FC<Props> = ({
         <label className="flex items-center gap-2 cursor-pointer select-none text-slate-300 bg-slate-950/70 border border-slate-800 rounded-xl px-3 py-2">
           <input
             type="checkbox"
+            disabled={isShiftClosed}
             checked={printAfterSave}
             onChange={(e) => setPrintAfterSave(e.target.checked)}
             className="accent-emerald-500 w-3.5 h-3.5"
@@ -353,18 +382,24 @@ export const LedgerPaymentModal: React.FC<Props> = ({
         <div className="flex gap-2 pt-1">
           <button
             type="submit"
-            disabled={isSubmitting || !isValidAmount}
-            className={`flex-1 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold py-2.5 rounded-xl transition ${
+            disabled={isShiftClosed || isSubmitting || !isValidAmount}
+            className={`flex-1 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold py-2.5 rounded-xl flex items-center justify-center gap-1.5 transition ${
               isCustomer
                 ? "bg-sky-600 hover:bg-sky-500"
                 : "bg-purple-600 hover:bg-purple-500"
             }`}
           >
-            {isSubmitting
-              ? "جارٍ الترحيل..."
-              : isCustomer
-                ? "اعتماد سند القبض"
-                : "اعتماد سند الصرف"}
+            {isShiftClosed ? (
+              <>
+                <Lock className="w-3.5 h-3.5" /> افتح وردية أولاً
+              </>
+            ) : isSubmitting ? (
+              "جارٍ الترحيل..."
+            ) : isCustomer ? (
+              "اعتماد سند القبض"
+            ) : (
+              "اعتماد سند الصرف"
+            )}
           </button>
           <button
             type="button"

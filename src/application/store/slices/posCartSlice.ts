@@ -692,7 +692,22 @@ export const createPosCartSlice: PosSlice<PosCartSlice> = (set, get) => {
         clearCart,
         loadInitialData,
         currentUser,
+        shifts,
       } = get();
+
+      // قفل محاسبي: منع إتمام أي فاتورة بيع أو مرتجع والوردية مغلقة
+      const openShift = shifts.find((s) => s.status === "OPEN");
+      if (!openShift) {
+        SoundFeedbackService.playWarningBuzzer();
+        set({
+          notification: {
+            type: "error",
+            message:
+              "لا يمكن إتمام البيع أو المرتجع والوردية مغلقة! يرجى فتح وردية أولاً لاستلام العهدة.",
+          },
+        });
+        return null;
+      }
 
       // طبقة حماية أخيرة: منع إتمام المرتجع إذا تم تبديل المستخدم لحساب لا يملك الصلاحية قبل الضغط على F1
       if (

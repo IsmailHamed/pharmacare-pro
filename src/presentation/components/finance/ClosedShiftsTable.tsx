@@ -6,6 +6,7 @@ import {
   Filter,
   CheckCircle2,
   AlertOctagon,
+  UserCheck,
 } from "lucide-react";
 
 interface Props {
@@ -14,7 +15,7 @@ interface Props {
 
 /**
  * تبويب أرشيف تقارير تسليم الورديات السابقة (Z-Reports Archive)
- * يعرض ملخص الفروقات والتوريد للخزنة مع البحث الفوري وتصفية الورديات ذات الفارق
+ * يعرض ملخص الفروقات والتوريد للخزنة مع توثيق صاحب العهدة والمستخدم الذي أغلق الوردية
  */
 export const ClosedShiftsTable: React.FC<Props> = ({ closedShifts }) => {
   const [searchQuery, setSearchQuery] = useState("");
@@ -49,7 +50,8 @@ export const ClosedShiftsTable: React.FC<Props> = ({ closedShifts }) => {
       if (
         q &&
         !s.id.toLowerCase().includes(q) &&
-        !s.pharmacistName.toLowerCase().includes(q)
+        !s.pharmacistName.toLowerCase().includes(q) &&
+        !(s.closedByName || "").toLowerCase().includes(q)
       ) {
         return false;
       }
@@ -145,7 +147,7 @@ export const ClosedShiftsTable: React.FC<Props> = ({ closedShifts }) => {
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="ابحث برقم الوردية أو اسم الصيدلي المناوب..."
+              placeholder="ابحث برقم الوردية، صاحب العهدة، أو من أغلقها..."
               className="w-full bg-slate-900 border border-slate-800 focus:border-sky-500 rounded-lg pr-9 pl-3 py-1.5 text-white outline-none"
             />
           </div>
@@ -209,7 +211,7 @@ export const ClosedShiftsTable: React.FC<Props> = ({ closedShifts }) => {
             <thead>
               <tr className="border-b border-slate-800 text-slate-400">
                 <th className="py-2 px-2">رقم الوردية</th>
-                <th className="py-2 px-2">الصيدلي</th>
+                <th className="py-2 px-2">صاحب العهدة / المُغلق</th>
                 <th className="py-2 px-2">العهدة الافتتاحية</th>
                 <th className="py-2 px-2">مبيعات الكاش</th>
                 <th className="py-2 px-2">النقد المتوقع</th>
@@ -222,11 +224,37 @@ export const ClosedShiftsTable: React.FC<Props> = ({ closedShifts }) => {
             <tbody className="divide-y divide-slate-800/60 font-mono">
               {filteredShifts.map((s) => {
                 const variance = s.variance || 0;
+                const closedByDifferentUser = Boolean(
+                  s.closedByName &&
+                  ((s.closedByUserId &&
+                    s.openedByUserId &&
+                    s.closedByUserId !== s.openedByUserId) ||
+                    s.closedByName.trim() !== s.pharmacistName.trim()),
+                );
+
                 return (
                   <tr key={s.id} className="hover:bg-slate-800/40 transition">
-                    <td className="py-2.5 px-2 font-bold text-white">{s.id}</td>
-                    <td className="py-2.5 px-2 font-sans font-semibold text-slate-200">
-                      {s.pharmacistName}
+                    <td className="py-2.5 px-2">
+                      <div className="font-bold text-white">{s.id}</div>
+                      {s.closedAt && (
+                        <div className="text-[9.5px] text-slate-500 mt-0.5">
+                          {new Date(s.closedAt).toLocaleString("ar-SA", {
+                            dateStyle: "short",
+                            timeStyle: "short",
+                          })}
+                        </div>
+                      )}
+                    </td>
+                    <td className="py-2.5 px-2 font-sans">
+                      <div className="font-semibold text-slate-200">
+                        {s.pharmacistName}
+                      </div>
+                      {closedByDifferentUser && (
+                        <div className="inline-flex items-center gap-1 text-[9.5px] text-amber-300 bg-amber-950/50 border border-amber-800/70 px-1.5 py-0.5 rounded mt-0.5">
+                          <UserCheck className="w-2.5 h-2.5 shrink-0" />
+                          أغلقها: {s.closedByName}
+                        </div>
+                      )}
                     </td>
                     <td className="py-2.5 px-2">
                       {s.openingBalance.toFixed(2)}

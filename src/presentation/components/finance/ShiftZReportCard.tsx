@@ -1,6 +1,19 @@
 import React, { useEffect, useState } from "react";
-import { ShiftSummaryEntity } from "../../../domain/entities";
-import { Lock, CheckCircle2, AlertOctagon } from "lucide-react";
+import { ShiftSummaryEntity, UserRole } from "../../../domain/entities";
+import { usePosStore } from "../../../application/store/usePosStore";
+import {
+  Lock,
+  CheckCircle2,
+  AlertOctagon,
+  UserCheck,
+  AlertTriangle,
+} from "lucide-react";
+
+const ROLE_LABELS: Record<UserRole, string> = {
+  ADMIN: "مدير النظام",
+  PHARMACIST: "صيدلي",
+  CASHIER: "كاشير",
+};
 
 interface Props {
   openShift?: ShiftSummaryEntity;
@@ -21,16 +34,27 @@ export const ShiftZReportCard: React.FC<Props> = ({
   onCloseShift,
   onOpenShift,
 }) => {
+  const currentUser = usePosStore((s) => s.currentUser);
+
   const [actualCash, setActualCash] = useState<string>("");
   const [safeDrop, setSafeDrop] = useState<string>("0");
-  const [pharmacist, setPharmacist] = useState("د. عمر الصيدلي");
-  const [opening, setOpening] = useState(500);
+  const [opening, setOpening] = useState<number>(500);
 
   useEffect(() => {
     if (!openShift && lastClosedShift?.nextShiftFloat !== undefined) {
       setOpening(lastClosedShift.nextShiftFloat);
     }
   }, [openShift, lastClosedShift]);
+
+  // اكتشاف ما إذا كان المستخدم النشط حالياً يختلف عن صاحب عهدة الوردية المفتوحة
+  const isDifferentUser = Boolean(
+    openShift &&
+    currentUser &&
+    ((openShift.openedByUserId &&
+      openShift.openedByUserId !== currentUser.id) ||
+      (!openShift.openedByUserId &&
+        openShift.pharmacistName.trim() !== currentUser.name.trim())),
+  );
 
   const actualCashNum = Number(actualCash || 0);
   const safeDropNum = Number(safeDrop || 0);
@@ -42,6 +66,8 @@ export const ShiftZReportCard: React.FC<Props> = ({
     Number((actualCashNum - safeDropNum).toFixed(2)),
   );
 
+  const activeUserName = currentUser?.name?.trim() || "د. صيدلي مناوب";
+
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
       <h3 className="font-bold text-white text-sm flex items-center gap-2 pb-1 border-b border-slate-800">
@@ -51,9 +77,23 @@ export const ShiftZReportCard: React.FC<Props> = ({
 
       {openShift ? (
         <>
+          {/* تنبيه بصري عند اختلاف المستخدم النشط (PIN) عن صاحب عهدة الدرج */}
+          {isDifferentUser && currentUser && (
+            <div className="p-2.5 rounded-xl bg-amber-950/40 border border-amber-700/80 text-amber-200 text-[11px] flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <div className="leading-relaxed">
+                عهدة الدرج مفتوحة باسم{" "}
+                <b className="text-white">{openShift.pharmacistName}</b>،
+                والمستخدم النشط الآن{" "}
+                <b className="text-amber-300">{currentUser.name}</b>. في حال
+                إغلاق الوردية الآن سيُوثّق الإغلاق باسمك.
+              </div>
+            </div>
+          )}
+
           <div className="text-slate-300 space-y-1.5 bg-slate-950 p-3 rounded-xl border border-slate-800 text-[11px]">
             <div className="flex justify-between border-b border-slate-800 pb-1">
-              <span>الصيدلي المناوب:</span>
+              <span>صاحب عهدة الوردية:</span>
               <b className="text-white">{openShift.pharmacistName}</b>
             </div>
             <div className="flex justify-between">
@@ -117,11 +157,12 @@ export const ShiftZReportCard: React.FC<Props> = ({
               </label>
               <input
                 type="number"
-                step="0.5"
+                step="any"
+                min={0}
                 placeholder="أدخل الجرد الفعلي"
                 value={actualCash}
                 onChange={(e) => setActualCash(e.target.value)}
-                className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-white font-mono"
+                className="w-full bg-slate-800 border border-slate-700 focus:border-sky-500 rounded-lg p-2 text-white font-mono outline-none"
               />
             </div>
             <div>
@@ -130,11 +171,12 @@ export const ShiftZReportCard: React.FC<Props> = ({
               </label>
               <input
                 type="number"
-                step="0.5"
+                step="any"
+                min={0}
                 placeholder="0.00"
                 value={safeDrop}
                 onChange={(e) => setSafeDrop(e.target.value)}
-                className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-white font-mono"
+                className="w-full bg-slate-800 border border-slate-700 focus:border-sky-500 rounded-lg p-2 text-white font-mono outline-none"
               />
             </div>
           </div>
@@ -176,6 +218,7 @@ export const ShiftZReportCard: React.FC<Props> = ({
           )}
 
           <button
+            type="button"
             onClick={() => {
               if (actualCash === "") {
                 alert("يرجى إدخال النقد الفعلي الموجود في الدرج أولاً.");
@@ -185,41 +228,56 @@ export const ShiftZReportCard: React.FC<Props> = ({
               setActualCash("");
               setSafeDrop("0");
             }}
-            className="w-full bg-rose-600 hover:bg-rose-500 text-white font-bold py-2.5 rounded-lg"
+            className="w-full bg-rose-600 hover:bg-rose-500 text-white font-bold py-2.5 rounded-lg transition"
           >
             إغلاق الوردية واعتماد تقرير Z-Report
           </button>
         </>
       ) : (
-        <div className="space-y-2.5">
+        <div className="space-y-3">
           <div className="p-2.5 bg-amber-950/30 border border-amber-800/70 rounded-xl text-amber-200 text-[11px]">
-            الوردية مغلقة حالياً. قم بفتح وردية جديدة لبدء استلام العهدة.
+            الوردية مغلقة حالياً. قم بفتح وردية جديدة لاستلام العهدة وتفعيل نقطة
+            البيع والصندوق.
           </div>
-          <div>
-            <label className="block text-slate-400 mb-1">
-              اسم الصيدلي المستلم
-            </label>
-            <input
-              type="text"
-              value={pharmacist}
-              onChange={(e) => setPharmacist(e.target.value)}
-              className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-white"
-            />
+
+          {/* ربط تلقائي غير قابل للتعديل اليدوي بالمستخدم النشط */}
+          <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <UserCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+              <div className="min-w-0">
+                <div className="text-[10px] text-slate-400">
+                  المستلم للعهدة (المستخدم النشط تلقائياً)
+                </div>
+                <div className="font-bold text-white truncate">
+                  {activeUserName}
+                </div>
+              </div>
+            </div>
+            {currentUser && (
+              <span className="text-[10px] font-bold bg-slate-800 border border-slate-700 text-sky-300 px-2 py-0.5 rounded-full shrink-0">
+                {ROLE_LABELS[currentUser.role]}
+              </span>
+            )}
           </div>
+
           <div>
             <label className="block text-slate-400 mb-1">
               الرصيد الافتتاحي (العهدة المرحلة للدرج)
             </label>
             <input
               type="number"
+              step="any"
+              min={0}
               value={opening}
-              onChange={(e) => setOpening(Number(e.target.value))}
-              className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-white font-mono"
+              onChange={(e) => setOpening(Math.max(0, Number(e.target.value)))}
+              className="w-full bg-slate-800 border border-slate-700 focus:border-emerald-500 rounded-lg p-2 text-white font-mono outline-none"
             />
           </div>
+
           <button
-            onClick={() => void onOpenShift(pharmacist, opening)}
-            className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2.5 rounded-lg"
+            type="button"
+            onClick={() => void onOpenShift(activeUserName, opening)}
+            className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2.5 rounded-lg transition"
           >
             فتح وردية جديدة واستلام العهدة
           </button>
