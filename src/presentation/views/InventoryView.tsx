@@ -1,39 +1,15 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { usePosStore } from "../../application/store/usePosStore";
 import { ProductEntity } from "../../domain/entities";
-import { ExcelService } from "../../infrastructure/excel/ExcelService";
 import { BarcodeLabelModal } from "../components/BarcodeLabelModal";
-import {
-  InventoryRadarBar,
-  InventoryFilterMode,
-} from "../components/inventory/InventoryRadarBar";
-import { InventoryItemCard } from "../components/inventory/InventoryItemCard";
 import { AddProductModal } from "../components/inventory/AddProductModal";
 import { StockAdjustmentModal } from "../components/inventory/StockAdjustmentModal";
-import {
-  Clock,
-  Tag,
-  FileSpreadsheet,
-  Upload,
-  Plus,
-  ClipboardCheck,
-  Search,
-  ChevronDown,
-} from "lucide-react";
+import { InventoryHeaderActions } from "../components/inventory/InventoryHeaderActions";
+import { InventoryStockTab } from "../components/inventory/InventoryStockTab";
+import { InventoryLossesTab } from "../components/inventory/InventoryLossesTab";
+import { ClipboardCheck, Package } from "lucide-react";
 
-const PAGE_SIZE = 50;
-
-const getNearestExpiryDays = (product: ProductEntity): number => {
-  if (!product.batches || product.batches.length === 0) return 9999;
-  const nowMs = Date.now();
-  const daysList = product.batches
-    .filter((b) => b.qtyPacks > 0)
-    .map((b) => {
-      const expMs = new Date(b.expiryDate).getTime();
-      return Math.ceil((expMs - nowMs) / (1000 * 60 * 60 * 24));
-    });
-  return daysList.length > 0 ? Math.min(...daysList) : 9999;
-};
+type InventorySubTab = "stock" | "losses";
 
 export const InventoryView: React.FC = () => {
   const {
@@ -51,27 +27,21 @@ export const InventoryView: React.FC = () => {
   const canViewCost = usePosStore(
     (s) => s.currentUser?.permissions.canViewCostAndProfit ?? false,
   );
-  const [percent, setPercent] = useState(5);
-  const [category, setCategory] = useState("ALL");
-  const [filterMode, setFilterMode] = useState<InventoryFilterMode>("ALL");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [visibleLimit, setVisibleLimit] = useState(PAGE_SIZE);
 
+  const [activeSubTab, setActiveSubTab] = useState<InventorySubTab>("stock");
   const [showAddModal, setShowAddModal] = useState(false);
   const [barcodeProduct, setBarcodeProduct] = useState<ProductEntity | null>(
     null,
   );
   const [adjustmentProduct, setAdjustmentProduct] =
     useState<ProductEntity | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const categories = useMemo(
-    () => [
-      "ALL",
-      ...Array.from(new Set(products.map((p) => p.category || "عام"))),
-    ],
-    [products],
-  );
+  // إغلاق آمن: العودة تلقائياً لتبويب المخزون إذا تم تبديل المستخدم لحساب لا يملك صلاحية عرض التكلفة والخسائر
+  useEffect(() => {
+    if (!canViewCost && activeSubTab === "losses") {
+      setActiveSubTab("stock");
+    }
+  }, [canViewCost, activeSubTab]);
 
   // سجل التوالف والفروقات الجردية المقيدة مالياً
   const inventoryLossLogs = useMemo(
@@ -79,297 +49,84 @@ export const InventoryView: React.FC = () => {
     [expenses],
   );
 
-  const soldProductIdsLast60Days = useMemo(() => {
-    const cutoff = Date.now() - 60 * 24 * 60 * 60 * 1000;
-    const set = new Set<string>();
-    invoices.forEach((inv) => {
-      if (inv.type === "SALE" && new Date(inv.createdAt).getTime() >= cutoff) {
-        inv.items.forEach((item) => set.add(item.product.id));
-      }
-    });
-    return set;
-  }, [invoices]);
-
-  const radarStats = useMemo(() => {
-    let lowStockCount = 0;
-    let exp30Count = 0;
-    let exp90Count = 0;
-    let exp180Count = 0;
-    let deadStockCount = 0;
-
-    products.forEach((p) => {
-      if (p.stockPacks <= p.minLimit) lowStockCount++;
-      const days = getNearestExpiryDays(p);
-      if (days <= 30) exp30Count++;
-      else if (days <= 90) exp90Count++;
-      else if (days <= 180) exp180Count++;
-
-      if (p.stockPacks > p.minLimit && !soldProductIdsLast60Days.has(p.id)) {
-        deadStockCount++;
-      }
-    });
-
-    return {
-      lowStockCount,
-      exp30Count,
-      exp90Count,
-      exp180Count,
-      deadStockCount,
-    };
-  }, [products, soldProductIdsLast60Days]);
-
-  const filteredProducts = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    return products.filter((p) => {
-      if (
-        q &&
-        !p.name.toLowerCase().includes(q) &&
-        !p.scientificName.toLowerCase().includes(q) &&
-        !p.barcode.toLowerCase().includes(q)
-      ) {
-        return false;
-      }
-
-      const days = getNearestExpiryDays(p);
-      if (filterMode === "LOW_STOCK") return p.stockPacks <= p.minLimit;
-      if (filterMode === "EXP_30") return days <= 30;
-      if (filterMode === "EXP_90") return days > 30 && days <= 90;
-      if (filterMode === "EXP_180") return days > 90 && days <= 180;
-      if (filterMode === "DEAD_STOCK")
-        return p.stockPacks > p.minLimit && !soldProductIdsLast60Days.has(p.id);
-      return true;
-    });
-  }, [products, filterMode, soldProductIdsLast60Days, searchQuery]);
-
-  // اقتصاص العناصر المرئية لمنع تجمّد الـ DOM عند وجود 10,000+ دواء
-  const visibleProducts = useMemo(
-    () => filteredProducts.slice(0, visibleLimit),
-    [filteredProducts, visibleLimit],
-  );
-
-  const handleSelectFilter = (mode: InventoryFilterMode) => {
-    setFilterMode(mode);
-    setVisibleLimit(PAGE_SIZE);
-  };
-
-  const handleSearchChange = (val: string) => {
-    setSearchQuery(val);
-    setVisibleLimit(PAGE_SIZE);
-  };
-
-  const handleBulkUpdate = () => {
-    const scope = category === "ALL" ? "جميع الأدوية" : `فئة (${category})`;
-    if (
-      window.confirm(
-        `هل أنت متأكد من ${percent >= 0 ? "زيادة" : "خفض"} أسعار ${scope} بنسبة ${percent}%؟`,
-      )
-    ) {
-      void applyBulkPricing(percent, category);
-    }
-  };
-
-  const handleExcelFileChange = async (
-    e: React.ChangeEvent<HTMLInputElement>,
-  ) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try {
-      const imported = await ExcelService.importProductsFromExcel(file);
-      await importProductsBatch(imported);
-    } catch (err) {
-      alert(
-        err instanceof Error ? err.message : "فشل قراءة ملف الإكسل المرفوع",
-      );
-    } finally {
-      e.target.value = "";
-    }
-  };
-
   return (
     <div className="flex-1 p-6 overflow-y-auto bg-slate-950 text-slate-200 text-xs">
-      {/* شريط العنوان والإجراءات العليا */}
-      <div className="mb-5 flex justify-between items-end flex-wrap gap-3">
-        <div>
-          <h2 className="text-lg font-bold text-white flex items-center gap-2">
-            <Clock className="w-5 h-5 text-amber-400" /> المخزون، رادار
-            الصلاحيات، وتسوية الجرد (FIFO)
-          </h2>
-          <p className="text-slate-400 mt-1">
-            تنبيهات الصلاحية الاستباقية (30 / 90 / 180 يوماً)، تسوية الجرد
-            والتوالف، وتوليد لصاقات الباركود.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2.5 flex-wrap">
-          <button
-            onClick={() => setShowAddModal(true)}
-            className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-3.5 py-2.5 rounded-xl flex items-center gap-1.5 shadow-lg"
-          >
-            <Plus className="w-4 h-4" /> إضافة دواء جديد
-          </button>
-
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".xlsx,.xls,.csv"
-            onChange={(e) => void handleExcelFileChange(e)}
-            className="hidden"
-          />
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-3.5 py-2.5 rounded-xl flex items-center gap-1.5 shadow-lg"
-          >
-            <Upload className="w-4 h-4" /> استيراد من Excel
-          </button>
-
-          <button
-            onClick={() => ExcelService.exportInventoryReport(products)}
-            className="bg-emerald-700 hover:bg-emerald-600 text-white font-bold px-3.5 py-2.5 rounded-xl flex items-center gap-1.5 shadow-lg"
-          >
-            <FileSpreadsheet className="w-4 h-4" /> تصدير الجرد (Excel)
-          </button>
-          {canBulkPricing && (
-            <div className="bg-slate-900 border border-slate-800 p-2 rounded-xl flex items-center gap-2 shadow-lg">
-              <Tag className="w-4 h-4 text-amber-500" />
-              <span className="font-bold text-slate-300">تسعير جماعي:</span>
-              <select
-                value={category}
-                onChange={(e) => setCategory(e.target.value)}
-                className="bg-slate-800 border border-slate-700 rounded p-1.5 text-white outline-none"
-              >
-                {categories.map((c) => (
-                  <option key={c} value={c}>
-                    {c === "ALL" ? "جميع الفئات" : c}
-                  </option>
-                ))}
-              </select>
-              <input
-                type="number"
-                value={percent}
-                onChange={(e) => setPercent(Number(e.target.value))}
-                className="w-14 bg-slate-800 border border-slate-700 rounded p-1.5 text-center text-white font-mono"
-              />
-              <span className="text-slate-400">%</span>
-              <button
-                onClick={handleBulkUpdate}
-                className="bg-amber-600 hover:bg-amber-500 text-white font-bold px-3 py-1.5 rounded-lg"
-              >
-                تطبيق
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* 1. شريط رادار الصلاحيات والرواكد */}
-      <InventoryRadarBar
-        totalProducts={products.length}
-        filterMode={filterMode}
-        radarStats={radarStats}
-        onSelectFilter={handleSelectFilter}
+      {/* الترويسة العليا وإجراءات الإضافة والإكسل والتسعير الجماعي */}
+      <InventoryHeaderActions
+        products={products}
+        canBulkPricing={canBulkPricing}
+        onOpenAddModal={() => setShowAddModal(true)}
+        onImportProductsBatch={importProductsBatch}
+        onApplyBulkPricing={applyBulkPricing}
       />
 
-      {/* 2. شريط البحث الفوري في المخزون وعداد العناصر المعروضة */}
-      <div className="mb-4 flex items-center justify-between gap-3 bg-slate-900 border border-slate-800 p-3 rounded-xl">
-        <div className="relative flex-1">
-          <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => handleSearchChange(e.target.value)}
-            placeholder="ابحث في المخزون بالاسم التجاري، المادة الفعالة، أو الباركود..."
-            className="w-full bg-slate-950 border border-slate-800 rounded-lg pr-9 pl-3 py-2 text-white outline-none focus:border-amber-500"
-          />
-        </div>
-        <div className="text-slate-400 font-mono shrink-0">
-          يعرض <b className="text-white">{visibleProducts.length}</b> من أصل{" "}
-          <b className="text-amber-400">{filteredProducts.length}</b> صنف مطابق
-        </div>
-      </div>
-
-      {/* 3. قائمة بطاقات الأدوية (محدودة بـ visibleLimit لأداء فائق) */}
-      <div className="space-y-3">
-        {visibleProducts.map((p) => (
-          <InventoryItemCard
-            key={p.id}
-            product={p}
-            nearestDays={getNearestExpiryDays(p)}
-            isDeadStock={
-              p.stockPacks > p.minLimit && !soldProductIdsLast60Days.has(p.id)
-            }
-            onPrintBarcode={setBarcodeProduct}
-            onAdjustStock={setAdjustmentProduct}
-          />
-        ))}
-      </div>
-
-      {/* زر تحميل المزيد عند وجود أصناف أكثر من الحد المعروض */}
-      {filteredProducts.length > visibleLimit && (
-        <div className="pt-4 text-center">
+      {/* شريط التبويبات الداخلية (يظهر عند توفر صلاحية عرض التكلفة وسجل التوالف) */}
+      {canViewCost && (
+        <div className="mb-5 flex items-center gap-2 bg-slate-900 p-1.5 rounded-xl border border-slate-800 w-fit">
           <button
-            onClick={() => setVisibleLimit((prev) => prev + PAGE_SIZE)}
-            className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-bold px-6 py-2.5 rounded-xl inline-flex items-center gap-2 shadow-lg transition"
+            type="button"
+            onClick={() => setActiveSubTab("stock")}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-bold transition ${
+              activeSubTab === "stock"
+                ? "bg-amber-600 text-white shadow-md"
+                : "text-slate-400 hover:text-white hover:bg-slate-800"
+            }`}
           >
-            <ChevronDown className="w-4 h-4 text-amber-400" />
-            عرض {PAGE_SIZE} صنفاً إضافياً (المتبقي:{" "}
-            {filteredProducts.length - visibleLimit} صنف)
+            <Package className="w-4 h-4" />
+            المخزون ورادار الصلاحيات
+            <span
+              className={`font-mono text-[10px] px-1.5 py-0.5 rounded-full ${
+                activeSubTab === "stock"
+                  ? "bg-amber-950/50 text-amber-100"
+                  : "bg-slate-800 text-slate-300"
+              }`}
+            >
+              {products.length}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveSubTab("losses")}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-bold transition ${
+              activeSubTab === "losses"
+                ? "bg-rose-700 text-white shadow-md"
+                : "text-slate-400 hover:text-white hover:bg-slate-800"
+            }`}
+          >
+            <ClipboardCheck className="w-4 h-4" />
+            سجل التوالف والكسور والفروقات الجردية
+            <span
+              className={`font-mono text-[10px] px-1.5 py-0.5 rounded-full ${
+                activeSubTab === "losses"
+                  ? "bg-rose-950/60 text-rose-100"
+                  : inventoryLossLogs.length > 0
+                    ? "bg-rose-950 text-rose-300 border border-rose-800/70"
+                    : "bg-slate-800 text-slate-400"
+              }`}
+            >
+              {inventoryLossLogs.length}
+            </span>
           </button>
         </div>
       )}
 
-      {/* 4. سجل التوالف والخسائر المخزنية الموثقة */}
-      {canViewCost && inventoryLossLogs.length > 0 && (
-        <div className="mt-6 bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-            <h3 className="font-bold text-white text-sm flex items-center gap-2">
-              <ClipboardCheck className="w-4 h-4 text-amber-400" /> سجل التوالف
-              والكسور والفروقات الجردية المقيدة مالياً
-            </h3>
-            <span className="font-mono text-xs text-rose-400 font-bold">
-              إجمالي خسائر التوالف والعجز:{" "}
-              {inventoryLossLogs
-                .reduce((sum, e) => sum + e.amount, 0)
-                .toFixed(2)}{" "}
-              ر.س
-            </span>
-          </div>
-
-          <div className="overflow-x-auto max-h-52">
-            <table className="w-full text-right text-[11px]">
-              <thead>
-                <tr className="border-b border-slate-800 text-slate-400">
-                  <th className="py-1.5">رقم التسوية</th>
-                  <th className="py-1.5">البيان والصنف</th>
-                  <th className="py-1.5">التفاصيل والملاحظات</th>
-                  <th className="py-1.5">التاريخ</th>
-                  <th className="py-1.5">قيمة الخسارة بالتكلفة</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60 font-mono">
-                {inventoryLossLogs.map((log) => (
-                  <tr key={log.id}>
-                    <td className="py-2 font-bold text-white">{log.id}</td>
-                    <td className="py-2 font-sans font-bold text-amber-300">
-                      {log.title}
-                    </td>
-                    <td className="py-2 font-sans text-slate-400">
-                      {log.notes || "—"}
-                    </td>
-                    <td className="py-2 text-slate-400">
-                      {new Date(log.createdAt).toLocaleString("ar-SA")}
-                    </td>
-                    <td className="py-2 font-bold text-rose-400">
-                      -{log.amount.toFixed(2)} ر.س
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+      {/* التبويب الأول: المخزون ورادار الصلاحيات */}
+      {activeSubTab === "stock" && (
+        <InventoryStockTab
+          products={products}
+          invoices={invoices}
+          onPrintBarcode={setBarcodeProduct}
+          onAdjustStock={setAdjustmentProduct}
+        />
       )}
 
-      {/* 5. النوافذ المنبثقة */}
+      {/* التبويب الثاني: سجل التوالف والكسور والفروقات الجردية المقيدة مالياً */}
+      {canViewCost && activeSubTab === "losses" && (
+        <InventoryLossesTab logs={inventoryLossLogs} />
+      )}
+
+      {/* النوافذ المنبثقة */}
       <BarcodeLabelModal
         product={barcodeProduct}
         onClose={() => setBarcodeProduct(null)}
