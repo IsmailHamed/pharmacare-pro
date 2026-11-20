@@ -89,6 +89,7 @@ export interface PosState {
     meta?: ControlledDrugMeta,
   ) => void;
   updateCartQty: (cartKey: string, delta: number) => void;
+  toggleCartItemUnit: (cartKey: string) => void;
   removeFromCart: (cartKey: string) => void;
   clearCart: () => void;
   holdCurrentInvoice: (customerName?: string) => void;

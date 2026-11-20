@@ -38,6 +38,7 @@ export type PosCartSlice = Pick<
   | "requestAddToCart"
   | "addToCart"
   | "updateCartQty"
+  | "toggleCartItemUnit"
   | "removeFromCart"
   | "clearCart"
   | "handleBarcodeScan"
@@ -58,6 +59,10 @@ const calculateUnitPrice = (
 
 const generateCartKey = (productId: string, unit: "pack" | "strip"): string => {
   return `${productId}-${unit}`;
+};
+
+const generateHeldInvoiceId = (): string => {
+  return `HLD-${Date.now().toString().slice(-6)}-${Math.floor(10 + Math.random() * 90)}`;
 };
 
 export const createPosCartSlice: PosSlice<PosCartSlice> = (set, get) => ({
@@ -242,6 +247,114 @@ export const createPosCartSlice: PosSlice<PosCartSlice> = (set, get) => ({
     });
   },
 
+  toggleCartItemUnit: (cartKey) => {
+    const state = get();
+    const targetItem = state.cart.find((item) => item.cartKey === cartKey);
+    if (!targetItem) return;
+
+    const stripsPerPack = Math.max(1, targetItem.product.stripsPerPack);
+    if (stripsPerPack <= 1) {
+      set({
+        notification: {
+          type: "info",
+          message: `الصنف (${targetItem.product.name}) يُباع كعلبة كاملة فقط ولا يحتوي على أشرطة مجزأة.`,
+        },
+      });
+      return;
+    }
+
+    const nextUnit: "pack" | "strip" =
+      targetItem.unit === "pack" ? "strip" : "pack";
+    const nextUnitPrice = calculateUnitPrice(targetItem.product, nextUnit);
+    const nextCartKey = generateCartKey(targetItem.product.id, nextUnit);
+
+    // التحقق من توفر الرصيد عند التحويل في وضع البيع
+    if (state.invoiceMode === "SALE") {
+      const maxStrips =
+        targetItem.product.stockPacks * stripsPerPack +
+        targetItem.product.stockLooseStrips;
+
+      const existingSameTargetUnit = state.cart.find(
+        (item) => item.cartKey === nextCartKey && item.cartKey !== cartKey,
+      );
+      const mergedQty =
+        targetItem.qty +
+        (existingSameTargetUnit ? existingSameTargetUnit.qty : 0);
+
+      const neededStrips =
+        nextUnit === "pack" ? mergedQty * stripsPerPack : mergedQty;
+
+      if (neededStrips > maxStrips) {
+        set({
+          notification: {
+            type: "error",
+            message: `الرصيد المتاح (${targetItem.product.stockPacks} علبة و ${targetItem.product.stockLooseStrips} شريط) لا يكفي للتحويل إلى (${
+              nextUnit === "pack" ? "علبة" : "شريط"
+            }).`,
+          },
+        });
+        return;
+      }
+    }
+
+    const updatedCart: CartItemEntity[] = [];
+    for (const item of state.cart) {
+      if (item.cartKey === cartKey) {
+        const duplicateIdx = updatedCart.findIndex(
+          (existing) => existing.cartKey === nextCartKey,
+        );
+        if (duplicateIdx >= 0) {
+          updatedCart[duplicateIdx] = {
+            ...updatedCart[duplicateIdx],
+            qty: updatedCart[duplicateIdx].qty + item.qty,
+            controlledMeta:
+              updatedCart[duplicateIdx].controlledMeta || item.controlledMeta,
+          };
+        } else {
+          updatedCart.push({
+            ...item,
+            cartKey: nextCartKey,
+            unit: nextUnit,
+            unitPrice: nextUnitPrice,
+          });
+        }
+      } else if (item.cartKey === nextCartKey) {
+        const alreadyMergedIdx = updatedCart.findIndex(
+          (existing) => existing.cartKey === nextCartKey,
+        );
+        if (alreadyMergedIdx >= 0) {
+          updatedCart[alreadyMergedIdx] = {
+            ...updatedCart[alreadyMergedIdx],
+            qty: updatedCart[alreadyMergedIdx].qty + item.qty,
+            unitPrice: nextUnitPrice,
+            controlledMeta:
+              updatedCart[alreadyMergedIdx].controlledMeta ||
+              item.controlledMeta,
+          };
+        } else {
+          updatedCart.push({
+            ...item,
+            unitPrice: nextUnitPrice,
+          });
+        }
+      } else {
+        updatedCart.push(item);
+      }
+    }
+
+    set({
+      cart: updatedCart,
+      interactionAlerts:
+        ClinicalDecisionUseCase.detectDrugInteractions(updatedCart),
+      notification: {
+        type: "info",
+        message: `تم تبديل وحدة (${targetItem.product.name}) إلى: ${
+          nextUnit === "pack" ? "علبة كاملة" : "شريط فرط"
+        } (${nextUnitPrice.toFixed(2)} ر.س)`,
+      },
+    });
+  },
+
   removeFromCart: (cartKey) => {
     set((state) => {
       const updatedCart = state.cart.filter((item) => item.cartKey !== cartKey);
@@ -378,21 +491,21 @@ export const createPosCartSlice: PosSlice<PosCartSlice> = (set, get) => ({
       return;
     }
 
+    // الحفاظ على ترتيب التبويبات المرقّمة (زبون 1، زبون 2...) بإضافة التبويب الجديد في النهاية
+    const nextTabNumber = heldInvoices.length + 1;
     const newHeldInvoice: HeldInvoiceEntity = {
-      id: `HLD-${Date.now().toString().slice(-5)}`,
+      id: generateHeldInvoiceId(),
       customerName:
-        customName?.trim() ||
-        customerName.trim() ||
-        `فاتورة معلقة #${heldInvoices.length + 1}`,
+        customName?.trim() || customerName.trim() || `زبون ${nextTabNumber}`,
       items: [...cart],
       heldAt: new Date().toISOString(),
     };
 
     set((state) => ({
-      heldInvoices: [newHeldInvoice, ...state.heldInvoices],
+      heldInvoices: [...state.heldInvoices, newHeldInvoice],
       notification: {
         type: "info",
-        message: `تم تعليق الفاتورة (${newHeldInvoice.customerName}) بنجاح — اضغط F5 لاستئنافها.`,
+        message: `تم تعليق فاتورة (${newHeldInvoice.customerName}) في التبويب [Alt+${nextTabNumber}] — يمكنك خدمة زبون جديد الآن.`,
       },
     }));
 
@@ -400,24 +513,49 @@ export const createPosCartSlice: PosSlice<PosCartSlice> = (set, get) => ({
   },
 
   resumeInvoice: (invoiceId) => {
-    const { heldInvoices } = get();
-    const invoiceToResume = heldInvoices.find((inv) => inv.id === invoiceId);
-    if (!invoiceToResume) return;
+    const { heldInvoices, cart, customerName } = get();
+    const targetIndex = heldInvoices.findIndex((inv) => inv.id === invoiceId);
+    if (targetIndex === -1) return;
 
+    const invoiceToResume = heldInvoices[targetIndex];
     const interactionAlerts = ClinicalDecisionUseCase.detectDrugInteractions(
       invoiceToResume.items,
     );
 
-    set((state) => ({
+    let nextHeldInvoices: HeldInvoiceEntity[];
+    let swappedLabel: string | null = null;
+
+    // التبديل التلقائي الآمن (Auto-Swap): إذا كانت السلة النشطة فيها أصناف، تُعلّق تلقائياً في نفس موضع التبويب
+    if (cart.length > 0) {
+      const parkedInvoice: HeldInvoiceEntity = {
+        id: generateHeldInvoiceId(),
+        customerName: customerName.trim() || `زبون ${targetIndex + 1}`,
+        items: [...cart],
+        heldAt: new Date().toISOString(),
+      };
+      swappedLabel = parkedInvoice.customerName;
+      nextHeldInvoices = heldInvoices.map((inv, idx) =>
+        idx === targetIndex ? parkedInvoice : inv,
+      );
+    } else {
+      nextHeldInvoices = heldInvoices.filter((inv) => inv.id !== invoiceId);
+    }
+
+    set({
       cart: invoiceToResume.items,
       customerName: invoiceToResume.customerName,
+      invoiceMode: "SALE",
+      returnSourceInvoiceId: null,
+      discountPercent: 0,
       interactionAlerts,
-      heldInvoices: state.heldInvoices.filter((inv) => inv.id !== invoiceId),
+      heldInvoices: nextHeldInvoices,
       notification: {
         type: "success",
-        message: `تم استئناف الفاتورة المعلقة (${invoiceToResume.customerName})`,
+        message: swappedLabel
+          ? `تم التبديل إلى (${invoiceToResume.customerName}) وتعليق (${swappedLabel}) تلقائياً في [Alt+${targetIndex + 1}].`
+          : `تم استئناف فاتورة (${invoiceToResume.customerName}).`,
       },
-    }));
+    });
   },
 
   completeCheckout: async () => {

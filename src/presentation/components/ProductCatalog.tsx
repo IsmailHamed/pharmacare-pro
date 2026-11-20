@@ -1,6 +1,6 @@
 import React, { forwardRef } from "react";
 import { ProductEntity } from "../../domain/entities";
-import { Search, Repeat } from "lucide-react";
+import { Search, Repeat, X, Sparkles } from "lucide-react";
 
 interface Props {
   searchQuery: string;
@@ -25,9 +25,11 @@ export const ProductCatalog = forwardRef<HTMLInputElement, Props>(
     },
     ref,
   ) => {
+    const hasQuery = searchQuery.trim().length > 0;
+
     return (
       <div className="w-7/12 p-4 flex flex-col border-l border-slate-800">
-        {/* حقل البحث */}
+        {/* حقل البحث الضبابي والصوتي الذكي */}
         <div className="relative mb-3">
           <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-3" />
           <input
@@ -36,12 +38,31 @@ export const ProductCatalog = forwardRef<HTMLInputElement, Props>(
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
             onKeyDown={onSearchEnter}
-            placeholder="ابحث بالباركود، الاسم التجاري، أو المادة الفعالة... (F2)"
-            className="w-full bg-slate-900 border border-slate-700 rounded-xl pr-10 pl-12 py-2.5 text-xs text-white focus:outline-none focus:border-blue-500"
+            placeholder="ابحث بالباركود أو الاسم والعيار معاً (مثلاً: pan 500 أو اموكس 1g) أو المادة الفعالة... (F2)"
+            className="w-full bg-slate-900 border border-slate-700 rounded-xl pr-10 pl-32 py-2.5 text-xs text-white focus:outline-none focus:border-blue-500"
           />
-          <span className="absolute left-3 top-2.5 bg-slate-800 text-slate-400 px-2 py-0.5 rounded text-[10px] font-mono">
-            F2
-          </span>
+
+          <div className="absolute left-2.5 top-2 flex items-center gap-1.5">
+            {hasQuery && (
+              <>
+                <span className="bg-sky-950/90 border border-sky-800/80 text-sky-300 px-1.5 py-0.5 rounded text-[10px] font-mono flex items-center gap-1">
+                  <Sparkles className="w-2.5 h-2.5" />
+                  {products.length}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onSearchChange("")}
+                  title="مسح البحث"
+                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white p-1 rounded transition"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </>
+            )}
+            <span className="bg-slate-800 text-slate-400 px-2 py-0.5 rounded text-[10px] font-mono">
+              F2
+            </span>
+          </div>
         </div>
 
         {/* جدول الأدوية */}
@@ -60,24 +81,39 @@ export const ProductCatalog = forwardRef<HTMLInputElement, Props>(
               {products.length === 0 && (
                 <tr>
                   <td colSpan={5} className="text-center text-slate-500 py-10">
-                    لا توجد نتائج مطابقة — جرّب الباركود أو المادة الفعالة
+                    لا توجد نتائج مطابقة لـ «{searchQuery.trim()}» — جرّب الاسم
+                    مع العيار (مثل: pan 500) أو الباركود أو المادة الفعالة
                   </td>
                 </tr>
               )}
-              {products.map((p) => {
+              {products.map((p, idx) => {
                 const outOfStock =
                   p.stockPacks === 0 && p.stockLooseStrips === 0;
+                const isTopSearchMatch = hasQuery && idx === 0;
+
                 return (
-                  <tr key={p.id} className="hover:bg-slate-800/50 transition">
+                  <tr
+                    key={p.id}
+                    className={`transition ${
+                      isTopSearchMatch
+                        ? "bg-sky-950/35 hover:bg-sky-950/50"
+                        : "hover:bg-slate-800/50"
+                    }`}
+                  >
                     <td className="py-2.5 px-3 font-mono text-slate-400">
                       {p.barcode}
                     </td>
                     <td className="py-2.5 px-3">
-                      <div className="font-bold text-white flex items-center gap-1.5">
+                      <div className="font-bold text-white flex items-center gap-1.5 flex-wrap">
                         {p.name}
                         {p.isControlled && (
                           <span className="bg-rose-950 text-rose-300 border border-rose-800 text-[10px] px-1.5 rounded">
                             مراقب 🔒
+                          </span>
+                        )}
+                        {isTopSearchMatch && (
+                          <span className="bg-sky-950 text-sky-300 border border-sky-700/80 text-[9px] font-mono px-1.5 py-0.2 rounded">
+                            ↵ Enter
                           </span>
                         )}
                       </div>

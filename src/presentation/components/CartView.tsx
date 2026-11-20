@@ -9,6 +9,7 @@ import {
   Undo2,
   FileSearch,
   SearchCheck,
+  Keyboard,
 } from "lucide-react";
 
 interface Props {
@@ -26,6 +27,7 @@ interface Props {
   onSetPaymentMode: (mode: "CASH" | "CREDIT") => void;
   onSetCustomerName: (name: string) => void;
   updateQty: (key: string, delta: number) => void;
+  onToggleUnit: (key: string) => void;
   removeFromCart: (key: string) => void;
   onCheckout: () => void;
   onToggleReturn: () => void;
@@ -47,6 +49,7 @@ export const CartView: React.FC<Props> = ({
   onSetPaymentMode,
   onSetCustomerName,
   updateQty,
+  onToggleUnit,
   removeFromCart,
   onCheckout,
   onToggleReturn,
@@ -148,6 +151,39 @@ export const CartView: React.FC<Props> = ({
         </div>
       )}
 
+      {/* شريط تلميح اختصارات "صفر ماوس" لآخر صنف مضاف للسلة */}
+      {cart.length > 0 && (
+        <div className="mb-2 px-2.5 py-1.5 bg-slate-900/90 border border-slate-800 rounded-lg flex items-center justify-between text-[10px] text-slate-400">
+          <span className="flex items-center gap-1 font-bold text-sky-400">
+            <Keyboard className="w-3.5 h-3.5" /> تحكم سريع بآخر صنف:
+          </span>
+          <div className="flex items-center gap-2 font-mono">
+            <span>
+              <kbd className="bg-slate-800 border border-slate-700 text-slate-200 px-1 py-0.5 rounded">
+                +
+              </kbd>
+              /
+              <kbd className="bg-slate-800 border border-slate-700 text-slate-200 px-1 py-0.5 rounded">
+                -
+              </kbd>{" "}
+              كمية
+            </span>
+            <span>
+              <kbd className="bg-slate-800 border border-slate-700 text-slate-200 px-1 py-0.5 rounded">
+                Tab
+              </kbd>{" "}
+              علبة/شريط
+            </span>
+            <span>
+              <kbd className="bg-slate-800 border border-slate-700 text-slate-200 px-1 py-0.5 rounded">
+                Del
+              </kbd>{" "}
+              حذف
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* قائمة السلة */}
       <div className="flex-1 overflow-y-auto border border-slate-800 rounded-xl bg-slate-900/60 p-2.5 space-y-2 no-scrollbar">
         {cart.length === 0 ? (
@@ -156,61 +192,89 @@ export const CartView: React.FC<Props> = ({
             <p>السلة فارغة — ابدأ بإضافة الأدوية أو امسح الباركود بالليزر</p>
           </div>
         ) : (
-          cart.map((item) => (
-            <div
-              key={item.cartKey}
-              className="bg-slate-800/80 border border-slate-700/70 rounded-lg p-2.5 flex items-center justify-between text-xs"
-            >
-              <div>
-                <div className="font-bold text-white flex items-center gap-1.5">
-                  {item.product.name}
-                  <span
-                    className={`text-[10px] px-1.5 rounded ${
-                      item.unit === "pack"
-                        ? "bg-blue-950 text-blue-300"
-                        : "bg-indigo-950 text-indigo-300"
-                    }`}
-                  >
-                    {item.unit === "pack" ? "علبة" : "شريط"}
-                  </span>
-                  {item.isControlled && (
-                    <span className="text-[10px] bg-rose-950 text-rose-300 border border-rose-800 px-1.5 rounded">
-                      🔒 موثق
+          cart.map((item, idx) => {
+            const isActiveForKeyboard = idx === 0;
+            const canSplitToStrips = item.product.stripsPerPack > 1;
+
+            return (
+              <div
+                key={item.cartKey}
+                className={`rounded-lg p-2.5 flex items-center justify-between text-xs transition ${
+                  isActiveForKeyboard
+                    ? "bg-slate-800 border-2 border-sky-500/70 shadow-[0_0_12px_rgba(14,165,233,0.12)]"
+                    : "bg-slate-800/80 border border-slate-700/70"
+                }`}
+              >
+                <div>
+                  <div className="font-bold text-white flex items-center gap-1.5 flex-wrap">
+                    {item.product.name}
+                    <button
+                      type="button"
+                      disabled={!canSplitToStrips}
+                      onClick={() => onToggleUnit(item.cartKey)}
+                      title={
+                        canSplitToStrips
+                          ? "اضغط أو استخدم زر Tab للتبديل بين علبة وشريط"
+                          : "هذا الصنف يُباع كعلبة كاملة فقط"
+                      }
+                      className={`text-[10px] px-1.5 py-0.5 rounded transition ${
+                        item.unit === "pack"
+                          ? "bg-blue-950 text-blue-300 border border-blue-800/70"
+                          : "bg-indigo-950 text-indigo-300 border border-indigo-700/80"
+                      } ${
+                        canSplitToStrips
+                          ? "hover:brightness-125 cursor-pointer"
+                          : "cursor-default"
+                      }`}
+                    >
+                      {item.unit === "pack" ? "علبة" : "شريط"}
+                    </button>
+                    {item.isControlled && (
+                      <span className="text-[10px] bg-rose-950 text-rose-300 border border-rose-800 px-1.5 rounded">
+                        🔒 موثق
+                      </span>
+                    )}
+                    {isActiveForKeyboard && (
+                      <span className="text-[9px] bg-sky-950 text-sky-300 border border-sky-700/80 px-1.5 py-0.2 rounded-full">
+                        نشط
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[11px] text-slate-400 mt-0.5">
+                    {item.unitPrice.toFixed(2)} للوحدة
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center bg-slate-900 border border-slate-700 rounded">
+                    <button
+                      onClick={() => updateQty(item.cartKey, -1)}
+                      className="px-2 py-0.5 hover:bg-slate-800"
+                    >
+                      −
+                    </button>
+                    <span className="px-2.5 font-mono font-bold">
+                      {item.qty}
                     </span>
-                  )}
-                </div>
-                <div className="text-[11px] text-slate-400 mt-0.5">
-                  {item.unitPrice.toFixed(2)} للوحدة
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="flex items-center bg-slate-900 border border-slate-700 rounded">
+                    <button
+                      onClick={() => updateQty(item.cartKey, 1)}
+                      className="px-2 py-0.5 hover:bg-slate-800"
+                    >
+                      +
+                    </button>
+                  </div>
+                  <span className="font-mono font-bold text-emerald-400 w-16 text-left">
+                    {(item.unitPrice * item.qty).toFixed(2)}
+                  </span>
                   <button
-                    onClick={() => updateQty(item.cartKey, -1)}
-                    className="px-2 py-0.5 hover:bg-slate-800"
+                    onClick={() => removeFromCart(item.cartKey)}
+                    className="text-slate-500 hover:text-rose-400 px-1"
                   >
-                    −
-                  </button>
-                  <span className="px-2.5 font-mono font-bold">{item.qty}</span>
-                  <button
-                    onClick={() => updateQty(item.cartKey, 1)}
-                    className="px-2 py-0.5 hover:bg-slate-800"
-                  >
-                    +
+                    ✕
                   </button>
                 </div>
-                <span className="font-mono font-bold text-emerald-400 w-16 text-left">
-                  {(item.unitPrice * item.qty).toFixed(2)}
-                </span>
-                <button
-                  onClick={() => removeFromCart(item.cartKey)}
-                  className="text-slate-500 hover:text-rose-400 px-1"
-                >
-                  ✕
-                </button>
               </div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
 

@@ -1,6 +1,16 @@
-import React, { useState, useRef, useMemo, useCallback } from "react";
+import React, {
+  useState,
+  useRef,
+  useMemo,
+  useCallback,
+  useEffect,
+} from "react";
 import { usePosStore } from "../../application/store/usePosStore";
 import { ClinicalDecisionUseCase } from "../../application/use-cases/ClinicalDecisionUseCase";
+import {
+  buildProductSearchIndex,
+  searchProductsFuzzy,
+} from "../../domain/utils/fuzzySearch";
 import { ProductCatalog } from "../components/ProductCatalog";
 import { CartView } from "../components/CartView";
 import { ControlledDrugModal } from "../components/ControlledDrugModal";
@@ -30,8 +40,9 @@ export const POSView: React.FC = () => {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isShortagesOpen, setIsShortagesOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const lastScannerCharAtRef = useRef<number>(0);
 
-  // إيقاف لقط الباركود التلقائي للسلة عند فتح أي نافذة منبثقة فرعية
+  // إيقاف لقط الباركود التلقائي والاختصارات عند فتح أي نافذة منبثقة فرعية
   const isAnyModalOpen =
     isHistoryOpen ||
     isShortagesOpen ||
@@ -41,26 +52,132 @@ export const POSView: React.FC = () => {
 
   useBarcodeScanner(!isAnyModalOpen, () => setSearchQuery(""));
 
-  // البحث الذكي الفائق السرعة (يدعم 10,000+ دواء بدون أي تجمّد للواجهة)
-  const filteredProducts = useMemo(() => {
-    const q = searchQuery.toLowerCase().trim();
-    if (!q) return store.products.slice(0, 60);
-    const baseBarcode = q.endsWith("-s") ? q.slice(0, -2) : q;
+  // اختصارات "صفر ماوس" (Zero-Mouse POS) للتحكم المباشر بآخر صنف مضاف للسلة (cart[0])
+  useEffect(() => {
+    const handleZeroMouseKeyDown = (e: KeyboardEvent) => {
+      if (isAnyModalOpen) return;
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
 
-    const results: ProductEntity[] = [];
-    for (let i = 0; i < store.products.length; i++) {
-      const p = store.products[i];
-      if (
-        p.barcode.toLowerCase().includes(baseBarcode) ||
-        p.name.toLowerCase().includes(q) ||
-        p.scientificName.toLowerCase().includes(q)
-      ) {
-        results.push(p);
-        if (results.length >= 60) break;
+      // تتبع النبضات السريعة لقارئ الباركود لتفادي تداخل علامة "-" في باركودات (INV- / -S)
+      if (e.key.length === 1 && /[a-zA-Z0-9]/.test(e.key)) {
+        lastScannerCharAtRef.current = performance.now();
+        return;
       }
-    }
-    return results;
-  }, [searchQuery, store.products]);
+
+      const activeCartItem = store.cart[0];
+      if (!activeCartItem) return;
+
+      const target = e.target as HTMLElement | null;
+      const isSearchInput = target === searchInputRef.current;
+      const isOtherEditable =
+        target &&
+        !isSearchInput &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable);
+
+      // لا نتدخل إذا كان المستخدم يكتب داخل حقل آخر (مثل اسم العميل أو نسبة الخصم)
+      if (isOtherEditable) return;
+
+      // إذا كان المؤشر داخل خانة البحث وفيها نص قيد الكتابة، نترك المفاتيح تعمل بشكلها الطبيعي
+      if (isSearchInput && searchQuery.trim().length > 0) return;
+
+      const isPlus = e.key === "+" || e.code === "NumpadAdd";
+      const isMinus = e.key === "-" || e.code === "NumpadSubtract";
+      const isTabToggle = e.key === "Tab" && !e.shiftKey;
+      const isDelete = e.key === "Delete";
+
+      if (!isPlus && !isMinus && !isTabToggle && !isDelete) return;
+
+      // تجاهل علامة "-" إذا جاءت ضمن تدفق سريع من قارئ الباركود الليزري
+      if (e.key === "-" && e.code !== "NumpadSubtract") {
+        const scannerGuardMs = Math.max(
+          120,
+          (store.settings.scannerMaxIntervalMs || 45) * 2,
+        );
+        if (performance.now() - lastScannerCharAtRef.current < scannerGuardMs) {
+          return;
+        }
+      }
+
+      e.preventDefault();
+
+      if (isPlus) {
+        store.updateCartQty(activeCartItem.cartKey, 1);
+      } else if (isMinus) {
+        store.updateCartQty(activeCartItem.cartKey, -1);
+      } else if (isTabToggle) {
+        store.toggleCartItemUnit(activeCartItem.cartKey);
+      } else if (isDelete) {
+        store.removeFromCart(activeCartItem.cartKey);
+      }
+    };
+
+    window.addEventListener("keydown", handleZeroMouseKeyDown);
+    return () => window.removeEventListener("keydown", handleZeroMouseKeyDown);
+  }, [
+    isAnyModalOpen,
+    searchQuery,
+    store.cart,
+    store.settings.scannerMaxIntervalMs,
+    store.updateCartQty,
+    store.toggleCartItemUnit,
+    store.removeFromCart,
+  ]);
+
+  // اختصارات التبديل السريع بين تبويبات الزبائن المعلقين (Alt + 1 .. Alt + 9)
+  useEffect(() => {
+    const handleHeldTabShortcuts = (e: KeyboardEvent) => {
+      if (isAnyModalOpen) return;
+      if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+
+      let digit: number | null = null;
+
+      // الاعتماد على e.code أولاً لضمان العمل مع لوحة المفاتيح العربية والإنجليزية والـ Numpad
+      const codeMatch = /^(?:Digit|Numpad)([1-9])$/.exec(e.code);
+      if (codeMatch) {
+        digit = Number(codeMatch[1]);
+      } else if (/^[1-9]$/.test(e.key)) {
+        digit = Number(e.key);
+      }
+
+      if (digit === null) return;
+
+      const targetHeld = store.heldInvoices[digit - 1];
+      if (!targetHeld) return;
+
+      e.preventDefault();
+      store.resumeInvoice(targetHeld.id);
+    };
+
+    window.addEventListener("keydown", handleHeldTabShortcuts);
+    return () => window.removeEventListener("keydown", handleHeldTabShortcuts);
+  }, [isAnyModalOpen, store.heldInvoices, store.resumeInvoice]);
+
+  // بناء فهرس البحث الصوتي والضبابي مسبقاً لمرة واحدة عند تغيّر قائمة الأدوية
+  const productSearchIndex = useMemo(
+    () => buildProductSearchIndex(store.products),
+    [store.products],
+  );
+
+  // البحث الضبابي والصوتي الفائق السرعة (يدعم 10,000+ دواء والبحث المزدوج مثل "pan 500")
+  const filteredProducts = useMemo(
+    () => searchProductsFuzzy(productSearchIndex, searchQuery, 60),
+    [productSearchIndex, searchQuery],
+  );
+
+  // حساب الإجمالي الفرعي والصافي للسلة النشطة مرة واحدة
+  const cartSubtotal = useMemo(
+    () => store.cart.reduce((sum, item) => sum + item.unitPrice * item.qty, 0),
+    [store.cart],
+  );
+
+  const cartNetTotal = useMemo(
+    () => cartSubtotal - (cartSubtotal * store.discountPercent) / 100,
+    [cartSubtotal, store.discountPercent],
+  );
+
   // حساب عدد النواقص تحت حد الطلب لعرضها على زر دفتر النواقص
   const shortagesCount = useMemo(
     () => store.products.filter((p) => p.stockPacks <= p.minLimit).length,
@@ -177,10 +294,14 @@ export const POSView: React.FC = () => {
         <InteractionAlertBar alerts={store.interactionAlerts} />
       )}
 
-      {/* شريط الفواتير المعلقة */}
+      {/* شريط تبويبات الزبائن والفواتير المعلقة (Alt+1 .. Alt+9) */}
       <HeldInvoicesBar
         heldInvoices={store.heldInvoices}
         onResume={(id) => store.resumeInvoice(id)}
+        activeCustomerName={store.customerName}
+        activeCartCount={store.cart.length}
+        activeCartTotal={cartNetTotal}
+        onHoldCurrent={() => store.holdCurrentInvoice()}
       />
 
       <div className="flex-1 flex overflow-hidden">
@@ -197,10 +318,7 @@ export const POSView: React.FC = () => {
 
         <CartView
           cart={store.cart}
-          subtotal={store.cart.reduce(
-            (sum, item) => sum + item.unitPrice * item.qty,
-            0,
-          )}
+          subtotal={cartSubtotal}
           discountPercent={store.discountPercent}
           paymentMode={store.paymentMode}
           customerName={store.customerName}
@@ -213,6 +331,7 @@ export const POSView: React.FC = () => {
           onSetPaymentMode={store.setPaymentMode}
           onSetCustomerName={store.setCustomerName}
           updateQty={store.updateCartQty}
+          onToggleUnit={store.toggleCartItemUnit}
           removeFromCart={store.removeFromCart}
           onCheckout={() => void store.completeCheckout()}
           onToggleReturn={store.toggleReturnMode}
