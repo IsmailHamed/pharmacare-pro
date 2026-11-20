@@ -12,5 +12,8 @@ export interface InvoiceEntity {
   netProfit?: number;
   items: CartItemEntity[];
   createdAt: string;
+  shiftId?: string; // رقم الوردية التي صُدرت خلالها الفاتورة
+  performedByUserId?: string; // معرّف المستخدم الذي نفّذ الفاتورة
+  performedByName?: string; // اسم المستخدم الذي نفّذ الفاتورة
   branchId: string;
 }

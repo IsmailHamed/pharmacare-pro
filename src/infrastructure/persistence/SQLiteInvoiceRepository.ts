@@ -82,8 +82,9 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
       await sqliteRaw.execute(
         `INSERT OR REPLACE INTO invoices (
           id, type, payment_mode, customer_name, subtotal, discount_percent,
-          total_amount, total_cost_amount, net_profit, items_json, created_at, branch_id
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);`,
+          total_amount, total_cost_amount, net_profit, items_json, created_at,
+          shift_id, performed_by_user_id, performed_by_name, branch_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15);`,
         [
           invoice.id,
           invoice.type,
@@ -96,6 +97,9 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
           invoice.netProfit ?? 0,
           JSON.stringify(invoice.items),
           invoice.createdAt,
+          invoice.shiftId || null,
+          invoice.performedByUserId || null,
+          invoice.performedByName || null,
           invoice.branchId,
         ],
       );
@@ -133,6 +137,13 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
             netProfit: Number(r.net_profit),
             items: JSON.parse(String(r.items_json || "[]")),
             createdAt: String(r.created_at),
+            shiftId: r.shift_id ? String(r.shift_id) : undefined,
+            performedByUserId: r.performed_by_user_id
+              ? String(r.performed_by_user_id)
+              : undefined,
+            performedByName: r.performed_by_name
+              ? String(r.performed_by_name)
+              : undefined,
             branchId: String(r.branch_id),
           }));
           sqliteEngine.commit((draft) => {

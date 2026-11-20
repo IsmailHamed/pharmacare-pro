@@ -10,6 +10,8 @@ import {
   Eye,
   Calendar,
   User,
+  UserCheck,
+  Lock,
   CreditCard,
   Banknote,
 } from "lucide-react";
@@ -39,7 +41,7 @@ export const InvoicesHistoryModal: React.FC<Props> = ({ isOpen, onClose }) => {
     null,
   );
 
-  // فلترة الفواتير حسب نوع الفاتورة وطريقة الدفع ونص البحث (رقم الفاتورة / العميل / الدواء)
+  // فلترة الفواتير حسب نوع الفاتورة وطريقة الدفع ونص البحث (رقم الفاتورة / العميل / المنفّذ / الوردية / الدواء)
   const filteredInvoices = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return invoices.filter((inv) => {
@@ -51,19 +53,33 @@ export const InvoicesHistoryModal: React.FC<Props> = ({ isOpen, onClose }) => {
 
       const matchesId = inv.id.toLowerCase().includes(q);
       const matchesCustomer = inv.customerName.toLowerCase().includes(q);
+      const matchesPerformer = (inv.performedByName || "")
+        .toLowerCase()
+        .includes(q);
+      const matchesShift = (inv.shiftId || "").toLowerCase().includes(q);
       const matchesDrug = inv.items.some(
         (item) =>
           item.product.name.toLowerCase().includes(q) ||
           item.product.barcode.includes(q),
       );
 
-      return matchesId || matchesCustomer || matchesDrug;
+      return (
+        matchesId ||
+        matchesCustomer ||
+        matchesPerformer ||
+        matchesShift ||
+        matchesDrug
+      );
     });
   }, [invoices, searchQuery, typeFilter, paymentFilter]);
 
   if (!isOpen) return null;
 
-  const activeInvoice = selectedInvoice || filteredInvoices[0] || null;
+  const activeInvoice =
+    (selectedInvoice &&
+      filteredInvoices.find((inv) => inv.id === selectedInvoice.id)) ||
+    filteredInvoices[0] ||
+    null;
 
   const handleReprint = (invoice: InvoiceEntity) => {
     setLastPrintedInvoice(invoice);
@@ -110,7 +126,7 @@ export const InvoicesHistoryModal: React.FC<Props> = ({ isOpen, onClose }) => {
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="ابحث برقم الفاتورة (INV-...)، اسم العميل، أو اسم/باركود الدواء..."
+              placeholder="ابحث برقم الفاتورة (INV-...)، العميل، الموظف المنفّذ، الوردية، أو الدواء..."
               className="w-full bg-slate-900 border border-slate-700 rounded-xl pr-9 pl-3 py-2 text-white outline-none focus:border-emerald-500"
             />
           </div>
@@ -204,14 +220,14 @@ export const InvoicesHistoryModal: React.FC<Props> = ({ isOpen, onClose }) => {
                   <div
                     key={inv.id}
                     onClick={() => setSelectedInvoice(inv)}
-                    className={`p-3 rounded-xl border cursor-pointer transition flex items-center justify-between ${
+                    className={`p-3 rounded-xl border cursor-pointer transition flex items-center justify-between gap-2 ${
                       isSelected
                         ? "bg-slate-800/90 border-emerald-500 shadow"
                         : "bg-slate-950/70 border-slate-800 hover:border-slate-700"
                     }`}
                   >
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
+                    <div className="space-y-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-mono font-extrabold text-white text-xs">
                           {inv.id}
                         </span>
@@ -243,11 +259,17 @@ export const InvoicesHistoryModal: React.FC<Props> = ({ isOpen, onClose }) => {
                         </span>
                       </div>
 
-                      <div className="flex items-center gap-3 text-[11px] text-slate-400">
+                      <div className="flex items-center gap-3 flex-wrap text-[11px] text-slate-400">
                         <span className="flex items-center gap-1">
                           <User className="w-3 h-3" />{" "}
                           {inv.customerName || "عميل نقدي"}
                         </span>
+                        {inv.performedByName && (
+                          <span className="flex items-center gap-1 text-sky-400">
+                            <UserCheck className="w-3 h-3" />
+                            {inv.performedByName}
+                          </span>
+                        )}
                         <span className="flex items-center gap-1 font-mono">
                           <Calendar className="w-3 h-3" />
                           {new Date(inv.createdAt).toLocaleString("ar-SA")}
@@ -256,7 +278,7 @@ export const InvoicesHistoryModal: React.FC<Props> = ({ isOpen, onClose }) => {
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-3 shrink-0">
                       <div className="text-left">
                         <div className="text-[10px] text-slate-400">الصافي</div>
                         <div
@@ -282,7 +304,7 @@ export const InvoicesHistoryModal: React.FC<Props> = ({ isOpen, onClose }) => {
             {activeInvoice ? (
               <>
                 <div className="space-y-4">
-                  <div className="border-b border-slate-800 pb-3 flex items-center justify-between">
+                  <div className="border-b border-slate-800 pb-3 flex items-center justify-between gap-2">
                     <div>
                       <div className="text-slate-400 text-[11px]">
                         تفاصيل الفاتورة المحددة
@@ -299,8 +321,34 @@ export const InvoicesHistoryModal: React.FC<Props> = ({ isOpen, onClose }) => {
                     </div>
                   </div>
 
+                  {/* بطاقة التوثيق الرقابي: منفّذ الفاتورة ورقم الوردية */}
+                  <div className="grid grid-cols-2 gap-2 bg-slate-900 border border-slate-800 rounded-xl p-2.5 text-[11px]">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <UserCheck className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                      <div className="min-w-0">
+                        <div className="text-[10px] text-slate-400">
+                          منفّذ الفاتورة
+                        </div>
+                        <div className="font-bold text-slate-100 truncate">
+                          {activeInvoice.performedByName || "غير موثّق"}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 min-w-0 border-r border-slate-800 pr-2">
+                      <Lock className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                      <div className="min-w-0">
+                        <div className="text-[10px] text-slate-400">
+                          الوردية المرتبطة
+                        </div>
+                        <div className="font-mono font-bold text-slate-200 truncate">
+                          {activeInvoice.shiftId || "—"}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
                   {/* جدول أصناف الفاتورة */}
-                  <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                  <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
                     <div className="text-slate-400 font-bold text-[11px]">
                       الأدوية المصروفة في الفاتورة ({activeInvoice.items.length}
                       ):

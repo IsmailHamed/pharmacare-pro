@@ -11,6 +11,12 @@ import { CalculateFIFOUseCase } from "./CalculateFIFO";
 import { CURRENT_BRANCH_ID } from "../../infrastructure/db/database";
 import { v4 as uuidv4 } from "uuid";
 
+export interface CheckoutAuditContext {
+  shiftId?: string;
+  performedByUserId?: string;
+  performedByName?: string;
+}
+
 export class CompleteCheckoutUseCase {
   private fifoCalculator = new CalculateFIFOUseCase();
 
@@ -21,7 +27,7 @@ export class CompleteCheckoutUseCase {
   ) {}
 
   /**
-   * تنفيذ عملية إتمام البيع أو المرتجع مع تطبيق FIFO صارم وتوثيق الأدوية المراقبة
+   * تنفيذ عملية إتمام البيع أو المرتجع مع تطبيق FIFO صارم وتوثيق الأدوية المراقبة ومنفّذ الفاتورة
    */
   async execute(
     cart: CartItemEntity[],
@@ -29,6 +35,7 @@ export class CompleteCheckoutUseCase {
     customerName: string,
     invoiceType: "SALE" | "RETURN" = "SALE",
     paymentMode: "CASH" | "CREDIT" = "CASH",
+    auditContext?: CheckoutAuditContext,
   ): Promise<InvoiceEntity> {
     if (cart.length === 0) {
       throw new Error("لا يمكن إتمام العملية، السلة فارغة.");
@@ -141,7 +148,11 @@ export class CompleteCheckoutUseCase {
         const newLooseStrips = updatedTotalStrips % stripsPerPack;
         const addedPacks = Math.max(0, newPacks - product.stockPacks);
 
-        await this.productRepo.updateStock(product.id, newPacks, newLooseStrips);
+        await this.productRepo.updateStock(
+          product.id,
+          newPacks,
+          newLooseStrips,
+        );
 
         if (this.batchRepo && addedPacks > 0) {
           const targetBatch: BatchEntity = product.batches[0]
@@ -185,6 +196,9 @@ export class CompleteCheckoutUseCase {
       netProfit,
       items: enrichedItems,
       createdAt,
+      shiftId: auditContext?.shiftId,
+      performedByUserId: auditContext?.performedByUserId,
+      performedByName: auditContext?.performedByName?.trim() || undefined,
       branchId: CURRENT_BRANCH_ID,
     };
 

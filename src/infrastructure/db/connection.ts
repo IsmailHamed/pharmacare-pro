@@ -61,6 +61,9 @@ const bootstrapSQLiteTables = async (db: Database) => {
       net_profit REAL DEFAULT 0 NOT NULL,
       items_json TEXT NOT NULL,
       created_at TEXT NOT NULL,
+      shift_id TEXT,
+      performed_by_user_id TEXT,
+      performed_by_name TEXT,
       branch_id TEXT DEFAULT 'MAIN_BRANCH' NOT NULL
     );
   `);
@@ -194,6 +197,10 @@ const bootstrapSQLiteTables = async (db: Database) => {
 
   // ترقية آمنة للأعمدة المضافة إذا كانت قاعدة البيانات منشأة من إصدار أقدم
   const safeAlterStatements = [
+    // أعمدة ربط الوردية وتوثيق المنفّذ في جدول الفواتير (invoices)
+    "ALTER TABLE invoices ADD COLUMN shift_id TEXT;",
+    "ALTER TABLE invoices ADD COLUMN performed_by_user_id TEXT;",
+    "ALTER TABLE invoices ADD COLUMN performed_by_name TEXT;",
     // أعمدة جدول الورديات (shifts)
     "ALTER TABLE shifts ADD COLUMN credit_returns_total REAL NOT NULL DEFAULT 0;",
     "ALTER TABLE shifts ADD COLUMN debt_collections_total REAL NOT NULL DEFAULT 0;",
@@ -239,7 +246,10 @@ const bootstrapSQLiteTables = async (db: Database) => {
     "CREATE INDEX IF NOT EXISTS idx_users_pin_code ON users(pin_code);",
   );
 
-  // فهارس لربط وتسريع استعلامات المصاريف وسندات الذمم حسب الوردية
+  // فهارس لربط وتسريع استعلامات الفواتير والمصاريف وسندات الذمم حسب الوردية
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_invoices_shift_id ON invoices(shift_id);",
+  );
   await db.execute(
     "CREATE INDEX IF NOT EXISTS idx_cash_expenses_shift_id ON cash_expenses(shift_id);",
   );

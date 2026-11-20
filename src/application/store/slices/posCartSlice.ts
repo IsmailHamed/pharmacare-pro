@@ -749,6 +749,11 @@ export const createPosCartSlice: PosSlice<PosCartSlice> = (set, get) => {
           customerName,
           invoiceMode,
           paymentMode,
+          {
+            shiftId: openShift.id,
+            performedByUserId: currentUser?.id,
+            performedByName: currentUser?.name,
+          },
         );
 
         await printThermalReceipt(savedInvoice);

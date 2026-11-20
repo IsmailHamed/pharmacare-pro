@@ -54,6 +54,9 @@ export const invoicesTable = sqliteTable("invoices", {
   netProfit: real("net_profit").notNull().default(0),
   itemsJson: text("items_json").notNull(),
   createdAt: text("created_at").notNull(),
+  shiftId: text("shift_id"),
+  performedByUserId: text("performed_by_user_id"),
+  performedByName: text("performed_by_name"),
   branchId: text("branch_id").notNull().default("MAIN_BRANCH"),
 });
 
