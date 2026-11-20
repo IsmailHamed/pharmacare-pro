@@ -23,6 +23,11 @@ export const InvoicesHistoryModal: React.FC<Props> = ({ isOpen, onClose }) => {
   const { invoices, setLastPrintedInvoice, loadInvoiceForReturn } =
     usePosStore();
 
+  // التحقق من صلاحية المستخدم الحالي لإجراء مرتجعات المبيعات (القيمة الافتراضية الآمنة: false)
+  const canProcessReturn = usePosStore(
+    (s) => s.currentUser?.permissions.canProcessReturn ?? false,
+  );
+
   const [searchQuery, setSearchQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState<"ALL" | "SALE" | "RETURN">(
     "ALL",
@@ -34,6 +39,7 @@ export const InvoicesHistoryModal: React.FC<Props> = ({ isOpen, onClose }) => {
     null,
   );
 
+  // فلترة الفواتير حسب نوع الفاتورة وطريقة الدفع ونص البحث (رقم الفاتورة / العميل / الدواء)
   const filteredInvoices = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return invoices.filter((inv) => {
@@ -65,6 +71,9 @@ export const InvoicesHistoryModal: React.FC<Props> = ({ isOpen, onClose }) => {
   };
 
   const handleReturnInvoice = (invoice: InvoiceEntity) => {
+    // منع استرداد الفاتورة إلى شاشة المرتجع إذا كان المستخدم لا يمتلك الصلاحية
+    if (!canProcessReturn) return;
+
     const ok = loadInvoiceForReturn(invoice.id);
     if (ok) {
       onClose();
@@ -354,7 +363,8 @@ export const InvoicesHistoryModal: React.FC<Props> = ({ isOpen, onClose }) => {
                     ولصاقات الجرعات
                   </button>
 
-                  {activeInvoice.type === "SALE" && (
+                  {/* يظهر زر الاسترداد للمرتجع فقط لمن يمتلك صلاحية canProcessReturn */}
+                  {canProcessReturn && activeInvoice.type === "SALE" && (
                     <button
                       type="button"
                       onClick={() => handleReturnInvoice(activeInvoice)}

@@ -6,6 +6,7 @@ import { Printer, Barcode, Cloud, RefreshCw, Save } from "lucide-react";
 export const HardwareCloudSection: React.FC = () => {
   const { settings, updatePharmacySettings, currentUser } = usePosStore();
 
+  // حالات محلية لإعدادات الطابعة الحرارية وسيرفر المزامنة وحساسية قارئ الباركود
   const [thermalPrinterName, setThermalPrinterName] = useState(
     settings.thermalPrinterName,
   );
@@ -16,9 +17,11 @@ export const HardwareCloudSection: React.FC = () => {
   const [availablePrinters, setAvailablePrinters] = useState<string[]>([]);
   const [isLoadingPrinters, setIsLoadingPrinters] = useState(false);
 
+  // تشديد الصلاحية بمبدأ الإغلاق الآمن (Fail-Closed): عند غياب المستخدم الحالي تكون الصلاحية false
   const canManageSettings =
-    currentUser?.permissions.canManageSettingsAndBackup ?? true;
+    currentUser?.permissions.canManageSettingsAndBackup ?? false;
 
+  // جلب قائمة طابعات الويندوز المتصلة عبر جسر Tauri (أو القائمة المحاكاة في وضع المتصفح)
   const loadPrinters = async () => {
     setIsLoadingPrinters(true);
     try {
@@ -29,10 +32,12 @@ export const HardwareCloudSection: React.FC = () => {
     }
   };
 
+  // تحميل الطابعات المتاحة تلقائياً عند فتح قسم الأجهزة الطرفية
   useEffect(() => {
     void loadPrinters();
   }, []);
 
+  // إعادة مزامنة الحقول عند تغيّر الإعدادات من SQLite أو بعد استعادة نسخة احتياطية
   useEffect(() => {
     setThermalPrinterName(settings.thermalPrinterName);
     setCloudSyncUrl(settings.cloudSyncUrl);
@@ -41,7 +46,9 @@ export const HardwareCloudSection: React.FC = () => {
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
+    // طبقة حماية إضافية لمنع حفظ التعديلات عند غياب صلاحية إدارة الإعدادات
     if (!canManageSettings) return;
+
     updatePharmacySettings({
       ...settings,
       thermalPrinterName,
@@ -60,6 +67,7 @@ export const HardwareCloudSection: React.FC = () => {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+          {/* قسم ضبط الطابعة الحرارية واكتشاف طابعات الويندوز */}
           <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2.5">
             <div className="flex items-center justify-between">
               <div className="font-bold text-sky-400 flex items-center gap-1.5">
@@ -67,8 +75,9 @@ export const HardwareCloudSection: React.FC = () => {
               </div>
               <button
                 type="button"
+                disabled={!canManageSettings || isLoadingPrinters}
                 onClick={() => void loadPrinters()}
-                className="text-[10px] text-slate-400 hover:text-white flex items-center gap-1 bg-slate-900 px-2.5 py-1 rounded border border-slate-800 transition"
+                className="text-[10px] text-slate-400 hover:text-white disabled:opacity-40 flex items-center gap-1 bg-slate-900 px-2.5 py-1 rounded border border-slate-800 transition"
                 title="تحديث قائمة طابعات الويندوز المتصلة"
               >
                 <RefreshCw
@@ -121,6 +130,7 @@ export const HardwareCloudSection: React.FC = () => {
             )}
           </div>
 
+          {/* قسم ضبط حساسية قارئ الباركود الليزري */}
           <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2.5">
             <div className="font-bold text-amber-400 flex items-center gap-1.5">
               <Barcode className="w-4 h-4" /> حساسية قارئ الباركود الليزري

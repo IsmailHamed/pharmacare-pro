@@ -7,6 +7,7 @@ import { LedgerAccountsSection } from "../components/finance/LedgerAccountsSecti
 import { ClosedShiftsTable } from "../components/finance/ClosedShiftsTable";
 
 export const FinanceView: React.FC = () => {
+  // التحقق من صلاحية المستخدم الحالي للاطلاع على التكلفة وصافي الربح (القيمة الافتراضية الآمنة: false)
   const canViewCostAndProfit = usePosStore(
     (s) => s.currentUser?.permissions.canViewCostAndProfit ?? false,
   );
@@ -28,7 +29,7 @@ export const FinanceView: React.FC = () => {
     [shifts],
   );
 
-  // 1. حسابات قائمة الدخل المحاسبية
+  // 1. حسابات قائمة الدخل المحاسبية (صافي المبيعات، تكلفة البضاعة المباعة COGS، وصافي الربح)
   const incomeStatement = useMemo(() => {
     let grossSales = 0;
     let totalReturns = 0;
@@ -164,18 +165,17 @@ export const FinanceView: React.FC = () => {
 
   return (
     <div className="flex-1 p-6 overflow-y-auto bg-slate-950 text-slate-200 text-xs space-y-6">
+      {/* عرض الصف العلوي دائماً بـ 3 أعمدة:
+          العمود 1 (قائمة الدخل المحمية بصلاحية canViewCostAndProfit)
+          العمود 2 (نموذج تسجيل المصروفات النثرية للوردية)
+          العمود 3 (بطاقة تسليم الوردية ومطابقة الصندوق Z-Report) */}
       <div className="grid grid-cols-3 gap-6">
-        {canViewCostAndProfit ? (
-          <IncomeAndExpensesRow
-            incomeStatement={incomeStatement}
-            expenses={expenses}
-            onAddExpense={addCashExpense}
-          />
-        ) : (
-          <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 flex items-center justify-center text-slate-500 text-xs">
-            بيانات التكلفة وصافي الربح مخفية حسب صلاحيات المستخدم الحالي
-          </div>
-        )}
+        <IncomeAndExpensesRow
+          incomeStatement={incomeStatement}
+          expenses={expenses}
+          onAddExpense={addCashExpense}
+          canViewCostAndProfit={canViewCostAndProfit}
+        />
 
         <ShiftZReportCard
           openShift={openShift}
@@ -185,12 +185,14 @@ export const FinanceView: React.FC = () => {
         />
       </div>
 
+      {/* دفتر ديون العملاء وذمم المستودعات */}
       <LedgerAccountsSection
         customerAccounts={customerAccounts}
         supplierAccounts={supplierAccounts}
         onRecordPayment={recordLedgerPayment}
       />
 
+      {/* أرشيف الورديات المغلقة */}
       <ClosedShiftsTable closedShifts={closedShifts} />
     </div>
   );

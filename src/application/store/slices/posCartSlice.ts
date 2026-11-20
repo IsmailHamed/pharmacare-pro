@@ -74,6 +74,21 @@ export const createPosCartSlice: PosSlice<PosCartSlice> = (set, get) => ({
   lastPrintedInvoice: null,
 
   setInvoiceMode: (invoiceMode) => {
+    // منع التحويل إلى وضع المرتجع إذا لم يمتلك المستخدم الحالي صلاحية إجراء المرتجعات
+    if (
+      invoiceMode === "RETURN" &&
+      !get().currentUser?.permissions.canProcessReturn
+    ) {
+      set({
+        notification: {
+          type: "error",
+          message:
+            "عذراً، حسابك الحالي لا يمتلك صلاحية إجراء مرتجعات المبيعات!",
+        },
+      });
+      return;
+    }
+
     set({
       invoiceMode,
       returnSourceInvoiceId:
@@ -83,6 +98,22 @@ export const createPosCartSlice: PosSlice<PosCartSlice> = (set, get) => ({
 
   toggleReturnMode: () => {
     const nextMode = get().invoiceMode === "SALE" ? "RETURN" : "SALE";
+
+    // التحقق من صلاحية المرتجع قبل السماح بالتبديل من البيع إلى المرتجع (زر الواجهة أو اختصار F6)
+    if (
+      nextMode === "RETURN" &&
+      !get().currentUser?.permissions.canProcessReturn
+    ) {
+      set({
+        notification: {
+          type: "error",
+          message:
+            "عذراً، لا تملك صلاحية تفعيل وضع مرتجع المبيعات (يتطلب صلاحية صيدلي أو مدير).",
+        },
+      });
+      return;
+    }
+
     set({
       invoiceMode: nextMode,
       returnSourceInvoiceId: null,
@@ -238,6 +269,7 @@ export const createPosCartSlice: PosSlice<PosCartSlice> = (set, get) => ({
     const code = rawBarcode.trim();
     if (!code) return false;
 
+    // إذا كان الباركود الممسوح يعود لفاتورة سابقة (INV-)، يتم تمريره لدالة الاسترداد المحمية بصلاحية المرتجع
     if (code.toUpperCase().startsWith("INV-")) {
       return get().loadInvoiceForReturn(code);
     }
@@ -274,6 +306,18 @@ export const createPosCartSlice: PosSlice<PosCartSlice> = (set, get) => ({
   },
 
   loadInvoiceForReturn: (invoiceQuery) => {
+    // التحقق من صلاحية المرتجع قبل السماح باسترداد أي فاتورة بالرقم أو الباركود
+    if (!get().currentUser?.permissions.canProcessReturn) {
+      set({
+        notification: {
+          type: "error",
+          message:
+            "عذراً، لا تملك صلاحية استرداد الفواتير وإجراء مرتجعات المبيعات!",
+        },
+      });
+      return false;
+    }
+
     const cleanQuery = invoiceQuery.trim().toUpperCase();
     if (!cleanQuery) return false;
 
@@ -385,7 +429,23 @@ export const createPosCartSlice: PosSlice<PosCartSlice> = (set, get) => ({
       paymentMode,
       clearCart,
       loadInitialData,
+      currentUser,
     } = get();
+
+    // طبقة حماية أخيرة: منع إتمام المرتجع إذا تم تبديل المستخدم لحساب لا يملك الصلاحية قبل الضغط على F1
+    if (
+      invoiceMode === "RETURN" &&
+      !currentUser?.permissions.canProcessReturn
+    ) {
+      set({
+        notification: {
+          type: "error",
+          message:
+            "لا يمكن اعتماد فاتورة المرتجع: المستخدم الحالي لا يمتلك صلاحية المرتجعات!",
+        },
+      });
+      return null;
+    }
 
     if (cart.length === 0) {
       set({

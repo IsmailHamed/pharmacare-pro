@@ -12,7 +12,7 @@ import {
 import { UserEntity } from "../../../domain/entities/User";
 import { DEFAULT_ADMIN_USER } from "../../../infrastructure/db/seedData";
 
-// دالة مساعدة لاستنتاج activeRole ديناميكياً من المستخدم الحالي
+// دالة مساعدة لاستنتاج activeRole ديناميكياً من المستخدم الحالي للحفاظ على التوافقية العكسية
 const deriveActiveRole = (user: UserEntity | null): "CASHIER" | "ADMIN" => {
   if (!user) return "CASHIER";
   return user.role === "ADMIN" ? "ADMIN" : "CASHIER";
@@ -30,6 +30,9 @@ export type SystemSyncSlice = Pick<
   | "ledgerPayments"
   | "settings"
   | "notification"
+  | "users"
+  | "currentUser"
+  | "activeRole"
   | "loadInitialData"
   | "updatePharmacySettings"
   | "setNotification"
@@ -111,18 +114,44 @@ export const createSystemSyncSlice: PosSlice<SystemSyncSlice> = (set, get) => ({
 
   syncPendingBatchToCloud: async () => {
     const pending = get().syncQueue.filter((i) => i.status === "PENDING");
+
+    // إذا لم تكن هناك عمليات معلقة، نُبلغ المستخدم مباشرة دون إرسال طلب فارغ
+    if (pending.length === 0) {
+      const batchId = `BATCH-${Date.now()}`;
+      set({
+        notification: {
+          type: "info",
+          message: "جميع السجلات المحلية متزامنة بالفعل مع السحابة المركزية.",
+        },
+      });
+      return { syncedCount: 0, batchId };
+    }
+
     const result = await pushBatchToCloudServer(pending);
+
+    // في حال فشل الاتصال أو رفض السيرفر للدفعة، تبقى العمليات PENDING دون فقدان
+    if (!result.success) {
+      set({
+        notification: {
+          type: "error",
+          message:
+            result.error ||
+            "فشلت المزامنة مع السيرفر السحابي — ستبقى الحركات محفوظة محلياً لإعادة المحاولة لاحقاً.",
+        },
+      });
+      return { syncedCount: 0, batchId: result.batchId };
+    }
+
+    // لا يتم تعليم العناصر كمزامنة إلا بعد تأكيد السيرفر الصريح
     if (result.syncedIds.length > 0) {
       await invoiceRepo.markSyncItemsCompleted(result.syncedIds);
       await get().loadInitialData();
     }
+
     set({
       notification: {
         type: "success",
-        message:
-          result.syncedCount > 0
-            ? `تمت مزامنة حزمة العمليات (${result.syncedCount} حركة) بنجاح إلى السيرفر السحابي [${result.batchId}]`
-            : "جميع السجلات المحلية متزامنة بالفعل مع السحابة المركزية.",
+        message: `تمت مزامنة حزمة العمليات (${result.syncedCount} حركة) بنجاح إلى السيرفر السحابي [${result.batchId}]`,
       },
     });
     return { syncedCount: result.syncedCount, batchId: result.batchId };
@@ -193,9 +222,13 @@ export const createSystemSyncSlice: PosSlice<SystemSyncSlice> = (set, get) => ({
   loadUsers: async () => {
     let allUsers = await userRepo.getAllUsers();
     if (!allUsers || allUsers.length === 0) {
+      // زرع المدير الافتراضي في SQLite وطابور المزامنة عند أول تشغيل
       await userRepo.upsertUser(DEFAULT_ADMIN_USER);
       allUsers = [DEFAULT_ADMIN_USER];
     }
+
+    // تحديث طابور المزامنة في الحالة ليظهر عدد حركات الموظفين المعلقة فوراً في الشريط العلوي
+    const syncQueue = await invoiceRepo.getSyncQueue();
 
     const current = get().currentUser;
     // تحديث بيانات المستخدم الحالي إذا تم تعديل صلاحياته، أو اختيار أول مستخدم نشط
@@ -207,20 +240,32 @@ export const createSystemSyncSlice: PosSlice<SystemSyncSlice> = (set, get) => ({
 
     set({
       users: allUsers,
+      syncQueue,
       currentUser: resolvedCurrent,
       activeRole: deriveActiveRole(resolvedCurrent),
     });
   },
 
   addOrUpdateUser: async (user: UserEntity) => {
-    await userRepo.upsertUser(user);
-    await get().loadUsers();
-    set({
-      notification: {
-        type: "success",
-        message: `تم حفظ بيانات وصلاحيات الموظف (${user.name}) بنجاح.`,
-      },
-    });
+    try {
+      await userRepo.upsertUser(user);
+      await get().loadUsers();
+      set({
+        notification: {
+          type: "success",
+          message: `تم حفظ بيانات وصلاحيات الموظف (${user.name}) بنجاح وإدراجها للمزامنة.`,
+        },
+      });
+    } catch (err) {
+      // عرض رسالة واضحة عند تكرار الـ PIN أو حدوث خطأ في الحفظ
+      set({
+        notification: {
+          type: "error",
+          message:
+            err instanceof Error ? err.message : "تعذر حفظ بيانات الموظف.",
+        },
+      });
+    }
   },
 
   toggleUserStatus: async (userId: string) => {
@@ -243,14 +288,24 @@ export const createSystemSyncSlice: PosSlice<SystemSyncSlice> = (set, get) => ({
       }
     }
 
-    await userRepo.toggleUserStatus(userId, !target.isActive);
-    await get().loadUsers();
-    set({
-      notification: {
-        type: "info",
-        message: `تم ${!target.isActive ? "تفعيل" : "تجميد"} حساب (${target.name}).`,
-      },
-    });
+    try {
+      await userRepo.toggleUserStatus(userId, !target.isActive);
+      await get().loadUsers();
+      set({
+        notification: {
+          type: "info",
+          message: `تم ${!target.isActive ? "تفعيل" : "تجميد"} حساب (${target.name}).`,
+        },
+      });
+    } catch (err) {
+      set({
+        notification: {
+          type: "error",
+          message:
+            err instanceof Error ? err.message : "تعذر تحديث حالة حساب الموظف.",
+        },
+      });
+    }
   },
 
   loginWithPinOrBarcode: async (credential: string) => {

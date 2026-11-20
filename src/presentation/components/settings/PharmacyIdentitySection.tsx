@@ -5,15 +5,18 @@ import { Building2, Save } from "lucide-react";
 export const PharmacyIdentitySection: React.FC = () => {
   const { settings, updatePharmacySettings, currentUser } = usePosStore();
 
+  // حالات محلية لحقول نموذج هوية الصيدلية قبل اعتماد الحفظ
   const [pharmacyName, setPharmacyName] = useState(settings.pharmacyName);
   const [phone, setPhone] = useState(settings.phone);
   const [address, setAddress] = useState(settings.address);
   const [taxNumber, setTaxNumber] = useState(settings.taxNumber);
   const [receiptFooter, setReceiptFooter] = useState(settings.receiptFooter);
 
+  // تشديد الصلاحية بمبدأ الإغلاق الآمن (Fail-Closed): عند غياب المستخدم الحالي تكون الصلاحية false
   const canManageSettings =
-    currentUser?.permissions.canManageSettingsAndBackup ?? true;
+    currentUser?.permissions.canManageSettingsAndBackup ?? false;
 
+  // إعادة مزامنة الحقول تلقائياً عند تحديث الإعدادات من SQLite أو بعد استعادة نسخة احتياطية
   useEffect(() => {
     setPharmacyName(settings.pharmacyName);
     setPhone(settings.phone);
@@ -24,7 +27,9 @@ export const PharmacyIdentitySection: React.FC = () => {
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
+    // حماية إضافية لمنع حفظ أي تعديل إذا لم يمتلك المستخدم صلاحية إدارة الإعدادات
     if (!canManageSettings) return;
+
     updatePharmacySettings({
       ...settings,
       pharmacyName,
@@ -43,6 +48,7 @@ export const PharmacyIdentitySection: React.FC = () => {
           الصيدلية (تظهر في الإيصال الحراري ولصاقات الباركود)
         </div>
 
+        {/* حقول بيانات الصيدلية — تُعطَّل تلقائياً لغير المخوّلين (وضع القراءة فقط) */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label className="block text-slate-400 mb-1.5">

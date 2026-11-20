@@ -74,7 +74,11 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<TabType>("pos");
   const [showUserModal, setShowUserModal] = useState(false);
 
-  const isOffline = !navigator.onLine;
+  // حالة ديناميكية لحالة الاتصال بالإنترنت تتحدث لحظياً عند انقطاع أو عودة الشبكة
+  const [isOffline, setIsOffline] = useState<boolean>(() =>
+    typeof navigator !== "undefined" ? !navigator.onLine : false,
+  );
+
   const pendingSyncCount = usePosStore(selectPendingSyncCount);
   const {
     syncPendingBatchToCloud,
@@ -84,33 +88,58 @@ export default function App() {
     currentUser,
   } = usePosStore();
 
+  // تحميل البيانات الأولية من SQLite / LocalStorage عند إقلاع التطبيق
   useEffect(() => {
     void loadInitialData();
   }, [loadInitialData]);
 
-  // فلترة التبويبات حسب صلاحيات المستخدم الحالي (مثلاً إخفاء المشتريات عن الكاشير)
+  // الاستماع لأحداث الشبكة (online / offline) لتحديث شارة الاتصال في الشريط العلوي فوراً
+  useEffect(() => {
+    const handleOnline = () => setIsOffline(false);
+    const handleOffline = () => setIsOffline(true);
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
+  // فلترة التبويبات حسب صلاحيات المستخدم الحالي بمبدأ الإغلاق الآمن (إخفاء المشتريات لغير المخولين)
   const visibleTabs = TABS.filter((tab) => {
     if (
       tab.id === "purchases" &&
-      currentUser &&
-      !currentUser.permissions.canManagePurchases
+      !currentUser?.permissions.canManagePurchases
     ) {
       return false;
     }
     return true;
   });
 
-  const roleLabel =
-    currentUser?.role === "ADMIN"
+  // إعادة التوجيه التلقائي إلى نقطة البيع (POS) إذا تم تبديل المستخدم إلى حساب لا يملك صلاحية التبويب المفتوح حالياً
+  useEffect(() => {
+    const isCurrentTabAllowed = visibleTabs.some((tab) => tab.id === activeTab);
+    if (!isCurrentTabAllowed) {
+      setActiveTab("pos");
+    }
+  }, [activeTab, visibleTabs]);
+
+  // تسمية ولون شارة الدور الوظيفي للمستخدم الحالي
+  const roleLabel = !currentUser
+    ? "غير مسجل"
+    : currentUser.role === "ADMIN"
       ? "مدير النظام"
-      : currentUser?.role === "PHARMACIST"
+      : currentUser.role === "PHARMACIST"
         ? "صيدلي"
         : "كاشير";
 
-  const roleBadgeCls =
-    currentUser?.role === "ADMIN"
+  const roleBadgeCls = !currentUser
+    ? "text-slate-400"
+    : currentUser.role === "ADMIN"
       ? "text-amber-400"
-      : currentUser?.role === "PHARMACIST"
+      : currentUser.role === "PHARMACIST"
         ? "text-emerald-400"
         : "text-sky-400";
 
@@ -132,7 +161,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* التبويبات الموحدة */}
+        {/* التبويبات الموحدة المفلترة حسب الصلاحيات */}
         <nav className="flex items-center gap-1.5 bg-slate-950 p-1.5 rounded-xl border border-slate-800 shadow-inner">
           {visibleTabs.map(({ id, label, activeCls, icon: Icon }) => (
             <button
@@ -151,7 +180,7 @@ export default function App() {
 
         {/* أزرار المستخدم، الاتصال، والمزامنة */}
         <div className="flex items-center gap-2.5 text-xs">
-          {/* زر المستخدم الحالي والتبديل السريع (Fast User Switching) */}
+          {/* زر المستخدم الحالي والتبديل السريع (Fast User Switching عبر PIN) */}
           <button
             onClick={() => setShowUserModal(true)}
             title="اضغط لتبديل المستخدم السريع عبر الرمز السري (PIN)"
@@ -170,7 +199,9 @@ export default function App() {
             </div>
           </button>
 
+          {/* شارة حالة الاتصال الحية (تتحدث تلقائياً مع أحداث الشبكة) */}
           <button
+            type="button"
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold border transition ${
               isOffline
                 ? "bg-amber-950/40 text-amber-400 border-amber-800"
@@ -181,6 +212,7 @@ export default function App() {
             {isOffline ? "محلي (Offline)" : "متصل (Online)"}
           </button>
 
+          {/* زر المزامنة السحابية اليدوية مع عدّاد الحركات المعلقة */}
           <button
             onClick={() => void syncPendingBatchToCloud()}
             className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5"

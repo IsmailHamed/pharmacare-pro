@@ -3,6 +3,7 @@ import {
   usePosStore,
   selectPendingSyncCount,
 } from "../../../application/store/usePosStore";
+import { CURRENT_BRANCH_ID } from "../../../infrastructure/db/database";
 import {
   DatabaseBackup,
   Download,
@@ -30,14 +31,19 @@ export const BackupMaintenanceSection: React.FC = () => {
   const pendingSyncCount = usePosStore(selectPendingSyncCount);
   const backupFileInputRef = useRef<HTMLInputElement>(null);
 
+  // تشديد الصلاحية بمبدأ الإغلاق الآمن (Fail-Closed): عند غياب المستخدم الحالي تكون الصلاحية false
   const canManageSettings =
-    currentUser?.permissions.canManageSettingsAndBackup ?? true;
+    currentUser?.permissions.canManageSettingsAndBackup ?? false;
 
+  // استعادة قاعدة البيانات من ملف نسخة احتياطية (.json) بعد تأكيد الصلاحية وموافقة المستخدم
   const handleBackupFileChange = async (
     e: React.ChangeEvent<HTMLInputElement>,
   ) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file || !canManageSettings) {
+      e.target.value = "";
+      return;
+    }
 
     const confirmed = window.confirm(
       `هل أنت متأكد من استعادة النسخة الاحتياطية من الملف (${file.name})؟ سيتم استبدال البيانات الحالية بالبيانات الموجودة في النسخة الاحتياطية.`,
@@ -49,7 +55,10 @@ export const BackupMaintenanceSection: React.FC = () => {
     e.target.value = "";
   };
 
+  // إعادة ضبط قاعدة البيانات للبيانات الافتراضية (محمية بصلاحية إدارة النظام)
   const handleFactoryReset = async () => {
+    if (!canManageSettings) return;
+
     const confirmed = window.confirm(
       "تحذير: هل أنت متأكد من إعادة ضبط قاعدة البيانات للبيانات الافتراضية؟ يُنصح بتصدير نسخة احتياطية أولاً.",
     );
@@ -58,7 +67,10 @@ export const BackupMaintenanceSection: React.FC = () => {
     }
   };
 
+  // مولّد بيانات دوائية ضخمة لاختبار سرعة البحث والفهرسة والـ Pagination
   const handleGenerateBulkTestData = async (count: number) => {
+    if (!canManageSettings) return;
+
     const confirmed = window.confirm(
       `هل تريد توليد وإدخال (${count}) دواء تجريبي لاختبار سرعة النظام مع البيانات الضخمة؟`,
     );
@@ -129,7 +141,8 @@ export const BackupMaintenanceSection: React.FC = () => {
         stockLooseStrips: 0,
         minLimit: 5,
         isControlled: false,
-        branchId: "branch-main-01",
+        // استخدام معرّف الفرع الموحد بدلاً من قيمة نصية ثابتة لتوافق المزامنة والتقارير
+        branchId: CURRENT_BRANCH_ID,
         updatedAt: new Date().toISOString(),
         batches: [
           {
@@ -138,7 +151,7 @@ export const BackupMaintenanceSection: React.FC = () => {
             batchNumber: `B-${2026}-${(idx % 99) + 1}`,
             expiryDate,
             qtyPacks: stockPacks,
-            branchId: "branch-main-01",
+            branchId: CURRENT_BRANCH_ID,
           },
         ],
       };
@@ -200,11 +213,15 @@ export const BackupMaintenanceSection: React.FC = () => {
           </div>
         </div>
 
+        {/* أزرار التصدير والاستعادة — محمية بصلاحية إدارة الإعدادات والنسخ الاحتياطي */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
           <button
             type="button"
             disabled={!canManageSettings}
-            onClick={exportDatabaseBackup}
+            onClick={() => {
+              if (!canManageSettings) return;
+              exportDatabaseBackup();
+            }}
             className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold py-3 px-4 rounded-xl flex items-center justify-center gap-2 shadow-lg transition"
           >
             <Download className="w-4 h-4" /> تصدير نسخة احتياطية (.json)
@@ -220,7 +237,10 @@ export const BackupMaintenanceSection: React.FC = () => {
           <button
             type="button"
             disabled={!canManageSettings}
-            onClick={() => backupFileInputRef.current?.click()}
+            onClick={() => {
+              if (!canManageSettings) return;
+              backupFileInputRef.current?.click();
+            }}
             className="w-full bg-sky-600 hover:bg-sky-500 disabled:opacity-40 text-white font-bold py-3 px-4 rounded-xl flex items-center justify-center gap-2 shadow-lg transition"
           >
             <Upload className="w-4 h-4" /> استعادة من ملف نسخة احتياطية
@@ -230,7 +250,7 @@ export const BackupMaintenanceSection: React.FC = () => {
 
       {/* القسم الأيسر (5 أعمدة): المزامنة السحابية + الصيانة وضبط المصنع */}
       <div className="lg:col-span-5 space-y-6">
-        {/* بطاقة المزامنة السحابية اليدوية */}
+        {/* بطاقة المزامنة السحابية اليدوية (متاحة لجميع الموظفين لرفع حركات الوردية) */}
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-3 shadow-lg">
           <div className="flex items-center justify-between border-b border-slate-800 pb-3">
             <h3 className="font-bold text-white text-sm flex items-center gap-2">
@@ -255,7 +275,7 @@ export const BackupMaintenanceSection: React.FC = () => {
           </button>
         </div>
 
-        {/* منطقة الصيانة: اختبار الأداء وإعادة ضبط المصنع */}
+        {/* منطقة الصيانة: اختبار الأداء وإعادة ضبط المصنع (للمخوّلين فقط) */}
         <div className="bg-rose-950/20 border border-rose-900/60 rounded-2xl p-6 space-y-3">
           <div className="font-bold text-rose-300 text-sm flex items-center gap-2">
             <ShieldCheck className="w-4 h-4 text-rose-400" /> منطقة الصيانة

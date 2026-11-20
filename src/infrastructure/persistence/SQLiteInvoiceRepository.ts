@@ -270,7 +270,47 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
     await this.persistSyncItemToDesktopSQLite(syncItem);
   }
 
+  /**
+   * جلب دفتر الأدوية المراقبة والنفسية:
+   * - على سطح المكتب (Tauri): القراءة المباشرة من جدول controlled_drug_logs في pharmacare.db
+   * - على المتصفح (Web): القراءة من لقطة الذاكرة المحلية sqliteEngine
+   */
   async getControlledDrugLogs(): Promise<ControlledDrugLogEntity[]> {
+    if (isTauriDesktop() && sqliteRaw) {
+      try {
+        const rows = await sqliteRaw.select<Record<string, unknown>[]>(
+          "SELECT * FROM controlled_drug_logs ORDER BY dispensed_at DESC;",
+        );
+
+        const mapped: ControlledDrugLogEntity[] = rows.map((r) => ({
+          id: String(r.id),
+          invoiceId: String(r.invoice_id),
+          productId: String(r.product_id),
+          productName: String(r.product_name),
+          scientificName: String(r.scientific_name),
+          barcode: String(r.barcode),
+          unit: String(r.unit) as "pack" | "strip",
+          qty: Number(r.qty),
+          batchNumber: String(r.batch_number),
+          patientName: String(r.patient_name),
+          nationalId: String(r.national_id),
+          doctorName: String(r.doctor_name),
+          prescriptionId: String(r.prescription_id),
+          dispensedAt: String(r.dispensed_at),
+          branchId: String(r.branch_id),
+        }));
+
+        // مزامنة نسخة الذاكرة السريعة مع السجل الرسمي المحفوظ في SQLite
+        sqliteEngine.commit((draft) => {
+          draft.controlledLogs = mapped;
+        });
+
+        return mapped;
+      } catch (err) {
+        console.warn("Controlled drug logs SQLite read fallback:", err);
+      }
+    }
+
     return [...sqliteEngine.getSnapshot().controlledLogs];
   }
 
@@ -281,7 +321,7 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
       draft.expenses.unshift(expense);
 
       const openShift = draft.shifts.find((s) => s.status === "OPEN");
-      // التعديل الوحيد هنا: لا نخصم من نقد درج الكاشير إذا كان القيد خسارة تالف/جرد مخزني
+      // لا نخصم من نقد درج الكاشير إذا كان القيد خسارة تالف/جرد مخزني
       if (openShift && expense.shiftId !== "INVENTORY-LOSS") {
         openShift.pettyCashTotal = Number(
           (openShift.pettyCashTotal + expense.amount).toFixed(2),
@@ -322,7 +362,40 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
     await this.persistSyncItemToDesktopSQLite(syncItem);
   }
 
+  /**
+   * جلب جميع المصاريف النثرية وخسائر الجرد والتوالف:
+   * - على سطح المكتب (Tauri): القراءة المباشرة من جدول cash_expenses في pharmacare.db
+   * - على المتصفح (Web): القراءة من لقطة الذاكرة المحلية sqliteEngine
+   */
   async getAllExpenses(): Promise<CashExpenseEntity[]> {
+    if (isTauriDesktop() && sqliteRaw) {
+      try {
+        const rows = await sqliteRaw.select<Record<string, unknown>[]>(
+          "SELECT * FROM cash_expenses ORDER BY created_at DESC;",
+        );
+
+        const mapped: CashExpenseEntity[] = rows.map((r) => ({
+          id: String(r.id),
+          title: String(r.title),
+          category: String(r.category) as CashExpenseEntity["category"],
+          amount: Number(r.amount),
+          notes: r.notes ? String(r.notes) : undefined,
+          shiftId: String(r.shift_id),
+          createdAt: String(r.created_at),
+          branchId: String(r.branch_id),
+        }));
+
+        // مزامنة نسخة الذاكرة السريعة مع المصاريف المحفوظة في SQLite
+        sqliteEngine.commit((draft) => {
+          draft.expenses = mapped;
+        });
+
+        return mapped;
+      } catch (err) {
+        console.warn("Cash expenses SQLite read fallback:", err);
+      }
+    }
+
     return [...sqliteEngine.getSnapshot().expenses];
   }
 
@@ -395,13 +468,58 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
     return [...sqliteEngine.getSnapshot().shifts];
   }
 
+  /**
+   * جلب طابور المزامنة السحابية:
+   * - على سطح المكتب (Tauri): القراءة المباشرة من جدول sync_queue في pharmacare.db
+   *   لضمان استرجاع جميع العمليات المعلقة (PENDING) حتى بعد إعادة تشغيل التطبيق
+   * - على المتصفح (Web): القراءة من لقطة الذاكرة المحلية sqliteEngine
+   */
   async getSyncQueue(): Promise<SyncQueueItemEntity[]> {
+    if (isTauriDesktop() && sqliteRaw) {
+      try {
+        const rows = await sqliteRaw.select<Record<string, unknown>[]>(
+          "SELECT * FROM sync_queue ORDER BY created_at DESC;",
+        );
+
+        const mapped: SyncQueueItemEntity[] = rows.map((r) => ({
+          id: String(r.id),
+          entityType: String(
+            r.entity_type,
+          ) as SyncQueueItemEntity["entityType"],
+          operation: String(r.operation) as SyncQueueItemEntity["operation"],
+          recordId: String(r.record_id),
+          payload: String(r.payload),
+          branchId: String(r.branch_id),
+          status: String(r.status) as SyncQueueItemEntity["status"],
+          createdAt: String(r.created_at),
+          syncedAt: r.synced_at ? String(r.synced_at) : undefined,
+        }));
+
+        // مزامنة نسخة الذاكرة السريعة مع ما هو محفوظ فعلياً في قاعدة بيانات سطح المكتب
+        sqliteEngine.commit((draft) => {
+          draft.syncQueue = mapped;
+        });
+
+        return mapped;
+      } catch (err) {
+        console.warn("SyncQueue SQLite read fallback:", err);
+      }
+    }
+
     return [...sqliteEngine.getSnapshot().syncQueue];
   }
 
+  /**
+   * تحديث حالة العناصر التي أكد السيرفر السحابي استلامها إلى SYNCED
+   * في الذاكرة المحلية وفي جدول sync_queue داخل pharmacare.db معاً
+   */
   async markSyncItemsCompleted(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+
     const now = new Date().toISOString();
     const idSet = new Set(ids);
+
+    // 1. تحديث حالة السجلات في الذاكرة السريعة ولقطة المتصفح
     sqliteEngine.commit((draft) => {
       draft.syncQueue.forEach((item) => {
         if (idSet.has(item.id)) {
@@ -411,6 +529,7 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
       });
     });
 
+    // 2. تحديث حالة السجلات في جدول sync_queue على سطح المكتب (Tauri SQLite)
     if (isTauriDesktop() && sqliteRaw) {
       for (const id of ids) {
         await sqliteRaw.execute(
@@ -543,6 +662,9 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
     );
   }
 
+  /**
+   * حفظ عنصر طابور المزامنة داخل جدول sync_queue في ملف pharmacare.db على سطح المكتب
+   */
   private async persistSyncItemToDesktopSQLite(
     item: SyncQueueItemEntity,
   ): Promise<void> {

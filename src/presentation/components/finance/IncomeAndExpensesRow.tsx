@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { CashExpenseEntity } from "../../../domain/entities";
-import { TrendingUp, Wallet, PlusCircle } from "lucide-react";
+import { usePosStore } from "../../../application/store/usePosStore";
+import { TrendingUp, Wallet, PlusCircle, Lock } from "lucide-react";
 
 export interface IncomeStatementSummary {
   grossSales: number;
@@ -20,17 +21,31 @@ interface Props {
     category: CashExpenseEntity["category"],
     amount: number,
   ) => Promise<void>;
+  // خاصية اختيارية لتمرير صلاحية رؤية التكلفة والأرباح من الشاشة الأب دون كسر التوافق
+  canViewCostAndProfit?: boolean;
 }
 
 export const IncomeAndExpensesRow: React.FC<Props> = ({
   incomeStatement,
   expenses,
   onAddExpense,
+  canViewCostAndProfit,
 }) => {
+  // قراءة الصلاحية من المتجر كمرجع احتياطي آمن (false) في حال عدم تمريرها عبر Props
+  const storeCanViewCost = usePosStore(
+    (s) => s.currentUser?.permissions.canViewCostAndProfit ?? false,
+  );
+  const hasCostAndProfitAccess = canViewCostAndProfit ?? storeCanViewCost;
+
   const [title, setTitle] = useState("");
   const [category, setCategory] =
     useState<CashExpenseEntity["category"]>("SUPPLIES");
   const [amount, setAmount] = useState(0);
+
+  // إخفاء قيود خسائر التوالف والجرد (INVENTORY-LOSS) عن غير المخولين لأنها محسوبة بالتكلفة المرجحة
+  const visibleExpenses = hasCostAndProfitAccess
+    ? expenses
+    : expenses.filter((exp) => exp.shiftId !== "INVENTORY-LOSS");
 
   const handleCreateExpense = () => {
     if (!title.trim() || amount <= 0) return;
@@ -41,49 +56,70 @@ export const IncomeAndExpensesRow: React.FC<Props> = ({
 
   return (
     <>
-      {/* 1. قائمة الدخل والأرباح المحاسبية */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-2.5">
-        <h3 className="font-bold text-white text-sm flex items-center gap-2 pb-1 border-b border-slate-800">
-          <TrendingUp className="w-4 h-4 text-emerald-400" /> قائمة الدخل وصافي
-          الربح المحاسبي
-        </h3>
-        <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 flex justify-between">
-          <span className="text-slate-400">صافي المبيعات (بعد المرتجع):</span>
-          <span className="font-mono font-bold text-white">
-            {incomeStatement.netRevenue.toFixed(2)}
-          </span>
+      {/* 1. بطاقة قائمة الدخل والأرباح المحاسبية — محمية بصلاحية canViewCostAndProfit */}
+      {hasCostAndProfitAccess ? (
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-2.5">
+          <h3 className="font-bold text-white text-sm flex items-center gap-2 pb-1 border-b border-slate-800">
+            <TrendingUp className="w-4 h-4 text-emerald-400" /> قائمة الدخل
+            وصافي الربح المحاسبي
+          </h3>
+          <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 flex justify-between">
+            <span className="text-slate-400">صافي المبيعات (بعد المرتجع):</span>
+            <span className="font-mono font-bold text-white">
+              {incomeStatement.netRevenue.toFixed(2)}
+            </span>
+          </div>
+          <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 flex justify-between">
+            <span className="text-slate-400">
+              تكلفة البضاعة المباعة (COGS):
+            </span>
+            <span className="font-mono font-bold text-amber-400">
+              -{incomeStatement.netCogs.toFixed(2)}
+            </span>
+          </div>
+          <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 flex justify-between">
+            <span className="text-slate-300 font-bold">
+              مجمل الربح التشغيلي (Gross Profit):
+            </span>
+            <span className="font-mono font-bold text-sky-400">
+              {incomeStatement.grossProfit.toFixed(2)}
+            </span>
+          </div>
+          <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 flex justify-between">
+            <span className="text-slate-400">المصاريف التشغيلية والنثرية:</span>
+            <span className="font-mono font-bold text-rose-400">
+              -{incomeStatement.totalExpenses.toFixed(2)}
+            </span>
+          </div>
+          <div className="bg-emerald-950/30 p-3 rounded-xl border border-emerald-800 flex justify-between">
+            <span className="font-bold text-emerald-200">
+              صافي الربح الفعلي (Net Profit):
+            </span>
+            <span className="font-mono font-extrabold text-base text-emerald-400">
+              {incomeStatement.netOperatingProfit.toFixed(2)}
+            </span>
+          </div>
         </div>
-        <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 flex justify-between">
-          <span className="text-slate-400">تكلفة البضاعة المباعة (COGS):</span>
-          <span className="font-mono font-bold text-amber-400">
-            -{incomeStatement.netCogs.toFixed(2)}
-          </span>
+      ) : (
+        /* بطاقة بديلة تحافظ على تناسق الأعمدة الثلاثة وتخفي بيانات التكلفة وصافي الربح عن غير المخولين */
+        <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between">
+          <h3 className="font-bold text-slate-400 text-sm flex items-center gap-2 pb-1 border-b border-slate-800">
+            <Lock className="w-4 h-4 text-slate-500" /> قائمة الدخل وصافي الربح
+          </h3>
+          <div className="flex-1 flex flex-col items-center justify-center text-center py-6 space-y-2 text-slate-500">
+            <Lock className="w-8 h-8 text-slate-600" />
+            <p className="font-bold text-slate-400">
+              بيانات التكلفة (COGS) وصافي الربح محجوبة
+            </p>
+            <p className="text-[11px] leading-relaxed max-w-[220px]">
+              هذا القسم مخصص للمستخدمين الذين يمتلكون صلاحية الاطلاع على التكلفة
+              والأرباح فقط.
+            </p>
+          </div>
         </div>
-        <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 flex justify-between">
-          <span className="text-slate-300 font-bold">
-            مجمل الربح التشغيلي (Gross Profit):
-          </span>
-          <span className="font-mono font-bold text-sky-400">
-            {incomeStatement.grossProfit.toFixed(2)}
-          </span>
-        </div>
-        <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 flex justify-between">
-          <span className="text-slate-400">المصاريف التشغيلية والنثرية:</span>
-          <span className="font-mono font-bold text-rose-400">
-            -{incomeStatement.totalExpenses.toFixed(2)}
-          </span>
-        </div>
-        <div className="bg-emerald-950/30 p-3 rounded-xl border border-emerald-800 flex justify-between">
-          <span className="font-bold text-emerald-200">
-            صافي الربح الفعلي (Net Profit):
-          </span>
-          <span className="font-mono font-extrabold text-base text-emerald-400">
-            {incomeStatement.netOperatingProfit.toFixed(2)}
-          </span>
-        </div>
-      </div>
+      )}
 
-      {/* 2. تسجيل مصروف نثري */}
+      {/* 2. بطاقة تسجيل مصروف نثري من الدرج — متاحة لتشغيل الوردية اليومي لجميع الموظفين */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
         <h3 className="font-bold text-white text-sm flex items-center gap-2 pb-1 border-b border-slate-800">
           <Wallet className="w-4 h-4 text-amber-400" /> تسجيل مصروفات الصيدلية
@@ -124,12 +160,12 @@ export const IncomeAndExpensesRow: React.FC<Props> = ({
           <PlusCircle className="w-4 h-4" /> خصم من درج الكاشير
         </button>
 
-        {expenses.length > 0 && (
+        {visibleExpenses.length > 0 && (
           <div className="pt-2 space-y-1.5 max-h-28 overflow-y-auto">
             <div className="text-[11px] text-slate-400 font-bold">
               آخر المصروفات المسجلة:
             </div>
-            {expenses.slice(0, 4).map((exp) => (
+            {visibleExpenses.slice(0, 4).map((exp) => (
               <div
                 key={exp.id}
                 className="flex justify-between text-[11px] bg-slate-950 px-2.5 py-1.5 rounded border border-slate-800"

@@ -20,6 +20,14 @@ type AdjustmentReasonType = "STOCKTAKING" | "DAMAGED" | "EXPIRED" | "SHORTAGE";
 export const StockAdjustmentModal: React.FC<Props> = ({ product, onClose }) => {
   const { adjustProductStock } = usePosStore();
 
+  // قراءة صلاحيتي رؤية التكلفة وتسوية الجرد من المستخدم الحالي (القيمة الافتراضية الآمنة: false)
+  const canViewCostAndProfit = usePosStore(
+    (s) => s.currentUser?.permissions.canViewCostAndProfit ?? false,
+  );
+  const canAdjustStock = usePosStore(
+    (s) => s.currentUser?.permissions.canAdjustStock ?? false,
+  );
+
   const [actualPacks, setActualPacks] = useState<string>("0");
   const [actualLooseStrips, setActualLooseStrips] = useState<string>("0");
   const [targetBatchId, setTargetBatchId] = useState<string>("AUTO_FIFO");
@@ -46,12 +54,14 @@ export const StockAdjustmentModal: React.FC<Props> = ({ product, onClose }) => {
     Math.min(stripsPerPack - 1, Math.floor(Number(actualLooseStrips) || 0)),
   );
 
+  // حساب الفارق الفعلي بين الرصيد الدفتري والرصيد المعدود على الرف (بوحدة الشريط والعلبة)
   const oldTotalStrips =
     product.stockPacks * stripsPerPack + product.stockLooseStrips;
   const newTotalStrips = parsedActualPacks * stripsPerPack + parsedActualStrips;
   const diffStrips = newTotalStrips - oldTotalStrips;
   const diffPacks = parsedActualPacks - product.stockPacks;
 
+  // حساب الأثر المالي بالتكلفة المرجحة (يُعرض في الواجهة فقط لمن يمتلك صلاحية canViewCostAndProfit)
   const stripCost = product.weightedCostPrice / stripsPerPack;
   const financialImpact = Number((diffStrips * stripCost).toFixed(2));
 
@@ -72,6 +82,9 @@ export const StockAdjustmentModal: React.FC<Props> = ({ product, onClose }) => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    // حماية دفاعية لمنع اعتماد التسوية إذا لم يمتلك المستخدم الحالي صلاحية تعديل المخزون
+    if (!canAdjustStock) return;
+
     await adjustProductStock({
       productId: product.id,
       actualPacks: parsedActualPacks,
@@ -113,10 +126,16 @@ export const StockAdjustmentModal: React.FC<Props> = ({ product, onClose }) => {
                 {product.name}
               </div>
               <div className="text-slate-400 text-[11px] mt-0.5">
-                {product.scientificName} | التكلفة المرجحة:{" "}
-                <b className="font-mono text-amber-400">
-                  {product.weightedCostPrice.toFixed(2)} ر.س
-                </b>
+                {product.scientificName}
+                {/* إظهار التكلفة المرجحة فقط لمن يمتلك صلاحية الاطلاع على التكلفة والأرباح */}
+                {canViewCostAndProfit && (
+                  <>
+                    {" | "}التكلفة المرجحة:{" "}
+                    <b className="font-mono text-amber-400">
+                      {product.weightedCostPrice.toFixed(2)} ر.س
+                    </b>
+                  </>
+                )}
               </div>
             </div>
             <div className="text-left bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-lg">
@@ -172,6 +191,7 @@ export const StockAdjustmentModal: React.FC<Props> = ({ product, onClose }) => {
               )}
             </div>
           </div>
+
           {/* إدخال الرصيد الفعلي الجديد */}
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -239,7 +259,7 @@ export const StockAdjustmentModal: React.FC<Props> = ({ product, onClose }) => {
             </div>
           </div>
 
-          {/* خيار تقييد الخسارة مالياً عند وجود نقص */}
+          {/* خيار تقييد الخسارة مالياً عند وجود نقص (إخفاء القيمة المالية عن غير المخولين مع إبقاء القيد التلقائي متاحاً) */}
           {diffStrips < 0 && (
             <label className="flex items-center gap-2 p-2.5 rounded-xl bg-rose-950/30 border border-rose-800/60 text-rose-200 cursor-pointer font-bold">
               <input
@@ -248,25 +268,26 @@ export const StockAdjustmentModal: React.FC<Props> = ({ product, onClose }) => {
                 onChange={(e) => setRecordLossInFinance(e.target.checked)}
                 className="rounded accent-rose-500"
               />
-              تقييد قيمة التالف/العجز ({Math.abs(financialImpact).toFixed(2)}{" "}
-              ر.س) كخسارة مخزنية في قائمة الدخل المالية
+              {canViewCostAndProfit
+                ? `تقييد قيمة التالف/العجز (${Math.abs(financialImpact).toFixed(2)} ر.س) كخسارة مخزنية في قائمة الدخل المالية`
+                : "تقييد هذا التالف/العجز تلقائياً كخسارة مخزنية في قائمة الدخل المالية"}
             </label>
           )}
 
-          {/* معاينة الأثر المحاسبي والمخزني للتسوية */}
+          {/* معاينة الفارق المخزني (وإظهار الأثر المالي بالتكلفة للمخولين فقط) */}
           <div
             className={`p-3.5 rounded-xl border flex items-center justify-between ${
-              financialImpact < 0
+              diffStrips < 0
                 ? "bg-rose-950/40 border-rose-800 text-rose-200"
-                : financialImpact > 0
+                : diffStrips > 0
                   ? "bg-emerald-950/40 border-emerald-800 text-emerald-200"
                   : "bg-slate-950 border-slate-800 text-slate-400"
             }`}
           >
             <div className="flex items-center gap-2">
-              {financialImpact < 0 ? (
+              {diffStrips < 0 ? (
                 <Flame className="w-4 h-4 text-rose-400" />
-              ) : financialImpact > 0 ? (
+              ) : diffStrips > 0 ? (
                 <Scale className="w-4 h-4 text-emerald-400" />
               ) : (
                 <AlertTriangle className="w-4 h-4 text-slate-500" />
@@ -280,21 +301,25 @@ export const StockAdjustmentModal: React.FC<Props> = ({ product, onClose }) => {
                   </span>
                 </div>
                 <div className="text-[10px] opacity-80">
-                  محسوب على أساس التكلفة المرجحة (
-                  {product.weightedCostPrice.toFixed(2)} ر.س/علبة)
+                  {canViewCostAndProfit
+                    ? `محسوب على أساس التكلفة المرجحة (${product.weightedCostPrice.toFixed(2)} ر.س/علبة)`
+                    : "يُحتسب الأثر المالي تلقائياً في تقارير الإدارة دون عرض سعر التكلفة"}
                 </div>
               </div>
             </div>
 
-            <div className="text-left">
-              <div className="text-[10px]">الأثر المالي بالتكلفة</div>
-              <div className="font-mono font-extrabold text-sm">
-                {financialImpact > 0
-                  ? `+${financialImpact.toFixed(2)}`
-                  : financialImpact.toFixed(2)}{" "}
-                ر.س
+            {/* إخفاء عمود الأثر المالي بالتكلفة تماماً عن غير المخولين */}
+            {canViewCostAndProfit && (
+              <div className="text-left">
+                <div className="text-[10px]">الأثر المالي بالتكلفة</div>
+                <div className="font-mono font-extrabold text-sm">
+                  {financialImpact > 0
+                    ? `+${financialImpact.toFixed(2)}`
+                    : financialImpact.toFixed(2)}{" "}
+                  ر.س
+                </div>
               </div>
-            </div>
+            )}
           </div>
         </div>
 
@@ -302,7 +327,7 @@ export const StockAdjustmentModal: React.FC<Props> = ({ product, onClose }) => {
         <div className="p-4 bg-slate-800 border-t border-slate-700 flex gap-2">
           <button
             type="submit"
-            disabled={diffStrips === 0}
+            disabled={diffStrips === 0 || !canAdjustStock}
             className="flex-1 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white font-bold py-2.5 rounded-xl flex items-center justify-center gap-2 shadow-lg transition"
           >
             <ClipboardCheck className="w-4 h-4" /> اعتماد تسوية الجرد وتحديث

@@ -1,6 +1,10 @@
 import { eq } from "drizzle-orm";
 import { IProductRepository } from "../../domain/repositories/IProductRepository";
-import { ProductEntity, BatchEntity } from "../../domain/entities";
+import {
+  ProductEntity,
+  BatchEntity,
+  SyncQueueItemEntity,
+} from "../../domain/entities";
 import { sqliteEngine, CURRENT_BRANCH_ID } from "../db/database";
 import { db, isTauriDesktop, sqliteRaw } from "../db/connection";
 import { productsTable, batchesTable } from "../db/schema";
@@ -23,6 +27,9 @@ export class SQLiteProductRepository implements IProductRepository {
     }
   }
 
+  /**
+   * حفظ أو تحديث سجل دواء واحد مع دفعاته داخل جداول SQLite على سطح المكتب
+   */
   private async persistProductToDesktopSQLite(
     product: ProductEntity,
   ): Promise<void> {
@@ -80,6 +87,32 @@ export class SQLiteProductRepository implements IProductRepository {
         ],
       );
     }
+  }
+
+  /**
+   * حفظ عنصر طابور المزامنة داخل جدول sync_queue في ملف pharmacare.db على سطح المكتب
+   * لضمان عدم فقدان حركات الأدوية المعلقة بعد إغلاق التطبيق وإعادة فتحه
+   */
+  private async persistSyncItemToDesktopSQLite(
+    item: SyncQueueItemEntity,
+  ): Promise<void> {
+    if (!isTauriDesktop() || !sqliteRaw) return;
+    await sqliteRaw.execute(
+      `INSERT OR REPLACE INTO sync_queue (
+        id, entity_type, operation, record_id, payload, branch_id, status, created_at, synced_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);`,
+      [
+        item.id,
+        item.entityType,
+        item.operation,
+        item.recordId,
+        item.payload,
+        item.branchId,
+        item.status,
+        item.createdAt,
+        item.syncedAt || null,
+      ],
+    );
   }
 
   async getAllProducts(): Promise<ProductEntity[]> {
@@ -164,6 +197,9 @@ export class SQLiteProductRepository implements IProductRepository {
       updatedAt: now,
     };
 
+    // التحقق مما إذا كان الصنف موجوداً مسبقاً لتسجيل نوع العملية بدقة (INSERT أم UPDATE)
+    let syncOperation: SyncQueueItemEntity["operation"] = "INSERT";
+
     sqliteEngine.commit((draft) => {
       const idx = draft.products.findIndex(
         (p) => p.id === normalized.id || p.barcode === normalized.barcode,
@@ -171,8 +207,10 @@ export class SQLiteProductRepository implements IProductRepository {
       if (idx >= 0) {
         normalized.id = draft.products[idx].id;
         draft.products[idx] = normalized;
+        syncOperation = "UPDATE";
       } else {
         draft.products.unshift(normalized);
+        syncOperation = "INSERT";
       }
     });
 
@@ -180,8 +218,16 @@ export class SQLiteProductRepository implements IProductRepository {
       await this.persistProductToDesktopSQLite(normalized);
     }
 
-    sqliteEngine.enqueueSync("PRODUCT", "UPDATE", normalized.id, normalized);
+    // إدراج الحركة في طابور المزامنة وحفظها في جدول sync_queue على سطح المكتب
+    const syncItem = sqliteEngine.enqueueSync(
+      "PRODUCT",
+      syncOperation,
+      normalized.id,
+      normalized,
+    );
+    await this.persistSyncItemToDesktopSQLite(syncItem);
   }
+
   /**
    * إدخال أو تحديث آلاف الأدوية دفعة واحدة (Bulk Upsert Transaction)
    * يمنع تجمّد المتصفح أو قاعدة البيانات عند استيراد 10,000+ دواء من ملف Excel
@@ -189,7 +235,7 @@ export class SQLiteProductRepository implements IProductRepository {
   async upsertProductsBulk(importedProducts: ProductEntity[]): Promise<void> {
     if (importedProducts.length === 0) return;
 
-    // 1. تحديث المحرك المحلي بعملية حفظ (commit) واحدة فقط لجميع الأدوية!
+    // 1. تحديث المحرك المحلي بعملية حفظ (commit) واحدة فقط لجميع الأدوية
     sqliteEngine.commit((draft) => {
       const existingMap = new Map(draft.products.map((p, idx) => [p.id, idx]));
 
@@ -262,11 +308,18 @@ export class SQLiteProductRepository implements IProductRepository {
       }
     }
 
-    // 3. تسجيل عنصر مزامنة مجمع واحد بدلاً من 10,000 عنصر منفصل
-    sqliteEngine.enqueueSync("PRODUCT", "UPDATE", `BULK-IMPORT-${Date.now()}`, {
-      count: importedProducts.length,
-    });
+    // 3. تسجيل عنصر مزامنة مجمع واحد وحفظه في جدول sync_queue بقاعدة SQLite
+    const syncItem = sqliteEngine.enqueueSync(
+      "PRODUCT",
+      "UPDATE",
+      `BULK-IMPORT-${Date.now()}`,
+      {
+        count: importedProducts.length,
+      },
+    );
+    await this.persistSyncItemToDesktopSQLite(syncItem);
   }
+
   async updateStock(
     productId: string,
     newPacks: number,
@@ -297,12 +350,14 @@ export class SQLiteProductRepository implements IProductRepository {
         .run();
     }
 
-    sqliteEngine.enqueueSync("PRODUCT", "UPDATE", productId, {
+    // إدراج تحديث الرصيد في طابور المزامنة وحفظه في SQLite
+    const syncItem = sqliteEngine.enqueueSync("PRODUCT", "UPDATE", productId, {
       productId,
       newPacks: safePacks,
       newLooseStrips: safeStrips,
       updatedAt: now,
     });
+    await this.persistSyncItemToDesktopSQLite(syncItem);
   }
 
   async updatePurchaseStockAndPricing(
@@ -339,13 +394,15 @@ export class SQLiteProductRepository implements IProductRepository {
         .run();
     }
 
-    sqliteEngine.enqueueSync("PRODUCT", "UPDATE", productId, {
+    // إدراج تحديث المشتريات والتكلفة المرجحة في طابور المزامنة وحفظه في SQLite
+    const syncItem = sqliteEngine.enqueueSync("PRODUCT", "UPDATE", productId, {
       productId,
       newPacks: safePacks,
       newWeightedCostPrice: safeCost,
       newPackPrice: safePrice,
       updatedAt: now,
     });
+    await this.persistSyncItemToDesktopSQLite(syncItem);
   }
 
   async applyBulkPriceAdjustment(
@@ -383,12 +440,19 @@ export class SQLiteProductRepository implements IProductRepository {
       }
     }
 
-    sqliteEngine.enqueueSync("BULK_PRICING", "UPDATE", `BULK-${Date.now()}`, {
-      percentChange,
-      categoryFilter: categoryFilter || "ALL",
-      affectedCount: affectedProducts.length,
-      updatedAt: now,
-    });
+    // إدراج عملية التسعير الجماعي في طابور المزامنة وحفظها في SQLite
+    const syncItem = sqliteEngine.enqueueSync(
+      "BULK_PRICING",
+      "UPDATE",
+      `BULK-${Date.now()}`,
+      {
+        percentChange,
+        categoryFilter: categoryFilter || "ALL",
+        affectedCount: affectedProducts.length,
+        updatedAt: now,
+      },
+    );
+    await this.persistSyncItemToDesktopSQLite(syncItem);
 
     return this.getAllProducts();
   }

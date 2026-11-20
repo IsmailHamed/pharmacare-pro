@@ -17,6 +17,12 @@ interface Props {
 
 export const ShortagesOrderModal: React.FC<Props> = ({ isOpen, onClose }) => {
   const { products, settings, setNotification } = usePosStore();
+
+  // التحقق من صلاحية المستخدم الحالي للاطلاع على التكلفة المرجحة والأرباح (القيمة الافتراضية الآمنة: false)
+  const canViewCostAndProfit = usePosStore(
+    (s) => s.currentUser?.permissions.canViewCostAndProfit ?? false,
+  );
+
   const [supplierName, setSupplierName] = useState("مستودع الأدوية المركزي");
   const [orderQtyMap, setOrderQtyMap] = useState<Record<string, number>>({});
   const [copied, setCopied] = useState(false);
@@ -45,12 +51,13 @@ export const ShortagesOrderModal: React.FC<Props> = ({ isOpen, onClose }) => {
   const getOrderQty = (productId: string, fallback: number): number =>
     orderQtyMap[productId] !== undefined ? orderQtyMap[productId] : fallback;
 
+  // حساب التكلفة التقديرية الإجمالية للطلبية (تُعرض فقط لمن يمتلك صلاحية canViewCostAndProfit)
   const totalEstimatedCost = shortageProducts.reduce((sum, p) => {
     const qty = getOrderQty(p.id, Math.max(5, p.minLimit * 2 - p.stockPacks));
     return sum + qty * p.weightedCostPrice;
   }, 0);
 
-  // بناء نص طلبية مرتب لإرساله عبر واتساب لمندوب المستودع
+  // بناء نص طلبية مرتب لإرساله عبر واتساب لمندوب المستودع (خالي من أسعار التكلفة السرية)
   const buildWhatsAppOrderText = (): string => {
     const dateStr = new Date().toLocaleDateString("ar-SA");
     const lines = shortageProducts
@@ -88,6 +95,7 @@ export const ShortagesOrderModal: React.FC<Props> = ({ isOpen, onClose }) => {
   };
 
   // تصدير ملف CSV متوافق مع Excel بالترميز العربي (UTF-8 BOM)
+  // يتم استبعاد أعمدة التكلفة تلقائياً إذا لم يمتلك المستخدم صلاحية رؤية التكلفة والأرباح
   const handleExportCsvOrder = () => {
     const headers = [
       "الباركود",
@@ -96,8 +104,9 @@ export const ShortagesOrderModal: React.FC<Props> = ({ isOpen, onClose }) => {
       "الرصيد الحالي (علبة)",
       "حد الطلب الأدنى",
       "الكمية المطلوبة (علبة)",
-      "آخر تكلفة مرجحة للعلبة",
-      "التكلفة التقديرية للسطر",
+      ...(canViewCostAndProfit
+        ? ["آخر تكلفة مرجحة للعلبة", "التكلفة التقديرية للسطر"]
+        : []),
     ];
 
     const rows = shortageProducts
@@ -107,16 +116,25 @@ export const ShortagesOrderModal: React.FC<Props> = ({ isOpen, onClose }) => {
           Math.max(5, p.minLimit * 2 - p.stockPacks),
         );
         if (qty <= 0) return null;
-        return [
+
+        const baseColumns = [
           `"${p.barcode}"`,
           `"${p.name}"`,
           `"${p.scientificName}"`,
           p.stockPacks,
           p.minLimit,
           qty,
-          p.weightedCostPrice.toFixed(2),
-          (qty * p.weightedCostPrice).toFixed(2),
-        ].join(",");
+        ];
+
+        // إضافة قيم التكلفة فقط للمستخدمين المخوّلين
+        if (canViewCostAndProfit) {
+          baseColumns.push(
+            p.weightedCostPrice.toFixed(2),
+            (qty * p.weightedCostPrice).toFixed(2),
+          );
+        }
+
+        return baseColumns.join(",");
       })
       .filter(Boolean);
 
@@ -160,7 +178,7 @@ export const ShortagesOrderModal: React.FC<Props> = ({ isOpen, onClose }) => {
           </button>
         </div>
 
-        {/* شريط اسم المستودع والتكلفة التقديرية */}
+        {/* شريط اسم المستودع والتكلفة التقديرية (مخفية عن غير المخولين) */}
         <div className="p-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between gap-4 flex-wrap">
           <div className="flex items-center gap-2 flex-1 min-w-[260px]">
             <Building2 className="w-4 h-4 text-slate-400" />
@@ -175,12 +193,14 @@ export const ShortagesOrderModal: React.FC<Props> = ({ isOpen, onClose }) => {
             />
           </div>
 
-          <div className="bg-slate-900 border border-slate-800 px-3.5 py-2 rounded-xl flex items-center gap-2">
-            <span className="text-slate-400">التكلفة التقديرية للطلبية:</span>
-            <b className="font-mono text-sm text-amber-400">
-              {totalEstimatedCost.toFixed(2)} ر.س
-            </b>
-          </div>
+          {canViewCostAndProfit && (
+            <div className="bg-slate-900 border border-slate-800 px-3.5 py-2 rounded-xl flex items-center gap-2">
+              <span className="text-slate-400">التكلفة التقديرية للطلبية:</span>
+              <b className="font-mono text-sm text-amber-400">
+                {totalEstimatedCost.toFixed(2)} ر.س
+              </b>
+            </div>
+          )}
         </div>
 
         {/* جدول النواقص وتحديد الكميات */}
@@ -198,11 +218,17 @@ export const ShortagesOrderModal: React.FC<Props> = ({ isOpen, onClose }) => {
                   <th className="py-2 px-2">الدواء / المادة الفعالة</th>
                   <th className="py-2 px-2 text-center">الرصيد الفعلي</th>
                   <th className="py-2 px-2 text-center">حد الطلب</th>
-                  <th className="py-2 px-2 text-center">آخر تكلفة للعلبة</th>
+                  {/* إخفاء عمود التكلفة عن غير المخولين */}
+                  {canViewCostAndProfit && (
+                    <th className="py-2 px-2 text-center">آخر تكلفة للعلبة</th>
+                  )}
                   <th className="py-2 px-2 text-center">
                     الكمية المطلوبة (علبة)
                   </th>
-                  <th className="py-2 px-2 text-left">الإجمالي التقديري</th>
+                  {/* إخفاء عمود الإجمالي التقديري بالتكلفة عن غير المخولين */}
+                  {canViewCostAndProfit && (
+                    <th className="py-2 px-2 text-left">الإجمالي التقديري</th>
+                  )}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60">
@@ -244,9 +270,11 @@ export const ShortagesOrderModal: React.FC<Props> = ({ isOpen, onClose }) => {
                         {p.minLimit}
                       </td>
 
-                      <td className="py-2.5 px-2 text-center font-mono text-amber-400">
-                        {p.weightedCostPrice.toFixed(2)}
-                      </td>
+                      {canViewCostAndProfit && (
+                        <td className="py-2.5 px-2 text-center font-mono text-amber-400">
+                          {p.weightedCostPrice.toFixed(2)}
+                        </td>
+                      )}
 
                       <td className="py-2.5 px-2 text-center">
                         <input
@@ -264,9 +292,11 @@ export const ShortagesOrderModal: React.FC<Props> = ({ isOpen, onClose }) => {
                         />
                       </td>
 
-                      <td className="py-2.5 px-2 text-left font-mono font-bold text-emerald-400">
-                        {(qty * p.weightedCostPrice).toFixed(2)}
-                      </td>
+                      {canViewCostAndProfit && (
+                        <td className="py-2.5 px-2 text-left font-mono font-bold text-emerald-400">
+                          {(qty * p.weightedCostPrice).toFixed(2)}
+                        </td>
+                      )}
                     </tr>
                   );
                 })}

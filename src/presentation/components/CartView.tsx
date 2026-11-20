@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { CartItemEntity } from "../../domain/entities";
 import { InvoiceEntity } from "../../domain/entities/Invoice";
+import { usePosStore } from "../../application/store/usePosStore";
 import {
   Printer,
   ShoppingCart,
@@ -53,66 +54,97 @@ export const CartView: React.FC<Props> = ({
 }) => {
   const [lookupId, setLookupId] = useState("");
 
+  // التحقق من صلاحية المستخدم الحالي لإجراء مرتجعات المبيعات (القيمة الافتراضية الآمنة: false)
+  const canProcessReturn = usePosStore(
+    (s) => s.currentUser?.permissions.canProcessReturn ?? false,
+  );
+
   const discountAmount = (subtotal * discountPercent) / 100;
   const total = subtotal - discountAmount;
 
+  // منع تفعيل وضع المرتجع لغير المخولين، مع السماح دائماً بالعودة من وضع المرتجع إلى وضع البيع
+  const isReturnToggleDisabled = !canProcessReturn && invoiceMode === "SALE";
+  // منع اعتماد الفاتورة إذا كان النظام في وضع المرتجع وتم تبديل المستخدم لحساب غير مخول
+  const isReturnCheckoutBlocked = invoiceMode === "RETURN" && !canProcessReturn;
+
   const handleInvoiceLookup = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!lookupId.trim() || !onLoadInvoiceForReturn) return;
+    if (!canProcessReturn || !lookupId.trim() || !onLoadInvoiceForReturn) {
+      return;
+    }
     const ok = onLoadInvoiceForReturn(lookupId);
     if (ok) setLookupId("");
   };
 
   return (
     <div className="w-5/12 p-4 flex flex-col bg-slate-900/20">
-      {/* الخطوة 6: شريط استرداد الفاتورة الأصلية بالرقم أو الباركود عند تفعيل وضع المرتجع */}
-      {invoiceMode === "RETURN" && onLoadInvoiceForReturn && (
-        <div className="mb-2.5 p-2.5 bg-amber-950/30 border border-amber-800/70 rounded-xl space-y-2 text-xs">
-          <div className="flex items-center justify-between">
-            <span className="font-bold text-amber-300 flex items-center gap-1.5">
-              <FileSearch className="w-3.5 h-3.5" /> استرداد فاتورة مبيعات
-              للمرتجع
-            </span>
-            {returnSourceInvoiceId && (
-              <span className="bg-amber-900/60 border border-amber-600 text-amber-200 text-[10px] font-mono px-2 py-0.5 rounded-full">
-                مرجع: {returnSourceInvoiceId}
+      {/* شريط استرداد الفاتورة الأصلية بالرقم أو الباركود — يظهر فقط لمن يملك صلاحية المرتجع */}
+      {canProcessReturn &&
+        invoiceMode === "RETURN" &&
+        onLoadInvoiceForReturn && (
+          <div className="mb-2.5 p-2.5 bg-amber-950/30 border border-amber-800/70 rounded-xl space-y-2 text-xs">
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-amber-300 flex items-center gap-1.5">
+                <FileSearch className="w-3.5 h-3.5" /> استرداد فاتورة مبيعات
+                للمرتجع
               </span>
+              {returnSourceInvoiceId && (
+                <span className="bg-amber-900/60 border border-amber-600 text-amber-200 text-[10px] font-mono px-2 py-0.5 rounded-full">
+                  مرجع: {returnSourceInvoiceId}
+                </span>
+              )}
+            </div>
+
+            <form onSubmit={handleInvoiceLookup} className="flex gap-1.5">
+              <input
+                type="text"
+                value={lookupId}
+                onChange={(e) => setLookupId(e.target.value)}
+                placeholder="امسح باركود الفاتورة أو اكتب رقمها (INV-...)"
+                className="flex-1 bg-slate-900 border border-amber-800/80 rounded-lg px-2.5 py-1.5 text-white font-mono text-[11px] outline-none focus:border-amber-500"
+              />
+              <button
+                type="submit"
+                className="bg-amber-600 hover:bg-amber-500 text-white font-bold px-3 py-1.5 rounded-lg flex items-center gap-1"
+              >
+                <SearchCheck className="w-3.5 h-3.5" /> جلب
+              </button>
+            </form>
+
+            {recentSaleInvoices.length > 0 && (
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+                <span className="text-[10px] text-amber-300/80 shrink-0">
+                  آخر الفواتير:
+                </span>
+                {recentSaleInvoices.slice(0, 6).map((inv) => (
+                  <button
+                    key={inv.id}
+                    type="button"
+                    onClick={() => onLoadInvoiceForReturn(inv.id)}
+                    className="text-[10px] font-mono bg-slate-900 hover:bg-amber-900/50 border border-slate-700 text-slate-200 px-2 py-0.5 rounded shrink-0 transition"
+                  >
+                    {inv.id} ({inv.totalAmount.toFixed(0)})
+                  </button>
+                ))}
+              </div>
             )}
           </div>
+        )}
 
-          <form onSubmit={handleInvoiceLookup} className="flex gap-1.5">
-            <input
-              type="text"
-              value={lookupId}
-              onChange={(e) => setLookupId(e.target.value)}
-              placeholder="امسح باركود الفاتورة أو اكتب رقمها (INV-...)"
-              className="flex-1 bg-slate-900 border border-amber-800/80 rounded-lg px-2.5 py-1.5 text-white font-mono text-[11px] outline-none focus:border-amber-500"
-            />
-            <button
-              type="submit"
-              className="bg-amber-600 hover:bg-amber-500 text-white font-bold px-3 py-1.5 rounded-lg flex items-center gap-1"
-            >
-              <SearchCheck className="w-3.5 h-3.5" /> جلب
-            </button>
-          </form>
-
-          {recentSaleInvoices.length > 0 && (
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
-              <span className="text-[10px] text-amber-300/80 shrink-0">
-                آخر الفواتير:
-              </span>
-              {recentSaleInvoices.slice(0, 6).map((inv) => (
-                <button
-                  key={inv.id}
-                  type="button"
-                  onClick={() => onLoadInvoiceForReturn(inv.id)}
-                  className="text-[10px] font-mono bg-slate-900 hover:bg-amber-900/50 border border-slate-700 text-slate-200 px-2 py-0.5 rounded shrink-0 transition"
-                >
-                  {inv.id} ({inv.totalAmount.toFixed(0)})
-                </button>
-              ))}
-            </div>
-          )}
+      {/* تنبيه في حال تبديل المستخدم لحساب غير مخول أثناء وجود فاتورة مرتجع مفتوحة */}
+      {isReturnCheckoutBlocked && (
+        <div className="mb-2.5 p-2.5 bg-rose-950/40 border border-rose-800 rounded-xl text-rose-300 text-xs font-bold flex items-center justify-between gap-2">
+          <span>
+            المستخدم الحالي لا يملك صلاحية اعتماد المرتجع. أعد الوضع إلى البيع
+            أو بدّل المستخدم.
+          </span>
+          <button
+            type="button"
+            onClick={onToggleReturn}
+            className="bg-rose-800 hover:bg-rose-700 text-white px-2.5 py-1 rounded-lg shrink-0"
+          >
+            عودة للبيع
+          </button>
         </div>
       )}
 
@@ -194,8 +226,13 @@ export const CartView: React.FC<Props> = ({
           />
           <button
             onClick={onToggleReturn}
-            title="تبديل وضع المرتجع (F6)"
-            className={`px-3 py-1.5 rounded-lg font-bold border transition ${
+            disabled={isReturnToggleDisabled}
+            title={
+              isReturnToggleDisabled
+                ? "لا تملك صلاحية إجراء مرتجعات المبيعات"
+                : "تبديل وضع المرتجع (F6)"
+            }
+            className={`px-3 py-1.5 rounded-lg font-bold border transition disabled:opacity-40 disabled:cursor-not-allowed ${
               invoiceMode === "RETURN"
                 ? "bg-amber-950 text-amber-300 border-amber-700 animate-pulse"
                 : "bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700"
@@ -270,7 +307,8 @@ export const CartView: React.FC<Props> = ({
           </button>
           <button
             onClick={onCheckout}
-            className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white py-2.5 rounded-lg font-bold flex items-center justify-center gap-1.5 shadow"
+            disabled={isReturnCheckoutBlocked}
+            className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-white py-2.5 rounded-lg font-bold flex items-center justify-center gap-1.5 shadow"
           >
             <Printer className="w-4 h-4" />
             {invoiceMode === "RETURN"
