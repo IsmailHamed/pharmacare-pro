@@ -11,6 +11,7 @@ import {
   buildProductSearchIndex,
   searchProductsFuzzy,
 } from "../../domain/utils/fuzzySearch";
+import { SoundFeedbackService } from "../../infrastructure/audio/SoundFeedbackService";
 import { ProductCatalog } from "../components/ProductCatalog";
 import { CartView } from "../components/CartView";
 import { ControlledDrugModal } from "../components/ControlledDrugModal";
@@ -28,6 +29,8 @@ import {
   Barcode,
   FileText,
   ClipboardList,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 
 /**
@@ -39,6 +42,9 @@ export const POSView: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState("");
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isShortagesOpen, setIsShortagesOpen] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(() =>
+    SoundFeedbackService.isEnabled(),
+  );
   const searchInputRef = useRef<HTMLInputElement>(null);
   const lastScannerCharAtRef = useRef<number>(0);
 
@@ -184,28 +190,46 @@ export const POSView: React.FC = () => {
     [store.products],
   );
 
+  const handleToggleSound = useCallback(() => {
+    const nextEnabled = SoundFeedbackService.toggle();
+    setSoundEnabled(nextEnabled);
+    store.setNotification({
+      type: "info",
+      message: nextEnabled
+        ? "تم تفعيل النغمات الصوتية لنقطة البيع."
+        : "تم كتم النغمات الصوتية لنقطة البيع.",
+    });
+  }, [store]);
+
   const handleSearchEnter = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
       if (e.key !== "Enter") return;
       const q = searchQuery.trim();
       if (!q) return;
 
-      if (
+      const isDirectScanQuery =
         q.toUpperCase().startsWith("INV-") ||
         q.toUpperCase().endsWith("-S") ||
-        store.products.some((p) => p.barcode.toLowerCase() === q.toLowerCase())
-      ) {
+        store.products.some((p) => p.barcode.toLowerCase() === q.toLowerCase());
+
+      if (isDirectScanQuery) {
         const handled = store.handleBarcodeScan(q);
         if (handled) {
           setSearchQuery("");
-          return;
         }
+        return;
       }
 
       const firstMatch = filteredProducts[0];
       if (firstMatch) {
         store.requestAddToCart(firstMatch, "pack");
         setSearchQuery("");
+      } else {
+        SoundFeedbackService.playWarningBuzzer();
+        store.setNotification({
+          type: "warning",
+          message: `لم يتم العثور على صنف دوائي مطابق لـ (${q})`,
+        });
       }
     },
     [searchQuery, filteredProducts, store],
@@ -248,12 +272,39 @@ export const POSView: React.FC = () => {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      {/* شريط الأدوات العلوي لنقطة البيع: حالة الليزر + سجل الفواتير + دفتر النواقص */}
+      {/* شريط الأدوات العلوي لنقطة البيع: حالة الليزر + الصوت + سجل الفواتير + دفتر النواقص */}
       <div className="bg-slate-900/90 border-b border-slate-800 px-4 py-1.5 flex items-center justify-between text-[11px]">
         <div className="flex items-center gap-2 text-slate-300">
           <span className="bg-emerald-950 border border-emerald-800 text-emerald-300 px-2 py-0.5 rounded-full flex items-center gap-1 font-bold">
             <Barcode className="w-3.5 h-3.5" /> قارئ الليزر التلقائي نشط
           </span>
+
+          {/* زر كتم أو تفعيل النغمات الصوتية لنقطة البيع */}
+          <button
+            type="button"
+            onClick={handleToggleSound}
+            title={
+              soundEnabled
+                ? "إيقاف النغمات الصوتية (البيع والشريط والتحذير)"
+                : "تفعيل النغمات الصوتية لنقطة البيع"
+            }
+            className={`px-2 py-0.5 rounded-full border flex items-center gap-1 font-bold transition ${
+              soundEnabled
+                ? "bg-sky-950/80 hover:bg-sky-900 border-sky-800 text-sky-300"
+                : "bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-400"
+            }`}
+          >
+            {soundEnabled ? (
+              <>
+                <Volume2 className="w-3.5 h-3.5" /> الصوت مفعل
+              </>
+            ) : (
+              <>
+                <VolumeX className="w-3.5 h-3.5 text-rose-400" /> الصوت مكتوم
+              </>
+            )}
+          </button>
+
           <span className="text-slate-400">
             ({store.settings.pharmacyName} — الطابعة:{" "}
             <b className="font-mono text-slate-300">

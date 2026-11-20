@@ -1,6 +1,10 @@
-import React, { forwardRef } from "react";
+import React, { forwardRef, useMemo } from "react";
 import { ProductEntity } from "../../domain/entities";
-import { Search, Repeat, X, Sparkles } from "lucide-react";
+import {
+  buildLasaRiskGroupSet,
+  parseLasaDisplay,
+} from "../../domain/utils/lasaFormatter";
+import { Search, Repeat, X, Sparkles, AlertTriangle } from "lucide-react";
 
 interface Props {
   searchQuery: string;
@@ -26,6 +30,12 @@ export const ProductCatalog = forwardRef<HTMLInputElement, Props>(
     ref,
   ) => {
     const hasQuery = searchQuery.trim().length > 0;
+
+    // اكتشاف مجموعات الأدوية المتشابهة اسماً (LASA) ضمن النتائج المعروضة حالياً
+    const lasaRiskGroups = useMemo(
+      () => buildLasaRiskGroupSet(products),
+      [products],
+    );
 
     return (
       <div className="w-7/12 p-4 flex flex-col border-l border-slate-800">
@@ -68,10 +78,10 @@ export const ProductCatalog = forwardRef<HTMLInputElement, Props>(
         {/* جدول الأدوية */}
         <div className="flex-1 overflow-y-auto rounded-xl border border-slate-800 bg-slate-900/40 no-scrollbar">
           <table className="w-full text-right text-xs">
-            <thead className="bg-slate-800/90 sticky top-0 text-slate-400 border-b border-slate-700">
+            <thead className="bg-slate-800/90 sticky top-0 text-slate-400 border-b border-slate-700 z-10">
               <tr>
                 <th className="py-2.5 px-3">الباركود</th>
-                <th className="py-2.5 px-3">الدواء والمادة الفعالة</th>
+                <th className="py-2.5 px-3">الدواء والعيار والمادة الفعالة</th>
                 <th className="py-2.5 px-3">الرصيد</th>
                 <th className="py-2.5 px-3">سعر العلبة</th>
                 <th className="py-2.5 px-3 text-center">إدراج</th>
@@ -91,36 +101,92 @@ export const ProductCatalog = forwardRef<HTMLInputElement, Props>(
                   p.stockPacks === 0 && p.stockLooseStrips === 0;
                 const isTopSearchMatch = hasQuery && idx === 0;
 
+                // تحليل عناصر التمييز البصري (LASA): العيارات، الصفات الفارقة، والشكل الصيدلاني
+                const lasa = parseLasaDisplay(p.name, p.category);
+                const isLasaRisk =
+                  lasa.lasaGroupKey.length >= 3 &&
+                  lasaRiskGroups.has(lasa.lasaGroupKey);
+
                 return (
                   <tr
                     key={p.id}
                     className={`transition ${
                       isTopSearchMatch
                         ? "bg-sky-950/35 hover:bg-sky-950/50"
-                        : "hover:bg-slate-800/50"
-                    }`}
+                        : isLasaRisk
+                          ? "bg-amber-950/10 hover:bg-amber-950/25"
+                          : "hover:bg-slate-800/50"
+                    } ${isLasaRisk ? "border-r-2 border-r-amber-500/80" : ""}`}
                   >
                     <td className="py-2.5 px-3 font-mono text-slate-400">
                       {p.barcode}
                     </td>
+
                     <td className="py-2.5 px-3">
-                      <div className="font-bold text-white flex items-center gap-1.5 flex-wrap">
-                        {p.name}
+                      {/* السطر الرئيسي: الاسم الأساسي + شارات العيار الضخمة + الشكل الصيدلاني */}
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="font-bold text-white text-[13px] tracking-tight">
+                          {lasa.baseName}
+                        </span>
+
+                        {/* العيارات الدوائية بألوان متباينة وخط ضخم لمنع أخطاء الصرف */}
+                        {lasa.strengths.map((strength) => (
+                          <span
+                            key={strength.text}
+                            dir="ltr"
+                            className={`inline-flex items-center px-2 py-0.5 rounded-md border text-[12px] font-black font-mono tracking-wide ${strength.badgeClass}`}
+                          >
+                            {strength.text}
+                          </span>
+                        ))}
+
+                        {/* الصفات الفارقة الحرجة (XR / Forte / Extra / أطفال...) */}
+                        {lasa.modifiers.map((mod) => (
+                          <span
+                            key={mod}
+                            className="inline-flex items-center px-1.5 py-0.5 rounded border bg-yellow-500/15 text-yellow-200 border-yellow-400/70 text-[11px] font-extrabold"
+                          >
+                            {mod}
+                          </span>
+                        ))}
+
+                        {/* الشكل الصيدلاني (أقراص، شراب، حقن، كبسول...) */}
+                        {lasa.dosageForm && (
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded-md border text-[11px] ${lasa.dosageForm.badgeClass}`}
+                          >
+                            {lasa.dosageForm.label}
+                          </span>
+                        )}
+
                         {p.isControlled && (
-                          <span className="bg-rose-950 text-rose-300 border border-rose-800 text-[10px] px-1.5 rounded">
+                          <span className="bg-rose-950 text-rose-300 border border-rose-800 text-[10px] px-1.5 py-0.5 rounded font-bold">
                             مراقب 🔒
                           </span>
                         )}
+
                         {isTopSearchMatch && (
-                          <span className="bg-sky-950 text-sky-300 border border-sky-700/80 text-[9px] font-mono px-1.5 py-0.2 rounded">
+                          <span className="bg-sky-950 text-sky-300 border border-sky-700/80 text-[9px] font-mono px-1.5 py-0.5 rounded">
                             ↵ Enter
                           </span>
                         )}
                       </div>
-                      <div className="text-[11px] text-slate-400">
-                        {p.scientificName}
+
+                      {/* السطر الفرعي: المادة الفعالة + تنبيه LASA عند وجود أكثر من عيار لنفس الاسم */}
+                      <div className="text-[11px] text-slate-400 mt-0.5 flex items-center gap-2 flex-wrap">
+                        <span>{p.scientificName}</span>
+                        {isLasaRisk && (
+                          <span
+                            title="يوجد أكثر من عيار أو شكل صيدلاني لهذا الاسم في القائمة — تحقق من العيار قبل الصرف"
+                            className="inline-flex items-center gap-1 bg-amber-950/90 border border-amber-600/70 text-amber-300 text-[9px] font-extrabold px-1.5 py-0.2 rounded"
+                          >
+                            <AlertTriangle className="w-2.5 h-2.5" />
+                            LASA
+                          </span>
+                        )}
                       </div>
                     </td>
+
                     <td className="py-2.5 px-3">
                       <span
                         className={`font-bold ${
@@ -137,9 +203,11 @@ export const ProductCatalog = forwardRef<HTMLInputElement, Props>(
                           : ""}
                       </span>
                     </td>
+
                     <td className="py-2.5 px-3 font-mono font-bold text-emerald-400">
                       {p.packPrice.toFixed(2)}
                     </td>
+
                     <td className="py-2.5 px-3 text-center">
                       <div className="flex items-center justify-center gap-1">
                         <button
