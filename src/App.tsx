@@ -6,14 +6,18 @@ import { FinanceView } from "./presentation/views/FinanceView";
 import { ControlledRegistryView } from "./presentation/views/ControlledRegistryView";
 import { SettingsView } from "./presentation/views/SettingsView";
 import { UserSwitchModal } from "./presentation/components/auth/UserSwitchModal";
+import { StatusBar } from "./presentation/components/StatusBar";
+import {
+  ClinicalThemeMode,
+  ClinicalThemeService,
+} from "./infrastructure/config/ClinicalThemeService";
+import { SoundFeedbackService } from "./infrastructure/audio/SoundFeedbackService";
 import {
   ShoppingCart,
   PackagePlus,
   Clock,
   Wallet,
-  Activity,
   ShieldAlert,
-  RefreshCw,
   Settings,
   User,
   X,
@@ -73,6 +77,12 @@ const TABS: {
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabType>("pos");
   const [showUserModal, setShowUserModal] = useState(false);
+  const [clinicalMode, setClinicalMode] = useState<ClinicalThemeMode>(() =>
+    ClinicalThemeService.getMode(),
+  );
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(() =>
+    SoundFeedbackService.isEnabled(),
+  );
 
   // حالة ديناميكية لحالة الاتصال بالإنترنت تتحدث لحظياً عند انقطاع أو عودة الشبكة
   const [isOffline, setIsOffline] = useState<boolean>(() =>
@@ -86,14 +96,20 @@ export default function App() {
     setNotification,
     loadInitialData,
     currentUser,
+    settings,
   } = usePosStore();
+
+  // تهيئة الوضع الليلي السريري المحفوظ عند إقلاع التطبيق
+  useEffect(() => {
+    setClinicalMode(ClinicalThemeService.init());
+  }, []);
 
   // تحميل البيانات الأولية من SQLite / LocalStorage عند إقلاع التطبيق
   useEffect(() => {
     void loadInitialData();
   }, [loadInitialData]);
 
-  // الاستماع لأحداث الشبكة (online / offline) لتحديث شارة الاتصال في الشريط العلوي فوراً
+  // الاستماع لأحداث الشبكة (online / offline) لتحديث شارة الاتصال في شريط الحالة السفلي فوراً
   useEffect(() => {
     const handleOnline = () => setIsOffline(false);
     const handleOffline = () => setIsOffline(true);
@@ -106,6 +122,29 @@ export default function App() {
       window.removeEventListener("offline", handleOffline);
     };
   }, []);
+
+  const handleToggleClinicalMode = () => {
+    const nextMode = ClinicalThemeService.toggle();
+    setClinicalMode(nextMode);
+    setNotification({
+      type: "info",
+      message:
+        nextMode === "clinical-night"
+          ? "تم تفعيل الوضع الليلي السريري (تخفيف الوهج والضوء الأزرق للمناوبة الليلية)."
+          : "تمت العودة إلى الوضع القياسي للشاشة.",
+    });
+  };
+
+  const handleToggleSound = () => {
+    const nextEnabled = SoundFeedbackService.toggle();
+    setSoundEnabled(nextEnabled);
+    setNotification({
+      type: "info",
+      message: nextEnabled
+        ? "تم تفعيل النغمات الصوتية لنقطة البيع."
+        : "تم كتم النغمات الصوتية لنقطة البيع.",
+    });
+  };
 
   // فلترة التبويبات حسب صلاحيات المستخدم الحالي بمبدأ الإغلاق الآمن (إخفاء المشتريات لغير المخولين)
   const visibleTabs = TABS.filter((tab) => {
@@ -145,9 +184,9 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen bg-slate-950 text-slate-100 select-none overflow-hidden">
-      {/* الترويسة الرئيسية وشريط التنقل */}
-      <header className="bg-slate-900 border-b border-slate-800 px-5 py-3 flex items-center justify-between">
-        <div className="flex items-center gap-3">
+      {/* الترويسة الرئيسية: الهوية، التنقل، وتبديل المناوب */}
+      <header className="bg-slate-900 border-b border-slate-800 px-5 py-3 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3 shrink-0">
           <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 font-extrabold shadow-[0_0_10px_rgba(16,185,129,0.2)]">
             Rx
           </div>
@@ -178,48 +217,24 @@ export default function App() {
           ))}
         </nav>
 
-        {/* أزرار المستخدم، الاتصال، والمزامنة */}
-        <div className="flex items-center gap-2.5 text-xs">
-          {/* زر المستخدم الحالي والتبديل السريع (Fast User Switching عبر PIN) */}
-          <button
-            onClick={() => setShowUserModal(true)}
-            title="اضغط لتبديل المستخدم السريع عبر الرمز السري (PIN)"
-            className="flex items-center gap-2 bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-amber-500/40 px-3 py-1.5 rounded-lg transition"
-          >
-            <div className="bg-amber-500/15 p-1.5 rounded-md border border-amber-500/30">
-              <User className="w-3.5 h-3.5 text-amber-400" />
+        {/* زر المستخدم الحالي والتبديل السريع (Fast User Switching عبر PIN) */}
+        <button
+          onClick={() => setShowUserModal(true)}
+          title="اضغط لتبديل المستخدم السريع عبر الرمز السري (PIN)"
+          className="shrink-0 flex items-center gap-2 bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-amber-500/40 px-3 py-1.5 rounded-lg transition text-xs"
+        >
+          <div className="bg-amber-500/15 p-1.5 rounded-md border border-amber-500/30">
+            <User className="w-3.5 h-3.5 text-amber-400" />
+          </div>
+          <div className="text-right leading-tight">
+            <div className="font-bold text-white text-xs">
+              {currentUser?.name || "تسجيل الدخول"}
             </div>
-            <div className="text-right leading-tight">
-              <div className="font-bold text-white text-xs">
-                {currentUser?.name || "تسجيل الدخول"}
-              </div>
-              <div className={`text-[10px] font-bold ${roleBadgeCls}`}>
-                {roleLabel}
-              </div>
+            <div className={`text-[10px] font-bold ${roleBadgeCls}`}>
+              {roleLabel}
             </div>
-          </button>
-
-          {/* شارة حالة الاتصال الحية (تتحدث تلقائياً مع أحداث الشبكة) */}
-          <button
-            type="button"
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold border transition ${
-              isOffline
-                ? "bg-amber-950/40 text-amber-400 border-amber-800"
-                : "bg-emerald-950/40 text-emerald-400 border-emerald-800"
-            }`}
-          >
-            <Activity className="w-3.5 h-3.5" />
-            {isOffline ? "محلي (Offline)" : "متصل (Online)"}
-          </button>
-
-          {/* زر المزامنة السحابية اليدوية مع عدّاد الحركات المعلقة */}
-          <button
-            onClick={() => void syncPendingBatchToCloud()}
-            className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5"
-          >
-            <RefreshCw className="w-3.5 h-3.5" /> مزامنة ({pendingSyncCount})
-          </button>
-        </div>
+          </div>
+        </button>
       </header>
 
       {/* شريط الإشعارات العالمي */}
@@ -251,6 +266,20 @@ export default function App() {
         {activeTab === "controlled" && <ControlledRegistryView />}
         {activeTab === "settings" && <SettingsView />}
       </main>
+
+      {/* شريط الحالة السفلي الدائم: السحابة والمزامنة، الطابعة، قارئ الليزر، SQLite، الصوت، والوضع الليلي السريري */}
+      <StatusBar
+        isOffline={isOffline}
+        pendingSyncCount={pendingSyncCount}
+        onSyncNow={() => void syncPendingBatchToCloud()}
+        printerName={settings.thermalPrinterName}
+        pharmacyName={settings.pharmacyName}
+        clinicalMode={clinicalMode}
+        onToggleClinicalMode={handleToggleClinicalMode}
+        onOpenSettings={() => setActiveTab("settings")}
+        soundEnabled={soundEnabled}
+        onToggleSound={handleToggleSound}
+      />
 
       {/* نافذة التبديل السريع للمستخدمين (Numpad PIN) */}
       {showUserModal && (

@@ -23,15 +23,7 @@ import { ShortagesOrderModal } from "../components/ShortagesOrderModal";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useBarcodeScanner } from "../hooks/useBarcodeScanner";
 import { ProductEntity, DrugInteractionAlert } from "../../domain/entities";
-import {
-  AlertTriangle,
-  Inbox,
-  Barcode,
-  FileText,
-  ClipboardList,
-  Volume2,
-  VolumeX,
-} from "lucide-react";
+import { AlertTriangle, Inbox, FileText, ClipboardList } from "lucide-react";
 
 /**
  * شاشة نقطة البيع الموحدة (POS)
@@ -42,9 +34,6 @@ export const POSView: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState("");
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isShortagesOpen, setIsShortagesOpen] = useState(false);
-  const [soundEnabled, setSoundEnabled] = useState<boolean>(() =>
-    SoundFeedbackService.isEnabled(),
-  );
   const searchInputRef = useRef<HTMLInputElement>(null);
   const lastScannerCharAtRef = useRef<number>(0);
 
@@ -190,17 +179,6 @@ export const POSView: React.FC = () => {
     [store.products],
   );
 
-  const handleToggleSound = useCallback(() => {
-    const nextEnabled = SoundFeedbackService.toggle();
-    setSoundEnabled(nextEnabled);
-    store.setNotification({
-      type: "info",
-      message: nextEnabled
-        ? "تم تفعيل النغمات الصوتية لنقطة البيع."
-        : "تم كتم النغمات الصوتية لنقطة البيع.",
-    });
-  }, [store]);
-
   const handleSearchEnter = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
       if (e.key !== "Enter") return;
@@ -272,72 +250,30 @@ export const POSView: React.FC = () => {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      {/* شريط الأدوات العلوي لنقطة البيع: حالة الليزر + الصوت + سجل الفواتير + دفتر النواقص */}
-      <div className="bg-slate-900/90 border-b border-slate-800 px-4 py-1.5 flex items-center justify-between text-[11px]">
-        <div className="flex items-center gap-2 text-slate-300">
-          <span className="bg-emerald-950 border border-emerald-800 text-emerald-300 px-2 py-0.5 rounded-full flex items-center gap-1 font-bold">
-            <Barcode className="w-3.5 h-3.5" /> قارئ الليزر التلقائي نشط
-          </span>
+      {/* شريط إجراءات نقطة البيع السريعة: سجل الفواتير + دفتر النواقص */}
+      <div className="bg-slate-900/90 border-b border-slate-800 px-4 py-1.5 flex items-center justify-end gap-2 text-[11px]">
+        {/* زر سجل الفواتير السابقة وإعادة الطباعة */}
+        <button
+          onClick={() => setIsHistoryOpen(true)}
+          className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 px-2.5 py-1 rounded-lg font-bold flex items-center gap-1.5 transition"
+        >
+          <FileText className="w-3.5 h-3.5 text-sky-400" />
+          سجل الفواتير ({store.invoices.length})
+        </button>
 
-          {/* زر كتم أو تفعيل النغمات الصوتية لنقطة البيع */}
-          <button
-            type="button"
-            onClick={handleToggleSound}
-            title={
-              soundEnabled
-                ? "إيقاف النغمات الصوتية (البيع والشريط والتحذير)"
-                : "تفعيل النغمات الصوتية لنقطة البيع"
-            }
-            className={`px-2 py-0.5 rounded-full border flex items-center gap-1 font-bold transition ${
-              soundEnabled
-                ? "bg-sky-950/80 hover:bg-sky-900 border-sky-800 text-sky-300"
-                : "bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-400"
-            }`}
-          >
-            {soundEnabled ? (
-              <>
-                <Volume2 className="w-3.5 h-3.5" /> الصوت مفعل
-              </>
-            ) : (
-              <>
-                <VolumeX className="w-3.5 h-3.5 text-rose-400" /> الصوت مكتوم
-              </>
-            )}
-          </button>
-
-          <span className="text-slate-400">
-            ({store.settings.pharmacyName} — الطابعة:{" "}
-            <b className="font-mono text-slate-300">
-              {store.settings.thermalPrinterName}
-            </b>
-            )
-          </span>
-        </div>
-
-        <div className="flex items-center gap-2">
-          {/* زر سجل الفواتير السابقة وإعادة الطباعة */}
-          <button
-            onClick={() => setIsHistoryOpen(true)}
-            className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 px-2.5 py-1 rounded-lg font-bold flex items-center gap-1.5 transition"
-          >
-            <FileText className="w-3.5 h-3.5 text-sky-400" />
-            سجل الفواتير ({store.invoices.length})
-          </button>
-
-          {/* زر دفتر النواقص الذكي وتوليد طلبية المستودع */}
-          <button
-            onClick={() => setIsShortagesOpen(true)}
-            className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 px-2.5 py-1 rounded-lg font-bold flex items-center gap-1.5 transition"
-          >
-            <ClipboardList className="w-3.5 h-3.5 text-amber-400" />
-            دفتر النواقص والطلبيات
-            {shortagesCount > 0 && (
-              <span className="bg-rose-600 text-white font-mono text-[10px] px-1.5 rounded-full">
-                {shortagesCount}
-              </span>
-            )}
-          </button>
-        </div>
+        {/* زر دفتر النواقص الذكي وتوليد طلبية المستودع */}
+        <button
+          onClick={() => setIsShortagesOpen(true)}
+          className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 px-2.5 py-1 rounded-lg font-bold flex items-center gap-1.5 transition"
+        >
+          <ClipboardList className="w-3.5 h-3.5 text-amber-400" />
+          دفتر النواقص والطلبيات
+          {shortagesCount > 0 && (
+            <span className="bg-rose-600 text-white font-mono text-[10px] px-1.5 rounded-full">
+              {shortagesCount}
+            </span>
+          )}
+        </button>
       </div>
 
       {/* شريط التحذير الطبي الوامض (تداخل دوائي) */}
