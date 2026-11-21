@@ -13,7 +13,8 @@ export interface SyncQueueItemEntity {
     | "SHIFT"
     | "BULK_PRICING"
     | "LEDGER_PAYMENT"
-    | "USER";
+    | "USER"
+    | "SUPPLIER";
   operation: "INSERT" | "UPDATE" | "DELETE";
   recordId: string;
   payload: string; // JSON serialized

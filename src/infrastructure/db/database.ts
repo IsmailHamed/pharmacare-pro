@@ -8,6 +8,7 @@ import {
   LedgerPaymentEntity,
   InvoiceEntity,
   UserEntity,
+  SupplierEntity,
 } from "../../domain/entities";
 import {
   INITIAL_SEED_PRODUCTS,
@@ -32,6 +33,7 @@ export interface LocalDatabaseSnapshot {
   syncQueue: SyncQueueItemEntity[];
   ledgerPayments: LedgerPaymentEntity[];
   users: UserEntity[];
+  suppliers: SupplierEntity[];
 }
 
 const createDefaultDatabase = (): LocalDatabaseSnapshot => {
@@ -68,6 +70,7 @@ const createDefaultDatabase = (): LocalDatabaseSnapshot => {
     syncQueue: [],
     ledgerPayments: [],
     users: [DEFAULT_ADMIN_USER],
+    suppliers: [],
   };
 };
 
@@ -103,6 +106,9 @@ class LocalSQLiteEngine {
                   : fallback.shifts,
               syncQueue: parsed.syncQueue || [],
               ledgerPayments: parsed.ledgerPayments || [],
+              suppliers: Array.isArray(parsed.suppliers)
+                ? parsed.suppliers
+                : [],
             };
           }
         }

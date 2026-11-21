@@ -7,6 +7,7 @@ import {
   SyncQueueItemEntity,
   LedgerPaymentEntity,
   PharmacySettingsEntity,
+  SupplierEntity,
 } from "../../domain/entities";
 import { InvoiceEntity } from "../../domain/entities/Invoice";
 import {
@@ -37,8 +38,9 @@ export interface FullBackupPayload {
     shifts: ShiftSummaryEntity[];
     syncQueue: SyncQueueItemEntity[];
     ledgerPayments: LedgerPaymentEntity[];
-    // حقل اختياري للحفاظ على التوافق العكسي مع ملفات النسخ الاحتياطي القديمة
+    // حقول اختيارية للحفاظ على التوافق العكسي مع ملفات النسخ الاحتياطي القديمة
     users?: UserEntity[];
+    suppliers?: SupplierEntity[];
   };
 }
 
@@ -68,6 +70,22 @@ const normalizeBackupUser = (raw: UserEntity): UserEntity => {
   };
 };
 
+/**
+ * تطبيع سجل مستودع مستعاد من ملف النسخة الاحتياطية لضمان توافق الحقول مع جدول suppliers
+ */
+const normalizeBackupSupplier = (raw: SupplierEntity): SupplierEntity => ({
+  id: String(raw.id),
+  name: String(raw.name || "").trim(),
+  phone: raw.phone ? String(raw.phone).trim() || undefined : undefined,
+  salesRepName: raw.salesRepName
+    ? String(raw.salesRepName).trim() || undefined
+    : undefined,
+  notes: raw.notes ? String(raw.notes).trim() || undefined : undefined,
+  isActive: raw.isActive !== false,
+  createdAt: raw.createdAt || new Date().toISOString(),
+  branchId: raw.branchId || CURRENT_BRANCH_ID,
+});
+
 export class BackupService {
   /**
    * دالة مساعدة موحدة لكتابة كامل الجداول داخل pharmacare.db على سطح المكتب ضمن Transaction ذرية واحدة
@@ -84,8 +102,10 @@ export class BackupService {
       syncQueue: SyncQueueItemEntity[];
       ledgerPayments: LedgerPaymentEntity[];
       users?: UserEntity[];
+      suppliers?: SupplierEntity[];
     },
     overwriteUsersTable: boolean,
+    overwriteSuppliersTable: boolean,
   ): Promise<void> {
     if (!isTauriDesktop() || !sqliteRaw) return;
 
@@ -104,6 +124,11 @@ export class BackupService {
       // استبدال جدول الموظفين فقط عند وجود بيانات موظفين في النسخة أو أثناء إعادة ضبط المصنع
       if (overwriteUsersTable) {
         await sqliteRaw.execute("DELETE FROM users;");
+      }
+
+      // استبدال جدول المستودعات فقط عند وجود حقل suppliers في النسخة أو أثناء إعادة ضبط المصنع
+      if (overwriteSuppliersTable) {
+        await sqliteRaw.execute("DELETE FROM suppliers;");
       }
 
       // 1. المنتجات والدفعات (Batches)
@@ -335,6 +360,27 @@ export class BackupService {
         }
       }
 
+      // 10. جدول دليل المستودعات والموردين (suppliers)
+      if (overwriteSuppliersTable && payload.suppliers) {
+        for (const sup of payload.suppliers) {
+          await sqliteRaw.execute(
+            `INSERT OR REPLACE INTO suppliers (
+              id, name, phone, sales_rep_name, notes, is_active, created_at, branch_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8);`,
+            [
+              sup.id,
+              sup.name,
+              sup.phone || null,
+              sup.salesRepName || null,
+              sup.notes || null,
+              sup.isActive ? 1 : 0,
+              sup.createdAt,
+              sup.branchId || CURRENT_BRANCH_ID,
+            ],
+          );
+        }
+      }
+
       await sqliteRaw.execute("COMMIT;");
     } catch (err) {
       await sqliteRaw.execute("ROLLBACK;");
@@ -343,7 +389,7 @@ export class BackupService {
   }
 
   /**
-   * تصدير نسخة احتياطية كاملة لجميع جداول قاعدة البيانات والموظفين وإعدادات الصيدلية كملف JSON
+   * تصدير نسخة احتياطية كاملة لجميع جداول قاعدة البيانات والموظفين والمستودعات وإعدادات الصيدلية كملف JSON
    */
   static exportBackupFile(
     stateData: FullBackupPayload["data"],
@@ -359,6 +405,10 @@ export class BackupService {
         ? stateData.users
         : sqliteEngine.getSnapshot().users || [DEFAULT_ADMIN_USER];
 
+    const resolvedSuppliers = Array.isArray(stateData.suppliers)
+      ? stateData.suppliers
+      : sqliteEngine.getSnapshot().suppliers || [];
+
     const backupObject: FullBackupPayload = {
       meta: {
         app: "PharmaCare Pro",
@@ -370,6 +420,7 @@ export class BackupService {
       data: {
         ...stateData,
         users: resolvedUsers,
+        suppliers: resolvedSuppliers,
       },
     };
 
@@ -391,13 +442,14 @@ export class BackupService {
   }
 
   /**
-   * قراءة ملف النسخة الاحتياطية والتحقق من سلامته واستعادة كافة الجداول (بما فيها الموظفين)
+   * قراءة ملف النسخة الاحتياطية والتحقق من سلامته واستعادة كافة الجداول (بما فيها الموظفين والمستودعات)
    * في SQLite (pharmacare.db) وفي الذاكرة المحلية بأمان كامل
    */
   static async restoreFromBackupFile(file: File): Promise<{
     productsCount: number;
     invoicesCount: number;
     usersCount: number;
+    suppliersCount: number;
     exportedAt: string;
   }> {
     const rawText = await file.text();
@@ -430,6 +482,7 @@ export class BackupService {
       syncQueue = [],
       ledgerPayments = [],
       users: rawUsers,
+      suppliers: rawSuppliers,
     } = parsed.data;
 
     // معالجة الموظفين: إذا كان الملف يحتوي على قائمة موظفين نُطبّع صلاحياتهم ونستعيدهم،
@@ -448,6 +501,23 @@ export class BackupService {
       }
     }
 
+    // معالجة المستودعات: استعادتها مع منع تكرار الأسماء إن وُجدت في النسخة، أو الإبقاء على الحالية للنسخ القديمة
+    const hasSuppliersInBackup = Array.isArray(rawSuppliers);
+    let normalizedSuppliers: SupplierEntity[] | undefined;
+
+    if (hasSuppliersInBackup) {
+      const seenNames = new Set<string>();
+      normalizedSuppliers = [];
+      for (const rawSup of rawSuppliers) {
+        const sup = normalizeBackupSupplier(rawSup);
+        if (!sup.name) continue;
+        const key = sup.name.toLowerCase();
+        if (seenNames.has(key)) continue;
+        seenNames.add(key);
+        normalizedSuppliers.push(sup);
+      }
+    }
+
     // 1. تنفيذ الاستعادة أولاً داخل SQLite (pharmacare.db) في معاملة ذرية واحدة
     await BackupService.writeSnapshotToDesktopSQLite(
       {
@@ -460,8 +530,10 @@ export class BackupService {
         syncQueue,
         ledgerPayments,
         users: normalizedUsers,
+        suppliers: normalizedSuppliers,
       },
       hasUsersInBackup,
+      hasSuppliersInBackup,
     );
 
     // 2. استعادة إعدادات الصيدلية إن وجدت داخل النسخة الاحتياطية
@@ -482,6 +554,9 @@ export class BackupService {
       if (normalizedUsers) {
         draft.users = normalizedUsers;
       }
+      if (normalizedSuppliers) {
+        draft.suppliers = normalizedSuppliers;
+      }
     });
 
     return {
@@ -491,6 +566,10 @@ export class BackupService {
         normalizedUsers?.length ??
         sqliteEngine.getSnapshot().users?.length ??
         1,
+      suppliersCount:
+        normalizedSuppliers?.length ??
+        sqliteEngine.getSnapshot().suppliers?.length ??
+        0,
       exportedAt: parsed.meta?.exportedAt || new Date().toISOString(),
     };
   }
@@ -513,7 +592,9 @@ export class BackupService {
         syncQueue: freshSnapshot.syncQueue,
         ledgerPayments: freshSnapshot.ledgerPayments,
         users: freshSnapshot.users,
+        suppliers: freshSnapshot.suppliers,
       },
+      true,
       true,
     );
   }

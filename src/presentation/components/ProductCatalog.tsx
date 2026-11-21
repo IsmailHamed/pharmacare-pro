@@ -4,7 +4,8 @@ import {
   buildLasaRiskGroupSet,
   parseLasaDisplay,
 } from "../../domain/utils/lasaFormatter";
-import { Search, Repeat, X, Sparkles, AlertTriangle } from "lucide-react";
+import { ProductSearchInput } from "./common/ProductSearchInput";
+import { Repeat, AlertTriangle } from "lucide-react";
 
 interface Props {
   searchQuery: string;
@@ -39,41 +40,18 @@ export const ProductCatalog = forwardRef<HTMLInputElement, Props>(
 
     return (
       <div className="w-7/12 p-4 flex flex-col border-l border-slate-800">
-        {/* حقل البحث الضبابي والصوتي الذكي */}
-        <div className="relative mb-3">
-          <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-3" />
-          <input
-            ref={ref}
-            type="text"
-            value={searchQuery}
-            onChange={(e) => onSearchChange(e.target.value)}
-            onKeyDown={onSearchEnter}
-            placeholder="ابحث بالباركود أو الاسم والعيار معاً (مثلاً: pan 500 أو اموكس 1g) أو المادة الفعالة... (F2)"
-            className="w-full bg-slate-900 border border-slate-700 rounded-xl pr-10 pl-32 py-2.5 text-xs text-white focus:outline-none focus:border-blue-500"
-          />
-
-          <div className="absolute left-2.5 top-2 flex items-center gap-1.5">
-            {hasQuery && (
-              <>
-                <span className="bg-sky-950/90 border border-sky-800/80 text-sky-300 px-1.5 py-0.5 rounded text-[10px] font-mono flex items-center gap-1">
-                  <Sparkles className="w-2.5 h-2.5" />
-                  {products.length}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => onSearchChange("")}
-                  title="مسح البحث"
-                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white p-1 rounded transition"
-                >
-                  <X className="w-3 h-3" />
-                </button>
-              </>
-            )}
-            <span className="bg-slate-800 text-slate-400 px-2 py-0.5 rounded text-[10px] font-mono">
-              F2
-            </span>
-          </div>
-        </div>
+        {/* حقل البحث الضبابي والصوتي الموحّد */}
+        <ProductSearchInput
+          ref={ref}
+          value={searchQuery}
+          onChange={onSearchChange}
+          onKeyDown={onSearchEnter}
+          resultsCount={products.length}
+          accent="blue"
+          inputBgClass="bg-slate-900"
+          shortcutHint="F2"
+          className="mb-3"
+        />
 
         {/* جدول الأدوية */}
         <div className="flex-1 overflow-y-auto rounded-xl border border-slate-800 bg-slate-900/40 no-scrollbar">

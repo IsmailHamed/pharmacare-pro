@@ -8,8 +8,10 @@ import {
   productRepo,
   invoiceRepo,
   userRepo,
+  supplierRepo,
 } from "../storeTypes";
 import { UserEntity } from "../../../domain/entities/User";
+import { SupplierEntity } from "../../../domain/entities/Supplier";
 import { DEFAULT_ADMIN_USER } from "../../../infrastructure/db/seedData";
 
 // دالة مساعدة لاستنتاج activeRole ديناميكياً من المستخدم الحالي للحفاظ على التوافقية العكسية
@@ -28,6 +30,7 @@ export type SystemSyncSlice = Pick<
   | "shifts"
   | "syncQueue"
   | "ledgerPayments"
+  | "suppliers"
   | "settings"
   | "notification"
   | "users"
@@ -44,6 +47,9 @@ export type SystemSyncSlice = Pick<
   | "addOrUpdateUser"
   | "toggleUserStatus"
   | "loginWithPinOrBarcode"
+  | "loadSuppliers"
+  | "addOrUpdateSupplier"
+  | "toggleSupplierStatus"
 >;
 
 export const createSystemSyncSlice: PosSlice<SystemSyncSlice> = (set, get) => ({
@@ -55,6 +61,7 @@ export const createSystemSyncSlice: PosSlice<SystemSyncSlice> = (set, get) => ({
   shifts: sqliteEngine.getSnapshot().shifts,
   syncQueue: sqliteEngine.getSnapshot().syncQueue,
   ledgerPayments: sqliteEngine.getSnapshot().ledgerPayments,
+  suppliers: sqliteEngine.getSnapshot().suppliers || [],
   settings: SettingsService.getSettings(),
   notification: null,
   users: [DEFAULT_ADMIN_USER],
@@ -71,6 +78,7 @@ export const createSystemSyncSlice: PosSlice<SystemSyncSlice> = (set, get) => ({
       shifts,
       syncQueue,
       ledgerPayments,
+      suppliers,
       syncedSettings,
     ] = await Promise.all([
       productRepo.getAllProducts(),
@@ -81,6 +89,7 @@ export const createSystemSyncSlice: PosSlice<SystemSyncSlice> = (set, get) => ({
       invoiceRepo.getShifts(),
       invoiceRepo.getSyncQueue(),
       invoiceRepo.getLedgerPayments(),
+      supplierRepo.getAllSuppliers(),
       SettingsService.syncFromSQLite(),
     ]);
     set({
@@ -92,6 +101,7 @@ export const createSystemSyncSlice: PosSlice<SystemSyncSlice> = (set, get) => ({
       shifts,
       syncQueue,
       ledgerPayments,
+      suppliers,
       settings: syncedSettings,
     });
     await get().loadUsers();
@@ -170,6 +180,7 @@ export const createSystemSyncSlice: PosSlice<SystemSyncSlice> = (set, get) => ({
         syncQueue: state.syncQueue,
         ledgerPayments: state.ledgerPayments,
         users: state.users,
+        suppliers: state.suppliers,
       },
       state.settings,
     );
@@ -191,7 +202,7 @@ export const createSystemSyncSlice: PosSlice<SystemSyncSlice> = (set, get) => ({
         heldInvoices: [],
         notification: {
           type: "success",
-          message: `تمت استعادة النسخة الاحتياطية بنجاح (${summary.productsCount} صنف دوائي، ${summary.invoicesCount} فاتورة، ${summary.usersCount} موظف).`,
+          message: `تمت استعادة النسخة الاحتياطية بنجاح (${summary.productsCount} صنف دوائي، ${summary.invoicesCount} فاتورة، ${summary.suppliersCount} مستودع، ${summary.usersCount} موظف).`,
         },
       });
     } catch (err) {
@@ -352,5 +363,60 @@ export const createSystemSyncSlice: PosSlice<SystemSyncSlice> = (set, get) => ({
       },
     });
     return true;
+  },
+
+  loadSuppliers: async () => {
+    const [allSuppliers, syncQueue] = await Promise.all([
+      supplierRepo.getAllSuppliers(),
+      invoiceRepo.getSyncQueue(),
+    ]);
+    set({ suppliers: allSuppliers, syncQueue });
+  },
+
+  addOrUpdateSupplier: async (supplier: SupplierEntity) => {
+    try {
+      await supplierRepo.upsertSupplier(supplier);
+      await get().loadSuppliers();
+      set({
+        notification: {
+          type: "success",
+          message: `تم حفظ بيانات المستودع (${supplier.name.trim()}) بنجاح وإدراجها للمزامنة.`,
+        },
+      });
+      return true;
+    } catch (err) {
+      set({
+        notification: {
+          type: "error",
+          message:
+            err instanceof Error ? err.message : "تعذر حفظ بيانات المستودع.",
+        },
+      });
+      return false;
+    }
+  },
+
+  toggleSupplierStatus: async (supplierId: string) => {
+    const target = get().suppliers.find((s) => s.id === supplierId);
+    if (!target) return;
+
+    try {
+      await supplierRepo.toggleSupplierStatus(supplierId, !target.isActive);
+      await get().loadSuppliers();
+      set({
+        notification: {
+          type: "info",
+          message: `تم ${!target.isActive ? "تفعيل" : "تجميد"} المستودع (${target.name}).`,
+        },
+      });
+    } catch (err) {
+      set({
+        notification: {
+          type: "error",
+          message:
+            err instanceof Error ? err.message : "تعذر تحديث حالة المستودع.",
+        },
+      });
+    }
   },
 });

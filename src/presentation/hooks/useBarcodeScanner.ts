@@ -4,10 +4,12 @@ import { usePosStore } from "../../application/store/usePosStore";
 /**
  * مستمع عالمي لقارئ الباركود الليزري (Hardware Barcode Scanner Hook)
  * يميز بين الطباعة البشرية البطيئة وبين التدفق الليزري السريع (< 45ms بين كل حرفين متبوع بـ Enter)
+ * يدعم معالجاً مخصصاً (customScanHandler) لاستخدامه في شاشة المشتريات أو غيرها دون كسر نقطة البيع
  */
 export const useBarcodeScanner = (
   enabled: boolean = true,
   onScanComplete?: () => void,
+  customScanHandler?: (scannedCode: string) => boolean,
 ): void => {
   const handleBarcodeScan = usePosStore((s) => s.handleBarcodeScan);
   const scannerMaxIntervalMs = usePosStore(
@@ -16,6 +18,13 @@ export const useBarcodeScanner = (
 
   const bufferRef = useRef<string>("");
   const lastKeyTimeRef = useRef<number>(0);
+  const onScanCompleteRef = useRef(onScanComplete);
+  const customScanHandlerRef = useRef(customScanHandler);
+
+  useEffect(() => {
+    onScanCompleteRef.current = onScanComplete;
+    customScanHandlerRef.current = customScanHandler;
+  }, [onScanComplete, customScanHandler]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -38,9 +47,10 @@ export const useBarcodeScanner = (
           e.preventDefault();
           e.stopPropagation();
 
-          const matched = handleBarcodeScan(scannedCode);
-          if (matched && onScanComplete) {
-            onScanComplete();
+          const handler = customScanHandlerRef.current || handleBarcodeScan;
+          const matched = handler(scannedCode);
+          if (matched && onScanCompleteRef.current) {
+            onScanCompleteRef.current();
           }
           return;
         }
@@ -61,5 +71,5 @@ export const useBarcodeScanner = (
 
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [enabled, handleBarcodeScan, scannerMaxIntervalMs, onScanComplete]);
+  }, [enabled, handleBarcodeScan, scannerMaxIntervalMs]);
 };

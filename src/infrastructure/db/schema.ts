@@ -181,6 +181,9 @@ export const pharmacySettingsTable = sqliteTable("pharmacy_settings", {
   updatedAt: text("updated_at").notNull(),
 });
 
+// ==========================================
+// 11. جدول المستخدمين والصلاحيات (Users / RBAC Table)
+// ==========================================
 export const usersTable = sqliteTable("users", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
@@ -189,4 +192,18 @@ export const usersTable = sqliteTable("users", {
   isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
   permissionsJson: text("permissions_json").notNull(),
   createdAt: text("created_at").notNull(),
+});
+
+// ==========================================
+// 12. جدول المستودعات والموردين (Suppliers / Warehouses Table)
+// ==========================================
+export const suppliersTable = sqliteTable("suppliers", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  phone: text("phone"),
+  salesRepName: text("sales_rep_name"),
+  notes: text("notes"),
+  isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+  createdAt: text("created_at").notNull(),
+  branchId: text("branch_id").notNull().default("MAIN_BRANCH"),
 });

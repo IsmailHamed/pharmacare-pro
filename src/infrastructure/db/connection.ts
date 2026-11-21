@@ -182,7 +182,7 @@ const bootstrapSQLiteTables = async (db: Database) => {
     );
   `);
 
-  // إضافة جدول المستخدمين (نظام الصلاحيات RBAC)
+  // جدول المستخدمين (نظام الصلاحيات RBAC)
   await db.execute(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
@@ -192,6 +192,20 @@ const bootstrapSQLiteTables = async (db: Database) => {
       is_active INTEGER NOT NULL DEFAULT 1,
       permissions_json TEXT NOT NULL,
       created_at TEXT NOT NULL
+    );
+  `);
+
+  // جدول المستودعات والموردين (دليل المستودعات لطلبيات النواقص والمشتريات)
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS suppliers (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT UNIQUE NOT NULL,
+      phone TEXT,
+      sales_rep_name TEXT,
+      notes TEXT,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      branch_id TEXT DEFAULT 'MAIN_BRANCH' NOT NULL
     );
   `);
 
@@ -244,6 +258,14 @@ const bootstrapSQLiteTables = async (db: Database) => {
   // فهرس لتسريع البحث عن المستخدم بواسطة الرمز السري (PIN) أثناء تسجيل الدخول
   await db.execute(
     "CREATE INDEX IF NOT EXISTS idx_users_pin_code ON users(pin_code);",
+  );
+
+  // فهارس لتسريع البحث وفلترة المستودعات النشطة
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_suppliers_name ON suppliers(name);",
+  );
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_suppliers_is_active ON suppliers(is_active);",
   );
 
   // فهارس لربط وتسريع استعلامات الفواتير والمصاريف وسندات الذمم حسب الوردية

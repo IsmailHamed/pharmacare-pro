@@ -1,9 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { InvoiceEntity, ProductEntity } from "../../../domain/entities";
+import {
+  buildProductSearchIndex,
+  searchProductsFuzzy,
+} from "../../../domain/utils/fuzzySearch";
 import { usePosStore } from "../../../application/store/usePosStore";
+import { ProductSearchInput } from "../common/ProductSearchInput";
 import { ProductDetailsModal } from "./ProductDetailsModal";
 import {
-  Search,
   ChevronDown,
   Flame,
   Clock,
@@ -65,7 +69,7 @@ interface Props {
 
 /**
  * تبويب المخزون ورادار الصلاحيات بتصميم الجدول الكامل الموحّد (Full-Width Table)
- * النقر على أي صنف يفتح نافذة ProductDetailsModal بكامل التشغيلات والإجراءات
+ * يستخدم نفس محرك البحث الضبابي والصوتي (fuzzySearch) وشريط البحث الموحّد في نقطة البيع
  */
 export const InventoryStockTab: React.FC<Props> = ({
   products,
@@ -92,6 +96,12 @@ export const InventoryStockTab: React.FC<Props> = ({
 
   const searchInputRef = useRef<HTMLInputElement>(null);
   const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
+
+  // بناء فهرس البحث الضبابي والصوتي مرة واحدة عند تغيّر قائمة الأدوية
+  const productSearchIndex = useMemo(
+    () => buildProductSearchIndex(products),
+    [products],
+  );
 
   const categories = useMemo(
     () => [
@@ -149,21 +159,20 @@ export const InventoryStockTab: React.FC<Props> = ({
     };
   }, [products, expiryInfoMap, soldProductIdsLast60Days]);
 
+  // دمج البحث الضبابي والصوتي (مع الحفاظ على ترتيب الدقة) مع فلاتر التصنيف والرادار
   const filteredProducts = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    return products.filter((p) => {
+    const baseList = searchQuery.trim()
+      ? searchProductsFuzzy(
+          productSearchIndex,
+          searchQuery,
+          Math.max(products.length, 60),
+        )
+      : products;
+
+    return baseList.filter((p) => {
       if (
         selectedCategory !== "ALL" &&
         (p.category || "عام") !== selectedCategory
-      ) {
-        return false;
-      }
-
-      if (
-        q &&
-        !p.name.toLowerCase().includes(q) &&
-        !p.scientificName.toLowerCase().includes(q) &&
-        !p.barcode.toLowerCase().includes(q)
       ) {
         return false;
       }
@@ -180,6 +189,7 @@ export const InventoryStockTab: React.FC<Props> = ({
     });
   }, [
     products,
+    productSearchIndex,
     selectedCategory,
     searchQuery,
     filterMode,
@@ -366,24 +376,24 @@ export const InventoryStockTab: React.FC<Props> = ({
 
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3.5">
-      {/* شريط البحث وفلتر التصنيف وتلميح الاختصارات */}
+      {/* شريط البحث الموحّد + فلتر التصنيف + تلميح الاختصارات */}
       <div className="flex items-center justify-between gap-2.5 flex-wrap">
-        <div className="relative flex-1 min-w-[240px]">
-          <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
-          <input
-            ref={searchInputRef}
-            type="text"
-            value={searchQuery}
-            onChange={(e) => handleSearchChange(e.target.value)}
-            placeholder="ابحث بالاسم التجاري، المادة الفعالة، أو الباركود... (F2 أو /)"
-            className="w-full bg-slate-950 border border-slate-800 focus:border-amber-500 rounded-xl pr-9 pl-3 py-2 text-white outline-none"
-          />
-        </div>
+        <ProductSearchInput
+          ref={searchInputRef}
+          value={searchQuery}
+          onChange={handleSearchChange}
+          resultsCount={filteredProducts.length}
+          accent="amber"
+          inputBgClass="bg-slate-950"
+          shortcutHint="F2"
+          placeholder="ابحث في المخزون بالباركود أو الاسم والعيار معاً (مثلاً: pan 500 أو اموكس 1g) أو المادة الفعالة... (F2)"
+          className="flex-1 min-w-[260px]"
+        />
 
         <select
           value={selectedCategory}
           onChange={(e) => handleCategoryChange(e.target.value)}
-          className="bg-slate-950 border border-slate-800 focus:border-amber-500 rounded-xl px-3 py-2 text-slate-200 outline-none"
+          className="bg-slate-950 border border-slate-700 focus:border-amber-500 rounded-xl px-3 py-2.5 text-slate-200 outline-none"
         >
           {categories.map((cat) => (
             <option key={cat} value={cat}>
@@ -392,7 +402,7 @@ export const InventoryStockTab: React.FC<Props> = ({
           ))}
         </select>
 
-        <div className="hidden xl:flex items-center gap-2 text-[10px] text-slate-400 font-mono bg-slate-950/70 border border-slate-800 px-2.5 py-2 rounded-xl">
+        <div className="hidden xl:flex items-center gap-2 text-[10px] text-slate-400 font-mono bg-slate-950/70 border border-slate-800 px-2.5 py-2.5 rounded-xl">
           <Keyboard className="w-3.5 h-3.5 text-amber-400" />
           <span>↑/↓ تنقل</span>
           <span>•</span>

@@ -13,6 +13,7 @@ import {
   LedgerPaymentEntity,
   PharmacySettingsEntity,
   UserEntity,
+  SupplierEntity,
 } from "../../domain/entities";
 import { InvoiceEntity } from "../../domain/entities/Invoice";
 import { PurchaseLineInput } from "../use-cases/AddPurchaseWithBonus";
@@ -20,10 +21,13 @@ import { SQLiteProductRepository } from "../../infrastructure/persistence/SQLite
 import { SQLiteBatchRepository } from "../../infrastructure/persistence/SQLiteBatchRepository";
 import { SQLiteInvoiceRepository } from "../../infrastructure/persistence/SQLiteInvoiceRepository";
 import { SQLiteUserRepository } from "../../infrastructure/persistence/SQLiteUserRepository";
+import { SQLiteSupplierRepository } from "../../infrastructure/persistence/SQLiteSupplierRepository";
+
 export const productRepo = new SQLiteProductRepository();
 export const batchRepo = new SQLiteBatchRepository();
 export const invoiceRepo = new SQLiteInvoiceRepository();
 export const userRepo = new SQLiteUserRepository();
+export const supplierRepo = new SQLiteSupplierRepository();
 
 export interface PosState {
   // البيانات المتزامنة مع SQLite المحلي
@@ -35,6 +39,7 @@ export interface PosState {
   shifts: ShiftSummaryEntity[];
   syncQueue: SyncQueueItemEntity[];
   ledgerPayments: LedgerPaymentEntity[];
+  suppliers: SupplierEntity[];
   settings: PharmacySettingsEntity;
 
   // حالة نقطة البيع (POS State)
@@ -160,6 +165,11 @@ export interface PosState {
   addOrUpdateUser: (user: UserEntity) => Promise<void>;
   toggleUserStatus: (userId: string) => Promise<void>;
   loginWithPinOrBarcode: (credential: string) => Promise<boolean>;
+
+  // إجراءات إدارة دليل المستودعات والموردين
+  loadSuppliers: () => Promise<void>;
+  addOrUpdateSupplier: (supplier: SupplierEntity) => Promise<boolean>;
+  toggleSupplierStatus: (supplierId: string) => Promise<void>;
 }
 
 export type PosSlice<T> = StateCreator<PosState, [], [], T>;
