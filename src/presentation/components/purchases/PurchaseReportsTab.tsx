@@ -3,20 +3,35 @@ import { PurchaseInvoiceEntity } from "../../../domain/entities";
 import { CsvCellValue, exportRowsToCsv } from "../../../domain/utils/csvExport";
 import { usePosStore } from "../../../application/store/usePosStore";
 import {
+  DEFAULT_DATE_RANGE,
+  DateRangeValue,
+  isDateRangeActive,
+  matchesDateRange,
+} from "../common/table/dateRangeUtils";
+import { DateRangeFilter } from "../common/table/DateRangeFilter";
+import { FilterPillOption, FilterPills } from "../common/table/FilterPills";
+import {
+  SortAccessors,
+  SortDirection,
+  SortState,
+  useTableSort,
+} from "../common/table/useTableSort";
+import { useTablePagination } from "../common/table/useTablePagination";
+import { SortableTh } from "../common/table/SortableTh";
+import { DataTableToolbar } from "../common/table/DataTableToolbar";
+import { DataTableShell } from "../common/table/DataTableShell";
+import { TableLoadMoreFooter } from "../common/table/TableLoadMoreFooter";
+import {
   FileText,
-  Search,
   Printer,
   FileSpreadsheet,
   ChevronDown,
   ChevronLeft,
   ChevronsUpDown,
-  ArrowUpDown,
   Banknote,
   CreditCard,
   Gift,
   Package,
-  Calendar,
-  RotateCcw,
   Building2,
 } from "lucide-react";
 
@@ -25,6 +40,55 @@ interface Props {
 }
 
 type PaymentFilter = "ALL" | "CASH" | "CREDIT";
+
+// مفاتيح الأعمدة القابلة للفرز التفاعلي في جدول تقارير فواتير الشراء
+type PurchaseSortKey =
+  | "createdAt"
+  | "supplierInvoiceNumber"
+  | "supplierName"
+  | "paymentMode"
+  | "itemsCount"
+  | "totalBonusValue"
+  | "totalAmount";
+
+// خيارات فلتر طريقة الدفع الممرّرة إلى المكوّن الموحّد FilterPills
+const PAYMENT_FILTER_OPTIONS: readonly FilterPillOption<PaymentFilter>[] = [
+  { id: "ALL", label: "الكل", tone: "slate" },
+  { id: "CASH", label: "نقدي", tone: "sky" },
+  { id: "CREDIT", label: "آجل", tone: "amber" },
+];
+
+// دوال استخراج قيم الأعمدة للفرز (مُعرّفة خارج المكوّن للحفاظ على ثبات المرجع والأداء)
+const PURCHASE_SORT_ACCESSORS: SortAccessors<
+  PurchaseInvoiceEntity,
+  PurchaseSortKey
+> = {
+  createdAt: (inv) => new Date(inv.createdAt),
+  supplierInvoiceNumber: (inv) => inv.supplierInvoiceNumber || null,
+  supplierName: (inv) => inv.supplierName,
+  paymentMode: (inv) => (inv.paymentMode === "CASH" ? "نقدي" : "آجل"),
+  itemsCount: (inv) => inv.items.length,
+  totalBonusValue: (inv) => inv.totalBonusValue,
+  totalAmount: (inv) => inv.totalAmount,
+};
+
+// الترتيب الافتراضي للجدول (الأحدث أولاً) والاتجاه الابتدائي لكل عمود عند النقر الأول
+const DEFAULT_PURCHASE_SORT: SortState<PurchaseSortKey> = {
+  key: "createdAt",
+  direction: "desc",
+};
+
+const PURCHASE_DEFAULT_DIRECTIONS: Partial<
+  Record<PurchaseSortKey, SortDirection>
+> = {
+  createdAt: "desc",
+  supplierInvoiceNumber: "asc",
+  supplierName: "asc",
+  paymentMode: "asc",
+  itemsCount: "desc",
+  totalBonusValue: "desc",
+  totalAmount: "desc",
+};
 
 const escapeHtml = (value: string): string =>
   value
@@ -37,6 +101,7 @@ const escapeHtml = (value: string): string =>
 /**
  * تبويب تقارير وسجل فواتير الشراء والبونص بجدول كامل العرض
  * يعرض كافة تفاصيل الفواتير والبنود المشتراة والتكلفة المرجحة قبل/بعد البونص
+ * باستخدام نواة الجداول الموحّدة (فلاتر التواريخ السريعة، فرز الأعمدة، والتحميل التدريجي)
  */
 export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
   const settings = usePosStore((s) => s.settings);
@@ -46,9 +111,9 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
   const [searchQuery, setSearchQuery] = useState("");
   const [supplierFilter, setSupplierFilter] = useState("ALL");
   const [paymentFilter, setPaymentFilter] = useState<PaymentFilter>("ALL");
-  const [fromDate, setFromDate] = useState("");
-  const [toDate, setToDate] = useState("");
-  const [newestFirst, setNewestFirst] = useState(true);
+  // حالة نطاق التواريخ الموحّدة (تدعم الأزرار السريعة + النطاق اليدوي من/إلى)
+  const [dateRange, setDateRange] =
+    useState<DateRangeValue>(DEFAULT_DATE_RANGE);
   const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({});
 
   // تجميع قائمة المستودعات من الفواتير المسجلة + دليل المستودعات
@@ -63,10 +128,11 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
     return Array.from(names).sort((a, b) => a.localeCompare(b, "ar"));
   }, [purchaseInvoices, suppliers]);
 
-  const filteredInvoices = useMemo(() => {
+  // تصفية الفواتير حسب المستودع، طريقة الدفع، نطاق التواريخ الموحّد، وعبارة البحث
+  const matchedInvoices = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
 
-    const matched = purchaseInvoices.filter((inv) => {
+    return purchaseInvoices.filter((inv) => {
       if (
         supplierFilter !== "ALL" &&
         inv.supplierName.trim() !== supplierFilter
@@ -78,9 +144,7 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
         return false;
       }
 
-      const invoiceDate = inv.createdAt.slice(0, 10);
-      if (fromDate && invoiceDate < fromDate) return false;
-      if (toDate && invoiceDate > toDate) return false;
+      if (!matchesDateRange(inv.createdAt, dateRange)) return false;
 
       if (!q) return true;
 
@@ -98,23 +162,35 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
           item.batchNumber.toLowerCase().includes(q),
       );
     });
+  }, [purchaseInvoices, searchQuery, supplierFilter, paymentFilter, dateRange]);
 
-    return matched.sort((a, b) =>
-      newestFirst
-        ? b.createdAt.localeCompare(a.createdAt)
-        : a.createdAt.localeCompare(b.createdAt),
-    );
-  }, [
-    purchaseInvoices,
-    searchQuery,
-    supplierFilter,
-    paymentFilter,
-    fromDate,
-    toDate,
-    newestFirst,
-  ]);
+  // تطبيق الفرز التفاعلي بالأعمدة على الفواتير المطابقة (يُستخدم أيضاً لترتيب التصدير والطباعة)
+  const {
+    sortedItems: filteredInvoices,
+    sortState,
+    toggleSort,
+    getSortDirection,
+  } = useTableSort(matchedInvoices, {
+    accessors: PURCHASE_SORT_ACCESSORS,
+    defaultSort: DEFAULT_PURCHASE_SORT,
+    defaultDirections: PURCHASE_DEFAULT_DIRECTIONS,
+  });
 
-  // إحصائيات الملخص المالي والمخزني للفواتير المطابقة
+  // التحميل التدريجي للصفوف (50 فاتورة في الدفعة) مع إعادة ضبط تلقائية عند تغيّر الفلاتر أو الفرز
+  const pagination = useTablePagination(filteredInvoices, {
+    pageSize: 50,
+    resetDeps: [
+      searchQuery,
+      supplierFilter,
+      paymentFilter,
+      dateRange.from,
+      dateRange.to,
+      sortState?.key,
+      sortState?.direction,
+    ],
+  });
+
+  // إحصائيات الملخص المالي والمخزني للفواتير المطابقة (تشمل كامل النتائج المفلترة وليس الدفعة الظاهرة فقط)
   const summary = useMemo(() => {
     let totalAmount = 0;
     let cashTotal = 0;
@@ -155,20 +231,19 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
     Boolean(searchQuery.trim()) ||
     supplierFilter !== "ALL" ||
     paymentFilter !== "ALL" ||
-    Boolean(fromDate) ||
-    Boolean(toDate);
+    isDateRangeActive(dateRange);
 
   const handleResetFilters = () => {
     setSearchQuery("");
     setSupplierFilter("ALL");
     setPaymentFilter("ALL");
-    setFromDate("");
-    setToDate("");
+    setDateRange(DEFAULT_DATE_RANGE);
   };
 
+  // فحص حالة التوسيع بناءً على الصفوف الظاهرة حالياً في الجدول
   const allExpanded =
-    filteredInvoices.length > 0 &&
-    filteredInvoices.every((inv) => Boolean(expandedIds[inv.id]));
+    pagination.visibleItems.length > 0 &&
+    pagination.visibleItems.every((inv) => Boolean(expandedIds[inv.id]));
 
   const toggleExpand = (invoiceId: string) => {
     setExpandedIds((prev) => ({
@@ -183,7 +258,7 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
       return;
     }
     const next: Record<string, boolean> = {};
-    filteredInvoices.forEach((inv) => {
+    pagination.visibleItems.forEach((inv) => {
       next[inv.id] = true;
     });
     setExpandedIds(next);
@@ -486,404 +561,397 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
         </div>
       </div>
 
-      {/* الحاوية الرئيسية للجدول والفلاتر */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3.5">
-        {/* صف البحث والفلترة */}
-        <div className="flex items-center justify-between gap-2.5 flex-wrap">
-          <div className="relative flex-1 min-w-[240px]">
-            <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="ابحث برقم القيد، فاتورة المورد، المستودع، اسم/باركود الدواء، أو رقم التشغيلة..."
-              className="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500 rounded-xl pr-9 pl-3 py-2 text-white outline-none"
-            />
-          </div>
+      {/* الحاوية الموحّدة للجدول والفلاتر والتصفح التدريجي */}
+      <DataTableShell
+        totalCount={purchaseInvoices.length}
+        filteredCount={filteredInvoices.length}
+        searchQuery={searchQuery}
+        onResetFilters={handleResetFilters}
+        stickyHeader
+        emptyState={{
+          icon: FileText,
+          title: "لا توجد فواتير مشتريات مسجلة في النظام حتى الآن",
+          description:
+            "عند اعتماد أي فاتورة شراء من تبويب «إدخال فاتورة شراء وبونص» ستظهر هنا بكامل تفاصيلها وبنودها.",
+        }}
+        noResultsState={{
+          description:
+            "لا توجد فواتير مشتريات مطابقة لخيارات البحث أو الفلترة الحالية.",
+        }}
+        toolbar={
+          <DataTableToolbar
+            accent="indigo"
+            searchValue={searchQuery}
+            onSearchChange={setSearchQuery}
+            searchPlaceholder="ابحث برقم القيد، فاتورة المورد، المستودع، اسم/باركود الدواء، أو رقم التشغيلة..."
+            filters={
+              <>
+                {/* فلتر المستودع */}
+                <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5">
+                  <Building2 className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  <select
+                    value={supplierFilter}
+                    onChange={(e) => setSupplierFilter(e.target.value)}
+                    className="bg-transparent text-slate-200 outline-none text-xs"
+                  >
+                    <option value="ALL" className="bg-slate-900">
+                      كل المستودعات ({availableSuppliers.length})
+                    </option>
+                    {availableSuppliers.map((sup) => (
+                      <option key={sup} value={sup} className="bg-slate-900">
+                        {sup}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-          {/* فلتر المستودع */}
-          <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5">
-            <Building2 className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-            <select
-              value={supplierFilter}
-              onChange={(e) => setSupplierFilter(e.target.value)}
-              className="bg-transparent text-slate-200 outline-none text-xs"
+                {/* فلتر طريقة الدفع الموحّد */}
+                <FilterPills
+                  variant="segmented"
+                  options={PAYMENT_FILTER_OPTIONS}
+                  value={paymentFilter}
+                  onChange={setPaymentFilter}
+                  ariaLabel="تصفية حسب طريقة الدفع"
+                />
+              </>
+            }
+            secondaryFilters={
+              /* فلتر نطاق التواريخ السريع والمخصص الموحّد */
+              <DateRangeFilter
+                value={dateRange}
+                onChange={setDateRange}
+                accent="indigo"
+              />
+            }
+            hasActiveFilters={hasActiveFilters}
+            onResetFilters={handleResetFilters}
+            secondaryActions={
+              <>
+                {pagination.visibleItems.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleToggleExpandAll}
+                    className="px-2.5 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-300 font-bold text-[11px] inline-flex items-center gap-1.5 transition"
+                  >
+                    <ChevronsUpDown className="w-3.5 h-3.5 text-indigo-400" />
+                    {allExpanded ? "طي كل الأصناف" : "توسيع كل الأصناف"}
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  disabled={filteredInvoices.length === 0}
+                  onClick={handleExportCsv}
+                  className="px-3 py-1.5 rounded-xl bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 text-white font-bold text-[11px] inline-flex items-center gap-1.5 transition"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5" /> تصدير Excel / CSV
+                </button>
+
+                <button
+                  type="button"
+                  disabled={filteredInvoices.length === 0}
+                  onClick={handlePrintReport}
+                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 border border-slate-700 text-slate-200 font-bold text-[11px] inline-flex items-center gap-1.5 transition"
+                >
+                  <Printer className="w-3.5 h-3.5" /> طباعة التقرير
+                </button>
+              </>
+            }
+            visibleCount={pagination.visibleCount}
+            filteredCount={filteredInvoices.length}
+            totalCount={purchaseInvoices.length}
+            itemLabel="فاتورة"
+            metaExtra={
+              <span className="text-[10.5px] text-slate-500 hidden sm:inline">
+                اضغط على أي رأس عمود للفرز، أو على صف الفاتورة لعرض بنودها
+              </span>
+            }
+          />
+        }
+        header={
+          <tr>
+            <SortableTh
+              direction={getSortDirection("createdAt")}
+              onSort={() => toggleSort("createdAt")}
+              accent="indigo"
             >
-              <option value="ALL" className="bg-slate-900">
-                كل المستودعات ({availableSuppliers.length})
-              </option>
-              {availableSuppliers.map((sup) => (
-                <option key={sup} value={sup} className="bg-slate-900">
-                  {sup}
-                </option>
-              ))}
-            </select>
-          </div>
+              رقم القيد والتاريخ
+            </SortableTh>
+            <SortableTh
+              direction={getSortDirection("supplierInvoiceNumber")}
+              onSort={() => toggleSort("supplierInvoiceNumber")}
+              accent="indigo"
+            >
+              فاتورة المورد
+            </SortableTh>
+            <SortableTh
+              direction={getSortDirection("supplierName")}
+              onSort={() => toggleSort("supplierName")}
+              accent="indigo"
+            >
+              المستودع / المورد
+            </SortableTh>
+            <SortableTh
+              direction={getSortDirection("paymentMode")}
+              onSort={() => toggleSort("paymentMode")}
+              align="center"
+              accent="indigo"
+            >
+              طريقة الدفع
+            </SortableTh>
+            <SortableTh
+              direction={getSortDirection("itemsCount")}
+              onSort={() => toggleSort("itemsCount")}
+              align="center"
+              accent="indigo"
+            >
+              الأصناف والعلب
+            </SortableTh>
+            <SortableTh
+              direction={getSortDirection("totalBonusValue")}
+              onSort={() => toggleSort("totalBonusValue")}
+              align="center"
+              accent="indigo"
+            >
+              قيمة البونص
+            </SortableTh>
+            <SortableTh
+              direction={getSortDirection("totalAmount")}
+              onSort={() => toggleSort("totalAmount")}
+              align="center"
+              accent="indigo"
+            >
+              الإجمالي النهائي
+            </SortableTh>
+            <th className="py-2.5 px-3 text-left">التفاصيل</th>
+          </tr>
+        }
+        footer={
+          <TableLoadMoreFooter
+            visibleCount={pagination.visibleCount}
+            totalCount={pagination.totalCount}
+            remainingCount={pagination.remainingCount}
+            pageSize={pagination.pageSize}
+            hasMore={pagination.hasMore}
+            onLoadMore={pagination.loadMore}
+            onShowAll={pagination.showAll}
+            itemLabel="فاتورة"
+            accent="indigo"
+            showSummaryWhenComplete
+          />
+        }
+      >
+        {/* جدول تقارير فواتير الشراء الكامل بالصفوف الظاهرة حالياً */}
+        {pagination.visibleItems.map((inv) => {
+          const isExpanded = Boolean(expandedIds[inv.id]);
+          const invoicePurchasedPacks = inv.items.reduce(
+            (s, it) => s + it.purchasedPacks,
+            0,
+          );
+          const invoiceBonusPacks = inv.items.reduce(
+            (s, it) => s + it.bonusPacks,
+            0,
+          );
 
-          {/* فلتر طريقة الدفع */}
-          <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
-            {(
-              [
-                { id: "ALL", label: "الكل" },
-                { id: "CASH", label: "نقدي" },
-                { id: "CREDIT", label: "آجل" },
-              ] as const
-            ).map((pill) => (
-              <button
-                key={pill.id}
-                type="button"
-                onClick={() => setPaymentFilter(pill.id)}
-                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition ${
-                  paymentFilter === pill.id
-                    ? pill.id === "CASH"
-                      ? "bg-sky-600 text-white"
-                      : pill.id === "CREDIT"
-                        ? "bg-amber-600 text-white"
-                        : "bg-slate-700 text-white"
-                    : "text-slate-400 hover:text-white"
+          return (
+            <React.Fragment key={inv.id}>
+              <tr
+                onClick={() => toggleExpand(inv.id)}
+                className={`cursor-pointer transition ${
+                  isExpanded
+                    ? "bg-indigo-950/30"
+                    : "bg-slate-950/40 hover:bg-slate-800/55"
                 }`}
               >
-                {pill.label}
-              </button>
-            ))}
-          </div>
-        </div>
+                <td className="py-3 px-3">
+                  <div className="flex items-center gap-1.5">
+                    {isExpanded ? (
+                      <ChevronDown className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                    ) : (
+                      <ChevronLeft className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                    )}
+                    <span className="font-mono font-bold text-indigo-300">
+                      {inv.id}
+                    </span>
+                  </div>
+                  <div className="text-[10.5px] font-mono text-slate-500 mt-0.5 pr-5">
+                    {new Date(inv.createdAt).toLocaleString("ar-SA", {
+                      dateStyle: "short",
+                      timeStyle: "short",
+                    })}
+                  </div>
+                </td>
 
-        {/* صف نطاق التاريخ + أدوات التوسيع والتصدير والطباعة */}
-        <div className="flex items-center justify-between gap-2.5 flex-wrap border-t border-slate-800/80 pt-3">
-          <div className="flex items-center gap-2 flex-wrap">
-            <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-[11px]">
-              <Calendar className="w-3.5 h-3.5 text-slate-400" />
-              <span className="text-slate-400">من:</span>
-              <input
-                type="date"
-                value={fromDate}
-                onChange={(e) => setFromDate(e.target.value)}
-                className="bg-transparent text-white font-mono outline-none"
-              />
-            </div>
+                <td className="py-3 px-3 font-mono text-slate-200 font-bold">
+                  {inv.supplierInvoiceNumber || "—"}
+                </td>
 
-            <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-[11px]">
-              <span className="text-slate-400">إلى:</span>
-              <input
-                type="date"
-                value={toDate}
-                onChange={(e) => setToDate(e.target.value)}
-                className="bg-transparent text-white font-mono outline-none"
-              />
-            </div>
+                <td className="py-3 px-3 font-bold text-white">
+                  {inv.supplierName}
+                </td>
 
-            {hasActiveFilters && (
-              <button
-                type="button"
-                onClick={handleResetFilters}
-                className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white font-bold text-[11px] inline-flex items-center gap-1 transition"
-              >
-                <RotateCcw className="w-3.5 h-3.5" /> إعادة ضبط الفلاتر
-              </button>
-            )}
-          </div>
+                <td className="py-3 px-3 text-center">
+                  {inv.paymentMode === "CASH" ? (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-sky-950 border border-sky-800 text-sky-300">
+                      <Banknote className="w-3 h-3" /> نقدي
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-950 border border-amber-800 text-amber-300">
+                      <CreditCard className="w-3 h-3" /> آجل
+                    </span>
+                  )}
+                </td>
 
-          <div className="flex items-center gap-2 flex-wrap">
-            {filteredInvoices.length > 0 && (
-              <button
-                type="button"
-                onClick={handleToggleExpandAll}
-                className="px-2.5 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-300 font-bold text-[11px] inline-flex items-center gap-1.5 transition"
-              >
-                <ChevronsUpDown className="w-3.5 h-3.5 text-indigo-400" />
-                {allExpanded ? "طي كل الأصناف" : "توسيع كل الأصناف"}
-              </button>
-            )}
+                <td className="py-3 px-3 text-center">
+                  <div className="font-mono font-bold text-slate-200">
+                    {inv.items.length} صنف
+                  </div>
+                  <div className="text-[10px] font-mono text-slate-400">
+                    {invoicePurchasedPacks} علبة
+                    {invoiceBonusPacks > 0 && (
+                      <span className="text-emerald-400 mr-1">
+                        (+{invoiceBonusPacks} بونص)
+                      </span>
+                    )}
+                  </div>
+                </td>
 
-            <button
-              type="button"
-              onClick={() => setNewestFirst((prev) => !prev)}
-              className="px-2.5 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-300 font-bold text-[11px] inline-flex items-center gap-1.5 transition"
-            >
-              <ArrowUpDown className="w-3.5 h-3.5 text-sky-400" />
-              {newestFirst ? "الأحدث أولاً" : "الأقدم أولاً"}
-            </button>
+                <td className="py-3 px-3 text-center font-mono font-bold text-emerald-400">
+                  {inv.totalBonusValue > 0
+                    ? `+${inv.totalBonusValue.toFixed(2)} ر.س`
+                    : "0.00"}
+                </td>
 
-            <button
-              type="button"
-              disabled={filteredInvoices.length === 0}
-              onClick={handleExportCsv}
-              className="px-3 py-1.5 rounded-xl bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 text-white font-bold text-[11px] inline-flex items-center gap-1.5 transition"
-            >
-              <FileSpreadsheet className="w-3.5 h-3.5" /> تصدير Excel / CSV
-            </button>
+                <td className="py-3 px-3 text-center font-mono font-extrabold text-sm text-white">
+                  {inv.totalAmount.toFixed(2)} ر.س
+                </td>
 
-            <button
-              type="button"
-              disabled={filteredInvoices.length === 0}
-              onClick={handlePrintReport}
-              className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 border border-slate-700 text-slate-200 font-bold text-[11px] inline-flex items-center gap-1.5 transition"
-            >
-              <Printer className="w-3.5 h-3.5" /> طباعة التقرير
-            </button>
-          </div>
-        </div>
+                <td className="py-3 px-3 text-left">
+                  <span
+                    className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-[10.5px] font-bold ${
+                      isExpanded
+                        ? "bg-indigo-950/70 border-indigo-700 text-indigo-200"
+                        : "bg-slate-900 border-slate-700 text-slate-300"
+                    }`}
+                  >
+                    {isExpanded ? "إخفاء البنود" : "عرض كل البنود"}
+                  </span>
+                </td>
+              </tr>
 
-        {/* جدول تقارير فواتير الشراء الكامل */}
-        {purchaseInvoices.length === 0 ? (
-          <div className="py-16 flex flex-col items-center justify-center text-slate-500 text-center gap-2">
-            <FileText className="w-10 h-10 text-slate-700 stroke-1" />
-            <p className="font-bold text-slate-400">
-              لا توجد فواتير مشتريات مسجلة في النظام حتى الآن
-            </p>
-            <p className="text-[11px]">
-              عند اعتماد أي فاتورة شراء من تبويب «إدخال فاتورة شراء وبونص» ستظهر
-              هنا بكامل تفاصيلها وبنودها.
-            </p>
-          </div>
-        ) : filteredInvoices.length === 0 ? (
-          <div className="py-14 text-center text-slate-500">
-            لا توجد فواتير مشتريات مطابقة لخيارات البحث أو الفلترة الحالية.
-          </div>
-        ) : (
-          <div className="overflow-x-auto rounded-xl border border-slate-800">
-            <table className="w-full text-right text-xs">
-              <thead className="bg-slate-950 text-slate-400 border-b border-slate-800 text-[11px]">
-                <tr>
-                  <th className="py-2.5 px-3">رقم القيد والتاريخ</th>
-                  <th className="py-2.5 px-3">فاتورة المورد</th>
-                  <th className="py-2.5 px-3">المستودع / المورد</th>
-                  <th className="py-2.5 px-3 text-center">طريقة الدفع</th>
-                  <th className="py-2.5 px-3 text-center">الأصناف والعلب</th>
-                  <th className="py-2.5 px-3 text-center">قيمة البونص</th>
-                  <th className="py-2.5 px-3 text-center">الإجمالي النهائي</th>
-                  <th className="py-2.5 px-3 text-left">التفاصيل</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/70">
-                {filteredInvoices.map((inv) => {
-                  const isExpanded = Boolean(expandedIds[inv.id]);
-                  const invoicePurchasedPacks = inv.items.reduce(
-                    (s, it) => s + it.purchasedPacks,
-                    0,
-                  );
-                  const invoiceBonusPacks = inv.items.reduce(
-                    (s, it) => s + it.bonusPacks,
-                    0,
-                  );
-
-                  return (
-                    <React.Fragment key={inv.id}>
-                      <tr
-                        onClick={() => toggleExpand(inv.id)}
-                        className={`cursor-pointer transition ${
-                          isExpanded
-                            ? "bg-indigo-950/30"
-                            : "bg-slate-950/40 hover:bg-slate-800/55"
-                        }`}
-                      >
-                        <td className="py-3 px-3">
-                          <div className="flex items-center gap-1.5">
-                            {isExpanded ? (
-                              <ChevronDown className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
-                            ) : (
-                              <ChevronLeft className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                            )}
-                            <span className="font-mono font-bold text-indigo-300">
-                              {inv.id}
-                            </span>
-                          </div>
-                          <div className="text-[10.5px] font-mono text-slate-500 mt-0.5 pr-5">
-                            {new Date(inv.createdAt).toLocaleString("ar-SA", {
-                              dateStyle: "short",
-                              timeStyle: "short",
-                            })}
-                          </div>
-                        </td>
-
-                        <td className="py-3 px-3 font-mono text-slate-200 font-bold">
-                          {inv.supplierInvoiceNumber || "—"}
-                        </td>
-
-                        <td className="py-3 px-3 font-bold text-white">
+              {/* جدول بنود الفاتورة التفصيلي بكافة المعلومات المحاسبية والمخزنية */}
+              {isExpanded && (
+                <tr className="bg-slate-950/90">
+                  <td colSpan={8} className="p-3">
+                    <div className="rounded-xl border border-slate-800 bg-slate-900/90 overflow-hidden">
+                      <div className="px-3 py-2 bg-slate-950 border-b border-slate-800 flex items-center justify-between flex-wrap gap-2 text-[11px]">
+                        <span className="font-bold text-slate-200 flex items-center gap-1.5">
+                          <Package className="w-3.5 h-3.5 text-indigo-400" />
+                          تفاصيل بنود فاتورة الشراء ({inv.id}) — المستودع:{" "}
                           {inv.supplierName}
-                        </td>
+                        </span>
+                        <span className="font-mono text-slate-400 text-[10.5px]">
+                          الفرع: {inv.branchId} • فاتورة المورد:{" "}
+                          {inv.supplierInvoiceNumber || "غير مدخلة"}
+                        </span>
+                      </div>
 
-                        <td className="py-3 px-3 text-center">
-                          {inv.paymentMode === "CASH" ? (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-sky-950 border border-sky-800 text-sky-300">
-                              <Banknote className="w-3 h-3" /> نقدي
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-950 border border-amber-800 text-amber-300">
-                              <CreditCard className="w-3 h-3" /> آجل
-                            </span>
-                          )}
-                        </td>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-right text-[11px]">
+                          <thead>
+                            <tr className="border-b border-slate-800/80 text-slate-400 text-[10px]">
+                              <th className="py-2 px-3">الصنف والباركود</th>
+                              <th className="py-2 px-2">التشغيلة والصلاحية</th>
+                              <th className="py-2 px-2 text-center">المشترى</th>
+                              <th className="py-2 px-2 text-center">+ بونص</th>
+                              <th className="py-2 px-2 text-center">
+                                سعر الشراء
+                              </th>
+                              <th className="py-2 px-2 text-center">
+                                الرصيد والتكلفة السابقة
+                              </th>
+                              <th className="py-2 px-2 text-center">
+                                التكلفة المرجحة الجديدة
+                              </th>
+                              <th className="py-2 px-2 text-center">
+                                سعر البيع الجديد
+                              </th>
+                              <th className="py-2 px-3 text-left">
+                                إجمالي السطر
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800/50">
+                            {inv.items.map((item) => (
+                              <tr
+                                key={item.id}
+                                className="hover:bg-slate-800/35"
+                              >
+                                <td className="py-2 px-3">
+                                  <div className="font-bold text-slate-100">
+                                    {item.productName}
+                                  </div>
+                                  <div className="text-[9.5px] font-mono text-slate-500">
+                                    {item.barcode}
+                                  </div>
+                                </td>
 
-                        <td className="py-3 px-3 text-center">
-                          <div className="font-mono font-bold text-slate-200">
-                            {inv.items.length} صنف
-                          </div>
-                          <div className="text-[10px] font-mono text-slate-400">
-                            {invoicePurchasedPacks} علبة
-                            {invoiceBonusPacks > 0 && (
-                              <span className="text-emerald-400 mr-1">
-                                (+{invoiceBonusPacks} بونص)
-                              </span>
-                            )}
-                          </div>
-                        </td>
+                                <td className="py-2 px-2 font-mono">
+                                  <div className="text-slate-200 font-bold">
+                                    {item.batchNumber}
+                                  </div>
+                                  <div className="text-[10px] text-slate-400">
+                                    {item.expiryDate}
+                                  </div>
+                                </td>
 
-                        <td className="py-3 px-3 text-center font-mono font-bold text-emerald-400">
-                          {inv.totalBonusValue > 0
-                            ? `+${inv.totalBonusValue.toFixed(2)} ر.س`
-                            : "0.00"}
-                        </td>
+                                <td className="py-2 px-2 text-center font-mono font-bold text-white">
+                                  {item.purchasedPacks} علبة
+                                </td>
 
-                        <td className="py-3 px-3 text-center font-mono font-extrabold text-sm text-white">
-                          {inv.totalAmount.toFixed(2)} ر.س
-                        </td>
+                                <td className="py-2 px-2 text-center font-mono font-bold text-emerald-400">
+                                  {item.bonusPacks > 0
+                                    ? `+${item.bonusPacks}`
+                                    : "0"}
+                                </td>
 
-                        <td className="py-3 px-3 text-left">
-                          <span
-                            className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-[10.5px] font-bold ${
-                              isExpanded
-                                ? "bg-indigo-950/70 border-indigo-700 text-indigo-200"
-                                : "bg-slate-900 border-slate-700 text-slate-300"
-                            }`}
-                          >
-                            {isExpanded ? "إخفاء البنود" : "عرض كل البنود"}
-                          </span>
-                        </td>
-                      </tr>
+                                <td className="py-2 px-2 text-center font-mono text-slate-200">
+                                  {item.purchasePricePerPack.toFixed(2)}
+                                </td>
 
-                      {/* جدول بنود الفاتورة التفصيلي بكافة المعلومات المحاسبية والمخزنية */}
-                      {isExpanded && (
-                        <tr className="bg-slate-950/90">
-                          <td colSpan={8} className="p-3">
-                            <div className="rounded-xl border border-slate-800 bg-slate-900/90 overflow-hidden">
-                              <div className="px-3 py-2 bg-slate-950 border-b border-slate-800 flex items-center justify-between flex-wrap gap-2 text-[11px]">
-                                <span className="font-bold text-slate-200 flex items-center gap-1.5">
-                                  <Package className="w-3.5 h-3.5 text-indigo-400" />
-                                  تفاصيل بنود فاتورة الشراء ({inv.id}) —
-                                  المستودع: {inv.supplierName}
-                                </span>
-                                <span className="font-mono text-slate-400 text-[10.5px]">
-                                  الفرع: {inv.branchId} • فاتورة المورد:{" "}
-                                  {inv.supplierInvoiceNumber || "غير مدخلة"}
-                                </span>
-                              </div>
+                                <td className="py-2 px-2 text-center font-mono text-slate-400">
+                                  <div>{item.previousStockPacks} علبة</div>
+                                  <div className="text-[10px]">
+                                    {item.previousWeightedCost.toFixed(2)} ر.س
+                                  </div>
+                                </td>
 
-                              <div className="overflow-x-auto">
-                                <table className="w-full text-right text-[11px]">
-                                  <thead>
-                                    <tr className="border-b border-slate-800/80 text-slate-400 text-[10px]">
-                                      <th className="py-2 px-3">
-                                        الصنف والباركود
-                                      </th>
-                                      <th className="py-2 px-2">
-                                        التشغيلة والصلاحية
-                                      </th>
-                                      <th className="py-2 px-2 text-center">
-                                        المشترى
-                                      </th>
-                                      <th className="py-2 px-2 text-center">
-                                        + بونص
-                                      </th>
-                                      <th className="py-2 px-2 text-center">
-                                        سعر الشراء
-                                      </th>
-                                      <th className="py-2 px-2 text-center">
-                                        الرصيد والتكلفة السابقة
-                                      </th>
-                                      <th className="py-2 px-2 text-center">
-                                        التكلفة المرجحة الجديدة
-                                      </th>
-                                      <th className="py-2 px-2 text-center">
-                                        سعر البيع الجديد
-                                      </th>
-                                      <th className="py-2 px-3 text-left">
-                                        إجمالي السطر
-                                      </th>
-                                    </tr>
-                                  </thead>
-                                  <tbody className="divide-y divide-slate-800/50">
-                                    {inv.items.map((item) => (
-                                      <tr
-                                        key={item.id}
-                                        className="hover:bg-slate-800/35"
-                                      >
-                                        <td className="py-2 px-3">
-                                          <div className="font-bold text-slate-100">
-                                            {item.productName}
-                                          </div>
-                                          <div className="text-[9.5px] font-mono text-slate-500">
-                                            {item.barcode}
-                                          </div>
-                                        </td>
+                                <td className="py-2 px-2 text-center font-mono font-bold text-amber-400">
+                                  {item.newWeightedCost.toFixed(2)} ر.س
+                                </td>
 
-                                        <td className="py-2 px-2 font-mono">
-                                          <div className="text-slate-200 font-bold">
-                                            {item.batchNumber}
-                                          </div>
-                                          <div className="text-[10px] text-slate-400">
-                                            {item.expiryDate}
-                                          </div>
-                                        </td>
+                                <td className="py-2 px-2 text-center font-mono text-sky-300">
+                                  {item.newPackSalePrice > 0
+                                    ? `${item.newPackSalePrice.toFixed(2)} ر.س`
+                                    : "بدون تغيير"}
+                                </td>
 
-                                        <td className="py-2 px-2 text-center font-mono font-bold text-white">
-                                          {item.purchasedPacks} علبة
-                                        </td>
-
-                                        <td className="py-2 px-2 text-center font-mono font-bold text-emerald-400">
-                                          {item.bonusPacks > 0
-                                            ? `+${item.bonusPacks}`
-                                            : "0"}
-                                        </td>
-
-                                        <td className="py-2 px-2 text-center font-mono text-slate-200">
-                                          {item.purchasePricePerPack.toFixed(2)}
-                                        </td>
-
-                                        <td className="py-2 px-2 text-center font-mono text-slate-400">
-                                          <div>
-                                            {item.previousStockPacks} علبة
-                                          </div>
-                                          <div className="text-[10px]">
-                                            {item.previousWeightedCost.toFixed(
-                                              2,
-                                            )}{" "}
-                                            ر.س
-                                          </div>
-                                        </td>
-
-                                        <td className="py-2 px-2 text-center font-mono font-bold text-amber-400">
-                                          {item.newWeightedCost.toFixed(2)} ر.س
-                                        </td>
-
-                                        <td className="py-2 px-2 text-center font-mono text-sky-300">
-                                          {item.newPackSalePrice > 0
-                                            ? `${item.newPackSalePrice.toFixed(2)} ر.س`
-                                            : "بدون تغيير"}
-                                        </td>
-
-                                        <td className="py-2 px-3 text-left font-mono font-extrabold text-white">
-                                          {item.lineTotal.toFixed(2)} ر.س
-                                        </td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+                                <td className="py-2 px-3 text-left font-mono font-extrabold text-white">
+                                  {item.lineTotal.toFixed(2)} ر.س
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </React.Fragment>
+          );
+        })}
+      </DataTableShell>
     </div>
   );
 };

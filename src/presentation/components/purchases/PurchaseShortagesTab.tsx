@@ -12,6 +12,17 @@ import {
 } from "../../../domain/utils/whatsappHelper";
 import { usePosStore } from "../../../application/store/usePosStore";
 import { ProductSearchInput } from "../common/ProductSearchInput";
+import { FilterPillOption, FilterPills } from "../common/table/FilterPills";
+import {
+  SortAccessors,
+  SortDirection,
+  useTableSort,
+} from "../common/table/useTableSort";
+import { useTablePagination } from "../common/table/useTablePagination";
+import { SortableTh } from "../common/table/SortableTh";
+import { DataTableToolbar } from "../common/table/DataTableToolbar";
+import { DataTableShell } from "../common/table/DataTableShell";
+import { TableLoadMoreFooter } from "../common/table/TableLoadMoreFooter";
 import {
   ClipboardList,
   FileSpreadsheet,
@@ -23,7 +34,6 @@ import {
   Settings2,
   MessageCircle,
   CheckSquare,
-  ChevronDown,
   CheckCircle2,
   X,
 } from "lucide-react";
@@ -38,12 +48,34 @@ const PAGE_SIZE = 50;
 const ASSIGNED_KEY = "__ASSIGNED__";
 const UNASSIGNED_KEY = "__UNASSIGNED__";
 
+// مفاتيح الأعمدة القابلة للفرز التفاعلي في جدول دفتر النواقص
+type ShortageSortKey =
+  | "name"
+  | "stockPacks"
+  | "supplierName"
+  | "weightedCostPrice"
+  | "orderQty"
+  | "estimatedTotal";
+
+// الاتجاه الابتدائي المفضّل عند النقر الأول على كل عمود في جدول النواقص
+const SHORTAGE_DEFAULT_DIRECTIONS: Partial<
+  Record<ShortageSortKey, SortDirection>
+> = {
+  name: "asc",
+  stockPacks: "asc",
+  supplierName: "asc",
+  weightedCostPrice: "desc",
+  orderQty: "desc",
+  estimatedTotal: "desc",
+};
+
 const getSuggestedQty = (product: ProductEntity): number =>
   Math.max(5, product.minLimit * 2 - product.stockPacks);
 
 /**
  * تبويب دفتر النواقص وتوزيع الطلبيات على المستودعات (Purchase Orders)
- * يستخدم محرك البحث الضبابي والصوتي (fuzzySearch) وأدوات التصدير والمراسلة الموحّدة
+ * يستخدم محرك البحث الضبابي والصوتي (fuzzySearch)، أدوات التصدير والمراسلة الموحّدة،
+ * ونواة الجداول الموحّدة (حبوب الفلترة، فرز الأعمدة، والتحميل التدريجي)
  */
 export const PurchaseShortagesTab: React.FC<Props> = ({
   shortageProducts,
@@ -53,7 +85,6 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
   const { settings, suppliers, setNotification } = usePosStore();
 
   const [orderQtyMap, setOrderQtyMap] = useState<Record<string, number>>({});
-  // خريطة مؤقتة لجلسة الطلب فقط: productId -> supplierId
   const [assignedSupplierMap, setAssignedSupplierMap] = useState<
     Record<string, string>
   >({});
@@ -62,12 +93,10 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
   const [activeSupplierFilter, setActiveSupplierFilter] =
     useState<string>("ALL");
   const [searchQuery, setSearchQuery] = useState("");
-  const [visibleLimit, setVisibleLimit] = useState(PAGE_SIZE);
   const [copied, setCopied] = useState(false);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  // بناء فهرس البحث الضبابي والصوتي لأصناف النواقص مرة واحدة عند تغيّر القائمة
   const shortageSearchIndex = useMemo(
     () => buildProductSearchIndex(shortageProducts),
     [shortageProducts],
@@ -84,7 +113,7 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     return map;
   }, [suppliers]);
 
-  // اختصار F2 (أو / خارج حقول الإدخال) للتركيز السريع على خانة البحث في النواقص
+  // اختصار F2 أو / للتركيز السريع على شريط البحث داخل دفتر النواقص
   useEffect(() => {
     const handleFocusShortcut = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.altKey || e.metaKey) return;
@@ -107,7 +136,7 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     return () => window.removeEventListener("keydown", handleFocusShortcut);
   }, []);
 
-  // تهيئة الكميات المقترحة وتنظيف التحديدات والتعيينات للأصناف التي خرجت من قائمة النواقص
+  // مزامنة خرائط الكميات والتوجيه والتحديد عند تغيّر قائمة الأصناف الناقصة
   useEffect(() => {
     const shortageIdSet = new Set(shortageProducts.map((p) => p.id));
 
@@ -140,7 +169,7 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     });
   }, [shortageProducts]);
 
-  // إبقاء الفلتر النشط صالحاً في حال تغيّر الدليل
+  // العودة تلقائياً لخيار "الكل" في حال تم حذف المستودع المحدّد حالياً من الدليل
   useEffect(() => {
     if (
       activeSupplierFilter !== "ALL" &&
@@ -149,7 +178,6 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
       !suppliersById.has(activeSupplierFilter)
     ) {
       setActiveSupplierFilter("ALL");
-      setVisibleLimit(PAGE_SIZE);
     }
   }, [activeSupplierFilter, suppliersById]);
 
@@ -163,7 +191,6 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     return sid && suppliersById.has(sid) ? sid : "";
   };
 
-  // حساب عدادات الأصناف لكل مستودع + الموزعة + غير الموزعة
   const supplierCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     let assigned = 0;
@@ -182,19 +209,60 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     return { counts, assigned, unassigned };
   }, [shortageProducts, assignedSupplierMap, suppliersById]);
 
-  // المستودعات التي تظهر في شريط التصفية: النشطة + أي مستودع مجمّد لا يزال له أصناف موزعة في الجلسة
   const filterSuppliers = useMemo(() => {
     return suppliers.filter(
       (s) => s.isActive || (supplierCounts.counts[s.id] || 0) > 0,
     );
   }, [suppliers, supplierCounts]);
 
+  // بناء خيارات شريط حبوب الفلترة الموحّد (الكل / الموزعة / غير موزعة / المستودعات)
+  const supplierFilterOptions = useMemo<FilterPillOption<string>[]>(() => {
+    const baseOptions: FilterPillOption<string>[] = [
+      {
+        id: "ALL",
+        label: "الكل",
+        count: shortageProducts.length,
+        tone: "slate",
+      },
+      {
+        id: ASSIGNED_KEY,
+        label: "الموزعة",
+        count: supplierCounts.assigned,
+        icon: CheckCircle2,
+        tone: "emerald",
+        highlightWhenInactive: true,
+      },
+      {
+        id: UNASSIGNED_KEY,
+        label: "غير موزعة",
+        count: supplierCounts.unassigned,
+        tone: "amber",
+        highlightWhenInactive: true,
+      },
+    ];
+
+    const supplierOptions: FilterPillOption<string>[] = filterSuppliers.map(
+      (sup) => {
+        const count = supplierCounts.counts[sup.id] || 0;
+        return {
+          id: sup.id,
+          label: sup.name,
+          count,
+          icon: Building2,
+          tone: "indigo",
+          highlightWhenInactive: count > 0,
+        };
+      },
+    );
+
+    return [...baseOptions, ...supplierOptions];
+  }, [shortageProducts.length, supplierCounts, filterSuppliers]);
+
   const outOfStockCount = useMemo(
     () => shortageProducts.filter((p) => p.stockPacks === 0).length,
     [shortageProducts],
   );
 
-  // الأصناف ضمن نطاق فلتر المستودع الحالي (تُستخدم للنسخ والتصدير بالكامل)
   const scopedShortages = useMemo(() => {
     return shortageProducts.filter((p) => {
       const sid = getAssignedSupplierId(p.id);
@@ -210,7 +278,6 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     suppliersById,
   ]);
 
-  // تصفية إضافية للعرض باستخدام محرك البحث الضبابي والصوتي مع الحفاظ على ترتيب الدقة
   const filteredShortages = useMemo(() => {
     const q = searchQuery.trim();
     if (!q) return scopedShortages;
@@ -228,13 +295,56 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     searchQuery,
   ]);
 
-  // اقتصاص العناصر المرئية بـ 50 صنفاً لمنع ثقل الـ DOM عند كثرة النواقص
-  const visibleShortages = useMemo(
-    () => filteredShortages.slice(0, visibleLimit),
-    [filteredShortages, visibleLimit],
+  // دوال استخراج قيم الأعمدة للفرز (تأخذ بالاعتبار المستودع المعيّن والكمية المطلوبة لحظياً)
+  const sortAccessors = useMemo<SortAccessors<ProductEntity, ShortageSortKey>>(
+    () => ({
+      name: (p) => p.name,
+      stockPacks: (p) => p.stockPacks,
+      supplierName: (p) => {
+        const sid = assignedSupplierMap[p.id];
+        return sid ? (suppliersById.get(sid)?.name ?? null) : null;
+      },
+      weightedCostPrice: (p) => p.weightedCostPrice,
+      orderQty: (p) =>
+        orderQtyMap[p.id] !== undefined
+          ? orderQtyMap[p.id]
+          : getSuggestedQty(p),
+      estimatedTotal: (p) => {
+        const qty =
+          orderQtyMap[p.id] !== undefined
+            ? orderQtyMap[p.id]
+            : getSuggestedQty(p);
+        return qty * p.weightedCostPrice;
+      },
+    }),
+    [assignedSupplierMap, suppliersById, orderQtyMap],
   );
 
-  // الأصناف الجاهزة للطلب ضمن النطاق الحالي (ذات الكمية > 0)
+  // فرز الأعمدة التفاعلي: defaultSort=null للحفاظ على دقة ترتيب البحث الضبابي وأولوية النقص، مع allowClear للعودة للترتيب الافتراضي
+  const {
+    sortedItems: sortedShortages,
+    sortState,
+    toggleSort,
+    resetSort,
+    getSortDirection,
+  } = useTableSort(filteredShortages, {
+    accessors: sortAccessors,
+    defaultSort: null,
+    defaultDirections: SHORTAGE_DEFAULT_DIRECTIONS,
+    allowClear: true,
+  });
+
+  // التحميل التدريجي الموحّد (50 صنفاً في الدفعة) مع إعادة ضبط تلقائية عند تغيّر الفلتر أو البحث أو الفرز
+  const pagination = useTablePagination(sortedShortages, {
+    pageSize: PAGE_SIZE,
+    resetDeps: [
+      activeSupplierFilter,
+      searchQuery,
+      sortState?.key,
+      sortState?.direction,
+    ],
+  });
+
   const activeOrderItems = useMemo(
     () =>
       scopedShortages
@@ -267,7 +377,6 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     [selectedSupplier],
   );
 
-  // التكلفة التقديرية للنطاق الحالي (تُعرض فقط لحاملي صلاحية canViewCost)
   const totalEstimatedCost = useMemo(
     () =>
       activeOrderItems.reduce(
@@ -283,24 +392,24 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
   );
 
   const allVisibleSelected =
-    visibleShortages.length > 0 &&
-    visibleShortages.every((p) => Boolean(selectedIds[p.id]));
+    pagination.visibleItems.length > 0 &&
+    pagination.visibleItems.every((p) => Boolean(selectedIds[p.id]));
 
-  const handleSelectSupplierFilter = (filterId: string) => {
-    setActiveSupplierFilter(filterId);
-    setVisibleLimit(PAGE_SIZE);
-  };
+  const hasActiveFilters =
+    activeSupplierFilter !== "ALL" || Boolean(searchQuery.trim());
 
-  const handleSearchChange = (value: string) => {
-    setSearchQuery(value);
-    setVisibleLimit(PAGE_SIZE);
+  // إعادة ضبط فلتر المستودع والبحث والفرز بضغطة واحدة
+  const handleResetFilters = () => {
+    setActiveSupplierFilter("ALL");
+    setSearchQuery("");
+    resetSort();
   };
 
   const handleToggleSelectAllVisible = () => {
     if (allVisibleSelected) {
       setSelectedIds((prev) => {
         const next = { ...prev };
-        visibleShortages.forEach((p) => {
+        pagination.visibleItems.forEach((p) => {
           delete next[p.id];
         });
         return next;
@@ -310,7 +419,7 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
 
     setSelectedIds((prev) => {
       const next = { ...prev };
-      visibleShortages.forEach((p) => {
+      pagination.visibleItems.forEach((p) => {
         next[p.id] = true;
       });
       return next;
@@ -474,6 +583,7 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
 
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+      {/* الترويسة ومؤشرات النواقص السريعة */}
       <div className="flex items-center justify-between flex-wrap gap-3 border-b border-slate-800 pb-3">
         <div>
           <h3 className="font-bold text-white text-sm flex items-center gap-2">
@@ -520,7 +630,7 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
         </div>
       </div>
 
-      {/* تنبيه يظهر فقط عند عدم وجود مستودعات مضافة في الدليل بعد */}
+      {/* تنبيه عند عدم وجود مستودعات نشطة في الدليل */}
       {activeSuppliers.length === 0 && (
         <div className="bg-amber-950/30 border border-amber-800/70 rounded-xl p-3 flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2 text-amber-200">
@@ -540,82 +650,16 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
         </div>
       )}
 
-      {/* شريط حبوب الفلترة (الكل / الموزعة / غير موزعة / المستودعات) */}
+      {/* لوحة تصفية المستودعات الموحّدة (FilterPills) وإجراءات إرسال وتصدير الطلبية */}
       <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3 space-y-3">
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <button
-            type="button"
-            onClick={() => handleSelectSupplierFilter("ALL")}
-            className={`px-3 py-1.5 rounded-lg text-[11px] font-bold border transition inline-flex items-center gap-1.5 ${
-              activeSupplierFilter === "ALL"
-                ? "bg-slate-700 border-slate-500 text-white"
-                : "bg-slate-900 border-slate-800 text-slate-300 hover:text-white"
-            }`}
-          >
-            <span>الكل</span>
-            <span className="font-mono text-[10px] bg-black/30 px-1.5 rounded-full">
-              {shortageProducts.length}
-            </span>
-          </button>
+        <FilterPills
+          variant="chips"
+          options={supplierFilterOptions}
+          value={activeSupplierFilter}
+          onChange={setActiveSupplierFilter}
+          ariaLabel="تصفية النواقص حسب المستودع"
+        />
 
-          <button
-            type="button"
-            onClick={() => handleSelectSupplierFilter(ASSIGNED_KEY)}
-            className={`px-3 py-1.5 rounded-lg text-[11px] font-bold border transition inline-flex items-center gap-1.5 ${
-              activeSupplierFilter === ASSIGNED_KEY
-                ? "bg-emerald-950/85 border-emerald-500 text-emerald-200"
-                : "bg-slate-900 border-slate-800 text-emerald-400 hover:border-emerald-800"
-            }`}
-          >
-            <CheckCircle2 className="w-3 h-3" />
-            <span>الموزعة</span>
-            <span className="font-mono text-[10px] bg-black/30 px-1.5 rounded-full">
-              {supplierCounts.assigned}
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => handleSelectSupplierFilter(UNASSIGNED_KEY)}
-            className={`px-3 py-1.5 rounded-lg text-[11px] font-bold border transition inline-flex items-center gap-1.5 ${
-              activeSupplierFilter === UNASSIGNED_KEY
-                ? "bg-amber-950/85 border-amber-500 text-amber-200"
-                : "bg-slate-900 border-slate-800 text-amber-400 hover:border-amber-800"
-            }`}
-          >
-            <span>غير موزعة</span>
-            <span className="font-mono text-[10px] bg-black/30 px-1.5 rounded-full">
-              {supplierCounts.unassigned}
-            </span>
-          </button>
-
-          {filterSuppliers.map((sup) => {
-            const count = supplierCounts.counts[sup.id] || 0;
-            const isSelected = activeSupplierFilter === sup.id;
-            return (
-              <button
-                key={sup.id}
-                type="button"
-                onClick={() => handleSelectSupplierFilter(sup.id)}
-                className={`px-3 py-1.5 rounded-lg text-[11px] font-bold border transition inline-flex items-center gap-1.5 ${
-                  isSelected
-                    ? "bg-indigo-600 border-indigo-400 text-white shadow"
-                    : count > 0
-                      ? "bg-indigo-950/50 border-indigo-800/80 text-indigo-200 hover:border-indigo-600"
-                      : "bg-slate-900 border-slate-800 text-slate-400 hover:text-white"
-                }`}
-              >
-                <Building2 className="w-3 h-3" />
-                <span>{sup.name}</span>
-                <span className="font-mono text-[10px] bg-black/30 px-1.5 rounded-full">
-                  {count}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-
-        {/* شريط أزرار الإرسال والتصدير للنطاق المختار */}
         <div className="pt-2.5 border-t border-slate-800/80 flex items-center justify-between gap-3 flex-wrap">
           <div className="text-[11px] text-slate-400">
             نطاق الطلبية الحالي:{" "}
@@ -668,277 +712,322 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
         </div>
       </div>
 
-      {/* شريط التوجيه الجماعي عند تحديد أصناف بمربعات الاختيار */}
-      {selectedProductIdsList.length > 0 && (
-        <div className="bg-indigo-950/45 border border-indigo-700/80 rounded-xl p-3 flex items-center justify-between gap-3 flex-wrap">
-          <div className="flex items-center gap-2 text-indigo-200 font-bold">
-            <CheckSquare className="w-4 h-4 text-indigo-400" />
-            <span>
-              تم تحديد{" "}
-              <b className="font-mono text-white">
-                {selectedProductIdsList.length}
-              </b>{" "}
-              صنف — توجيهها دفعة واحدة إلى:
-            </span>
-          </div>
+      {/* الهيكل الموحّد للجدول (framed=false للحفاظ على البطاقة الخارجية الحالية) */}
+      <DataTableShell
+        framed={false}
+        totalCount={shortageProducts.length}
+        filteredCount={sortedShortages.length}
+        searchQuery={searchQuery}
+        onResetFilters={hasActiveFilters ? handleResetFilters : undefined}
+        stickyHeader
+        emptyState={{
+          icon: ClipboardList,
+          tone: "success",
+          title: "ممتاز! لا توجد أي نواقص تحت حد الطلب في الصيدلية حالياً.",
+        }}
+        noResultsState={{
+          description:
+            "لا توجد أصناف ناقصة مطابقة لفلتر المستودع أو عبارة البحث الحالية.",
+        }}
+        toolbar={
+          shortageProducts.length > 0 ? (
+            <DataTableToolbar
+              accent="sky"
+              searchSlot={
+                <ProductSearchInput
+                  ref={searchInputRef}
+                  value={searchQuery}
+                  onChange={setSearchQuery}
+                  resultsCount={sortedShortages.length}
+                  accent="sky"
+                  inputBgClass="bg-slate-900"
+                  shortcutHint="F2"
+                  placeholder="ابحث في النواقص بالباركود أو الاسم والعيار معاً (مثلاً: pan 500 أو اموكس 1g) أو المادة الفعالة... (F2)"
+                />
+              }
+              hasActiveFilters={hasActiveFilters}
+              onResetFilters={handleResetFilters}
+              actions={
+                <button
+                  type="button"
+                  onClick={handleResetSuggested}
+                  title="إعادة تعيين جميع الكميات للقيمة المقترحة تلقائياً"
+                  className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white px-2.5 py-2 rounded-xl font-bold flex items-center gap-1 transition"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  الكميات المقترحة
+                </button>
+              }
+              visibleCount={pagination.visibleCount}
+              filteredCount={sortedShortages.length}
+              totalCount={shortageProducts.length}
+              itemLabel="صنف"
+              metaExtra={
+                <span className="font-mono text-slate-400">
+                  ضمن الطلبية:{" "}
+                  <b className="text-sky-400">{activeOrderItems.length}</b>
+                  <span className="text-slate-500 font-sans mr-2 hidden sm:inline">
+                    • اضغط على رأس أي عمود للفرز
+                  </span>
+                </span>
+              }
+            />
+          ) : undefined
+        }
+        aboveTable={
+          /* شريط التوجيه الجماعي يظهر تلقائياً عند تحديد صنف واحد أو أكثر */
+          selectedProductIdsList.length > 0 ? (
+            <div className="bg-indigo-950/45 border border-indigo-700/80 rounded-xl p-3 flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-2 text-indigo-200 font-bold">
+                <CheckSquare className="w-4 h-4 text-indigo-400" />
+                <span>
+                  تم تحديد{" "}
+                  <b className="font-mono text-white">
+                    {selectedProductIdsList.length}
+                  </b>{" "}
+                  صنف — توجيهها دفعة واحدة إلى:
+                </span>
+              </div>
 
-          <div className="flex items-center gap-2 flex-wrap">
-            <select
-              value={bulkSupplierId}
-              onChange={(e) => setBulkSupplierId(e.target.value)}
-              className="bg-slate-900 border border-indigo-700 rounded-lg px-3 py-1.5 text-white outline-none min-w-[200px]"
-            >
-              <option value="">-- اختر المستودع --</option>
-              {activeSuppliers.map((sup) => (
-                <option key={sup.id} value={sup.id}>
-                  {sup.name}
-                </option>
-              ))}
-              <option value={UNASSIGNED_KEY}>إلغاء التعيين (غير موزع)</option>
-            </select>
+              <div className="flex items-center gap-2 flex-wrap">
+                <select
+                  value={bulkSupplierId}
+                  onChange={(e) => setBulkSupplierId(e.target.value)}
+                  className="bg-slate-900 border border-indigo-700 rounded-lg px-3 py-1.5 text-white outline-none min-w-[200px]"
+                >
+                  <option value="">-- اختر المستودع --</option>
+                  {activeSuppliers.map((sup) => (
+                    <option key={sup.id} value={sup.id}>
+                      {sup.name}
+                    </option>
+                  ))}
+                  <option value={UNASSIGNED_KEY}>
+                    إلغاء التعيين (غير موزع)
+                  </option>
+                </select>
 
-            <button
-              type="button"
-              disabled={!bulkSupplierId}
-              onClick={handleApplyBulkAssign}
-              className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white font-bold px-3.5 py-1.5 rounded-lg transition"
-            >
-              تطبيق التوجيه
-            </button>
+                <button
+                  type="button"
+                  disabled={!bulkSupplierId}
+                  onClick={handleApplyBulkAssign}
+                  className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white font-bold px-3.5 py-1.5 rounded-lg transition"
+                >
+                  تطبيق التوجيه
+                </button>
 
-            <button
-              type="button"
-              onClick={() => setSelectedIds({})}
-              title="إلغاء التحديد"
-              className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* شريط البحث الموحّد داخل النواقص + عداد المعروض + إعادة ضبط الكميات المقترحة */}
-      {shortageProducts.length > 0 && (
-        <div className="flex items-center justify-between gap-3 bg-slate-950/70 border border-slate-800 p-2.5 rounded-xl flex-wrap">
-          <ProductSearchInput
-            ref={searchInputRef}
-            value={searchQuery}
-            onChange={handleSearchChange}
-            resultsCount={filteredShortages.length}
-            accent="sky"
-            inputBgClass="bg-slate-900"
-            shortcutHint="F2"
-            placeholder="ابحث في النواقص بالباركود أو الاسم والعيار معاً (مثلاً: pan 500 أو اموكس 1g) أو المادة الفعالة... (F2)"
-            className="flex-1 min-w-[260px]"
-          />
-
-          <div className="flex items-center gap-3 shrink-0 flex-wrap">
-            <span className="text-slate-400 font-mono">
-              يعرض <b className="text-white">{visibleShortages.length}</b> من{" "}
-              <b className="text-amber-400">{filteredShortages.length}</b> • ضمن
-              الطلبية: <b className="text-sky-400">{activeOrderItems.length}</b>
-            </span>
-            <button
-              type="button"
-              onClick={handleResetSuggested}
-              title="إعادة تعيين جميع الكميات للقيمة المقترحة تلقائياً"
-              className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white px-2.5 py-2 rounded-xl font-bold flex items-center gap-1 transition"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              الكميات المقترحة
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* جدول النواقص وتحديد المستودع لكل صنف (محدود بـ visibleLimit لأداء فائق) */}
-      {shortageProducts.length === 0 ? (
-        <div className="py-16 flex flex-col items-center justify-center text-slate-400 text-center gap-2">
-          <ClipboardList className="w-9 h-9 text-emerald-500/50 stroke-1" />
-          <p className="text-sm font-bold text-emerald-400">
-            ممتاز! لا توجد أي نواقص تحت حد الطلب في الصيدلية حالياً.
-          </p>
-        </div>
-      ) : filteredShortages.length === 0 ? (
-        <div className="py-12 text-center text-slate-500">
-          لا توجد أصناف ناقصة مطابقة لفلتر المستودع أو عبارة البحث الحالية.
-        </div>
-      ) : (
-        <>
-          <div className="overflow-x-auto rounded-xl border border-slate-800">
-            <table className="w-full text-right border-collapse">
-              <thead className="bg-slate-950">
-                <tr className="border-b border-slate-800 text-slate-400 text-[11px]">
-                  <th className="py-2.5 px-3 w-9 text-center">
-                    <input
-                      type="checkbox"
-                      checked={allVisibleSelected}
-                      onChange={handleToggleSelectAllVisible}
-                      title="تحديد كل الأصناف المعروضة حالياً"
-                      className="rounded accent-indigo-500 cursor-pointer"
-                    />
-                  </th>
-                  <th className="py-2.5 px-2">الدواء / المادة الفعالة</th>
-                  <th className="py-2.5 px-2 text-center">الرصيد / الحد</th>
-                  <th className="py-2.5 px-2 min-w-[190px]">
-                    المستودع الموجه له الطلب
-                  </th>
-                  {canViewCost && (
-                    <th className="py-2.5 px-2 text-center">آخر تكلفة</th>
-                  )}
-                  <th className="py-2.5 px-2 text-center">
-                    الكمية المطلوبة (علبة)
-                  </th>
-                  {canViewCost && (
-                    <th className="py-2.5 px-3 text-left">الإجمالي التقديري</th>
-                  )}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60 bg-slate-950/35">
-                {visibleShortages.map((p) => {
-                  const qty = getOrderQty(p);
-                  const assignedId = getAssignedSupplierId(p.id);
-                  const isChecked = Boolean(selectedIds[p.id]);
-                  const assignedSupplierObj = assignedId
-                    ? suppliersById.get(assignedId)
-                    : undefined;
-
-                  return (
-                    <tr
-                      key={p.id}
-                      className={`transition ${
-                        isChecked ? "bg-indigo-950/30" : "hover:bg-slate-800/40"
-                      }`}
-                    >
-                      <td className="py-2.5 px-3 text-center">
-                        <input
-                          type="checkbox"
-                          checked={isChecked}
-                          onChange={(e) =>
-                            setSelectedIds((prev) => ({
-                              ...prev,
-                              [p.id]: e.target.checked,
-                            }))
-                          }
-                          className="rounded accent-indigo-500 cursor-pointer"
-                        />
-                      </td>
-
-                      <td className="py-2.5 px-2">
-                        <div className="font-bold text-white flex items-center gap-1.5">
-                          {p.stockPacks === 0 && (
-                            <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
-                          )}
-                          {p.name}
-                        </div>
-                        <div className="text-[10px] text-slate-400">
-                          {p.scientificName} |{" "}
-                          <span className="font-mono">{p.barcode}</span>
-                        </div>
-                      </td>
-
-                      <td className="py-2.5 px-2 text-center">
-                        <span
-                          className={`font-mono font-bold px-2 py-0.5 rounded-full text-[11px] ${
-                            p.stockPacks === 0
-                              ? "bg-rose-950 text-rose-300 border border-rose-800"
-                              : "bg-amber-950 text-amber-300 border border-amber-800"
-                          }`}
-                        >
-                          {p.stockPacks} / {p.minLimit}
-                        </span>
-                      </td>
-
-                      <td className="py-2.5 px-2">
-                        <select
-                          value={assignedId}
-                          onChange={(e) =>
-                            handleAssignSingle(p.id, e.target.value)
-                          }
-                          className={`w-full rounded-lg px-2.5 py-1.5 text-xs outline-none border transition ${
-                            assignedId
-                              ? "bg-indigo-950/40 border-indigo-700 text-indigo-100 font-bold"
-                              : "bg-slate-900 border-slate-700 text-slate-300"
-                          }`}
-                        >
-                          <option
-                            value=""
-                            className="bg-slate-900 text-slate-400"
-                          >
-                            — غير محدد —
-                          </option>
-                          {activeSuppliers.map((sup) => (
-                            <option
-                              key={sup.id}
-                              value={sup.id}
-                              className="bg-slate-900 text-white"
-                            >
-                              {sup.name}
-                            </option>
-                          ))}
-                          {assignedSupplierObj &&
-                            !assignedSupplierObj.isActive && (
-                              <option
-                                value={assignedSupplierObj.id}
-                                className="bg-slate-900 text-slate-400"
-                              >
-                                {assignedSupplierObj.name} (مجمّد)
-                              </option>
-                            )}
-                        </select>
-                      </td>
-
-                      {canViewCost && (
-                        <td className="py-2.5 px-2 text-center font-mono text-amber-400">
-                          {p.weightedCostPrice.toFixed(2)}
-                        </td>
-                      )}
-
-                      <td className="py-2.5 px-2 text-center">
-                        <input
-                          type="number"
-                          min={0}
-                          max={500}
-                          value={qty}
-                          onChange={(e) =>
-                            setOrderQtyMap((prev) => ({
-                              ...prev,
-                              [p.id]: Math.max(0, Number(e.target.value) || 0),
-                            }))
-                          }
-                          className="w-20 bg-slate-800 border border-sky-700 rounded-lg p-1.5 text-center font-mono font-bold text-white outline-none focus:border-sky-400"
-                        />
-                      </td>
-
-                      {canViewCost && (
-                        <td className="py-2.5 px-3 text-left font-mono font-bold text-emerald-400">
-                          {(qty * p.weightedCostPrice).toFixed(2)}
-                        </td>
-                      )}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          {/* زر تحميل 50 صنفاً إضافياً كما في شاشة المخزون */}
-          {filteredShortages.length > visibleLimit && (
-            <div className="pt-2 text-center">
-              <button
-                type="button"
-                onClick={() => setVisibleLimit((prev) => prev + PAGE_SIZE)}
-                className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-bold px-6 py-2.5 rounded-xl inline-flex items-center gap-2 shadow transition"
-              >
-                <ChevronDown className="w-4 h-4 text-sky-400" />
-                عرض {PAGE_SIZE} صنفاً إضافياً (المتبقي:{" "}
-                {filteredShortages.length - visibleLimit} صنف)
-              </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedIds({})}
+                  title="إلغاء التحديد"
+                  className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
-          )}
-        </>
-      )}
+          ) : undefined
+        }
+        header={
+          <tr>
+            <th className="py-2.5 px-3 w-9 text-center">
+              <input
+                type="checkbox"
+                checked={allVisibleSelected}
+                onChange={handleToggleSelectAllVisible}
+                title="تحديد كل الأصناف المعروضة حالياً"
+                className="rounded accent-indigo-500 cursor-pointer"
+              />
+            </th>
+            <SortableTh
+              direction={getSortDirection("name")}
+              onSort={() => toggleSort("name")}
+              accent="sky"
+              className="px-2"
+            >
+              الدواء / المادة الفعالة
+            </SortableTh>
+            <SortableTh
+              direction={getSortDirection("stockPacks")}
+              onSort={() => toggleSort("stockPacks")}
+              align="center"
+              accent="sky"
+              className="px-2"
+            >
+              الرصيد / الحد
+            </SortableTh>
+            <SortableTh
+              direction={getSortDirection("supplierName")}
+              onSort={() => toggleSort("supplierName")}
+              accent="sky"
+              className="px-2 min-w-[190px]"
+            >
+              المستودع الموجه له الطلب
+            </SortableTh>
+            {canViewCost && (
+              <SortableTh
+                direction={getSortDirection("weightedCostPrice")}
+                onSort={() => toggleSort("weightedCostPrice")}
+                align="center"
+                accent="sky"
+                className="px-2"
+              >
+                آخر تكلفة
+              </SortableTh>
+            )}
+            <SortableTh
+              direction={getSortDirection("orderQty")}
+              onSort={() => toggleSort("orderQty")}
+              align="center"
+              accent="sky"
+              className="px-2"
+            >
+              الكمية المطلوبة (علبة)
+            </SortableTh>
+            {canViewCost && (
+              <SortableTh
+                direction={getSortDirection("estimatedTotal")}
+                onSort={() => toggleSort("estimatedTotal")}
+                align="left"
+                accent="sky"
+              >
+                الإجمالي التقديري
+              </SortableTh>
+            )}
+          </tr>
+        }
+        footer={
+          <TableLoadMoreFooter
+            visibleCount={pagination.visibleCount}
+            totalCount={pagination.totalCount}
+            remainingCount={pagination.remainingCount}
+            pageSize={pagination.pageSize}
+            hasMore={pagination.hasMore}
+            onLoadMore={pagination.loadMore}
+            onShowAll={pagination.showAll}
+            itemLabel="صنف"
+            accent="sky"
+            showSummaryWhenComplete
+          />
+        }
+      >
+        {pagination.visibleItems.map((p) => {
+          const qty = getOrderQty(p);
+          const assignedId = getAssignedSupplierId(p.id);
+          const isChecked = Boolean(selectedIds[p.id]);
+          const assignedSupplierObj = assignedId
+            ? suppliersById.get(assignedId)
+            : undefined;
+
+          return (
+            <tr
+              key={p.id}
+              className={`transition ${
+                isChecked ? "bg-indigo-950/30" : "hover:bg-slate-800/40"
+              }`}
+            >
+              <td className="py-2.5 px-3 text-center">
+                <input
+                  type="checkbox"
+                  checked={isChecked}
+                  onChange={(e) =>
+                    setSelectedIds((prev) => ({
+                      ...prev,
+                      [p.id]: e.target.checked,
+                    }))
+                  }
+                  className="rounded accent-indigo-500 cursor-pointer"
+                />
+              </td>
+
+              <td className="py-2.5 px-2">
+                <div className="font-bold text-white flex items-center gap-1.5">
+                  {p.stockPacks === 0 && (
+                    <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                  )}
+                  {p.name}
+                </div>
+                <div className="text-[10px] text-slate-400">
+                  {p.scientificName} |{" "}
+                  <span className="font-mono">{p.barcode}</span>
+                </div>
+              </td>
+
+              <td className="py-2.5 px-2 text-center">
+                <span
+                  className={`font-mono font-bold px-2 py-0.5 rounded-full text-[11px] ${
+                    p.stockPacks === 0
+                      ? "bg-rose-950 text-rose-300 border border-rose-800"
+                      : "bg-amber-950 text-amber-300 border border-amber-800"
+                  }`}
+                >
+                  {p.stockPacks} / {p.minLimit}
+                </span>
+              </td>
+
+              <td className="py-2.5 px-2">
+                <select
+                  value={assignedId}
+                  onChange={(e) => handleAssignSingle(p.id, e.target.value)}
+                  className={`w-full rounded-lg px-2.5 py-1.5 text-xs outline-none border transition ${
+                    assignedId
+                      ? "bg-indigo-950/40 border-indigo-700 text-indigo-100 font-bold"
+                      : "bg-slate-900 border-slate-700 text-slate-300"
+                  }`}
+                >
+                  <option value="" className="bg-slate-900 text-slate-400">
+                    — غير محدد —
+                  </option>
+                  {activeSuppliers.map((sup) => (
+                    <option
+                      key={sup.id}
+                      value={sup.id}
+                      className="bg-slate-900 text-white"
+                    >
+                      {sup.name}
+                    </option>
+                  ))}
+                  {assignedSupplierObj && !assignedSupplierObj.isActive && (
+                    <option
+                      value={assignedSupplierObj.id}
+                      className="bg-slate-900 text-slate-400"
+                    >
+                      {assignedSupplierObj.name} (مجمّد)
+                    </option>
+                  )}
+                </select>
+              </td>
+
+              {canViewCost && (
+                <td className="py-2.5 px-2 text-center font-mono text-amber-400">
+                  {p.weightedCostPrice.toFixed(2)}
+                </td>
+              )}
+
+              <td className="py-2.5 px-2 text-center">
+                <input
+                  type="number"
+                  min={0}
+                  max={500}
+                  value={qty}
+                  onChange={(e) =>
+                    setOrderQtyMap((prev) => ({
+                      ...prev,
+                      [p.id]: Math.max(0, Number(e.target.value) || 0),
+                    }))
+                  }
+                  className="w-20 bg-slate-800 border border-sky-700 rounded-lg p-1.5 text-center font-mono font-bold text-white outline-none focus:border-sky-400"
+                />
+              </td>
+
+              {canViewCost && (
+                <td className="py-2.5 px-3 text-left font-mono font-bold text-emerald-400">
+                  {(qty * p.weightedCostPrice).toFixed(2)}
+                </td>
+              )}
+            </tr>
+          );
+        })}
+      </DataTableShell>
     </div>
   );
 };
