@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { CartItemEntity, ProductEntity } from "../../domain/entities";
-import { InvoiceEntity } from "../../domain/entities/Invoice";
-import { usePosStore } from "../../application/store/usePosStore";
+import { CartItemEntity, ProductEntity } from "../../../domain/entities";
+import { InvoiceEntity } from "../../../domain/entities/Invoice";
+import { usePosStore } from "../../../application/store/usePosStore";
 import {
   buildLasaRiskGroupSet,
   parseLasaDisplay,
-} from "../../domain/utils/lasaFormatter";
+} from "../../../domain/utils/lasaFormatter";
 import {
   Printer,
   ShoppingCart,

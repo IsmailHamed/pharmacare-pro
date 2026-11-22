@@ -1,5 +1,5 @@
 import React from "react";
-import { HeldInvoiceEntity } from "../../domain/entities";
+import { HeldInvoiceEntity } from "../../../domain/entities";
 import { FileText, PauseCircle, Plus, UserCheck } from "lucide-react";
 
 interface Props {

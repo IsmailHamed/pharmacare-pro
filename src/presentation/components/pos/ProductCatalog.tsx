@@ -1,11 +1,12 @@
 import React, { forwardRef, useMemo } from "react";
-import { ProductEntity } from "../../domain/entities";
+import { ProductEntity } from "../../../domain/entities";
 import {
   buildLasaRiskGroupSet,
   parseLasaDisplay,
-} from "../../domain/utils/lasaFormatter";
-import { ProductSearchInput } from "./common/ProductSearchInput";
-import { Repeat, AlertTriangle } from "lucide-react";
+} from "../../../domain/utils/lasaFormatter";
+import { ProductSearchInput } from "../common/ProductSearchInput";
+import { DrugIdentityBadges } from "../common/DrugIdentityBadges";
+import { Repeat } from "lucide-react";
 
 interface Props {
   searchQuery: string;
@@ -32,7 +33,6 @@ export const ProductCatalog = forwardRef<HTMLInputElement, Props>(
   ) => {
     const hasQuery = searchQuery.trim().length > 0;
 
-    // اكتشاف مجموعات الأدوية المتشابهة اسماً (LASA) ضمن النتائج المعروضة حالياً
     const lasaRiskGroups = useMemo(
       () => buildLasaRiskGroupSet(products),
       [products],
@@ -40,7 +40,6 @@ export const ProductCatalog = forwardRef<HTMLInputElement, Props>(
 
     return (
       <div className="w-7/12 p-4 flex flex-col border-l border-slate-800">
-        {/* حقل البحث الضبابي والصوتي الموحّد */}
         <ProductSearchInput
           ref={ref}
           value={searchQuery}
@@ -53,7 +52,6 @@ export const ProductCatalog = forwardRef<HTMLInputElement, Props>(
           className="mb-3"
         />
 
-        {/* جدول الأدوية */}
         <div className="flex-1 overflow-y-auto rounded-xl border border-slate-800 bg-slate-900/40 no-scrollbar">
           <table className="w-full text-right text-xs">
             <thead className="bg-slate-800/90 sticky top-0 text-slate-400 border-b border-slate-700 z-10">
@@ -79,7 +77,6 @@ export const ProductCatalog = forwardRef<HTMLInputElement, Props>(
                   p.stockPacks === 0 && p.stockLooseStrips === 0;
                 const isTopSearchMatch = hasQuery && idx === 0;
 
-                // تحليل عناصر التمييز البصري (LASA): العيارات، الصفات الفارقة، والشكل الصيدلاني
                 const lasa = parseLasaDisplay(p.name, p.category);
                 const isLasaRisk =
                   lasa.lasaGroupKey.length >= 3 &&
@@ -101,67 +98,16 @@ export const ProductCatalog = forwardRef<HTMLInputElement, Props>(
                     </td>
 
                     <td className="py-2.5 px-3">
-                      {/* السطر الرئيسي: الاسم الأساسي + شارات العيار الضخمة + الشكل الصيدلاني */}
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="font-bold text-white text-[13px] tracking-tight">
-                          {lasa.baseName}
-                        </span>
-
-                        {/* العيارات الدوائية بألوان متباينة وخط ضخم لمنع أخطاء الصرف */}
-                        {lasa.strengths.map((strength) => (
-                          <span
-                            key={strength.text}
-                            dir="ltr"
-                            className={`inline-flex items-center px-2 py-0.5 rounded-md border text-[12px] font-black font-mono tracking-wide ${strength.badgeClass}`}
-                          >
-                            {strength.text}
-                          </span>
-                        ))}
-
-                        {/* الصفات الفارقة الحرجة (XR / Forte / Extra / أطفال...) */}
-                        {lasa.modifiers.map((mod) => (
-                          <span
-                            key={mod}
-                            className="inline-flex items-center px-1.5 py-0.5 rounded border bg-yellow-500/15 text-yellow-200 border-yellow-400/70 text-[11px] font-extrabold"
-                          >
-                            {mod}
-                          </span>
-                        ))}
-
-                        {/* الشكل الصيدلاني (أقراص، شراب، حقن، كبسول...) */}
-                        {lasa.dosageForm && (
-                          <span
-                            className={`inline-flex items-center px-2 py-0.5 rounded-md border text-[11px] ${lasa.dosageForm.badgeClass}`}
-                          >
-                            {lasa.dosageForm.label}
-                          </span>
-                        )}
-
-                        {p.isControlled && (
-                          <span className="bg-rose-950 text-rose-300 border border-rose-800 text-[10px] px-1.5 py-0.5 rounded font-bold">
-                            مراقب 🔒
-                          </span>
-                        )}
-
-                        {isTopSearchMatch && (
-                          <span className="bg-sky-950 text-sky-300 border border-sky-700/80 text-[9px] font-mono px-1.5 py-0.5 rounded">
-                            ↵ Enter
-                          </span>
-                        )}
-                      </div>
-
-                      {/* السطر الفرعي: المادة الفعالة + تنبيه LASA عند وجود أكثر من عيار لنفس الاسم */}
-                      <div className="text-[11px] text-slate-400 mt-0.5 flex items-center gap-2 flex-wrap">
-                        <span>{p.scientificName}</span>
-                        {isLasaRisk && (
-                          <span
-                            title="يوجد أكثر من عيار أو شكل صيدلاني لهذا الاسم في القائمة — تحقق من العيار قبل الصرف"
-                            className="inline-flex items-center gap-1 bg-amber-950/90 border border-amber-600/70 text-amber-300 text-[9px] font-extrabold px-1.5 py-0.2 rounded"
-                          >
-                            <AlertTriangle className="w-2.5 h-2.5" />
-                            LASA
-                          </span>
-                        )}
+                      <DrugIdentityBadges
+                        name={p.name}
+                        category={p.category}
+                        isControlled={p.isControlled}
+                        isLasaRisk={isLasaRisk}
+                        isTopMatch={isTopSearchMatch}
+                        size="md"
+                      />
+                      <div className="text-[11px] text-slate-400 mt-0.5">
+                        {p.scientificName}
                       </div>
                     </td>
 

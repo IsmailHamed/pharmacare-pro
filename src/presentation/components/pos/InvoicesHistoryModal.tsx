@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from "react";
-import { usePosStore } from "../../application/store/usePosStore";
-import { InvoiceEntity } from "../../domain/entities/Invoice";
+import { usePosStore } from "../../../application/store/usePosStore";
+import { InvoiceEntity } from "../../../domain/entities/Invoice";
 import {
   FileText,
   X,

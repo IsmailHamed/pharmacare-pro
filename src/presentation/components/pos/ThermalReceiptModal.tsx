@@ -1,7 +1,7 @@
 import React, { useState } from "react";
-import { InvoiceEntity } from "../../domain/entities/Invoice";
-import { usePosStore } from "../../application/store/usePosStore";
-import { printThermalReceipt } from "../../infrastructure/tauri/printer";
+import { InvoiceEntity } from "../../../domain/entities/Invoice";
+import { usePosStore } from "../../../application/store/usePosStore";
+import { printThermalReceipt } from "../../../infrastructure/tauri/printer";
 import { Printer, X, Tag, Receipt, Zap } from "lucide-react";
 
 interface Props {

@@ -1,5 +1,5 @@
 import React from "react";
-import { ProductEntity } from "../../domain/entities";
+import { ProductEntity } from "../../../domain/entities";
 import { Layers, Check } from "lucide-react";
 
 interface Props {

@@ -4,6 +4,12 @@ import {
   buildProductSearchIndex,
   searchProductsFuzzy,
 } from "../../../domain/utils/fuzzySearch";
+import { CsvCellValue, exportRowsToCsv } from "../../../domain/utils/csvExport";
+import {
+  buildWhatsAppOrderText,
+  buildWhatsAppUrl,
+  sanitizeWhatsAppPhone,
+} from "../../../domain/utils/whatsappHelper";
 import { usePosStore } from "../../../application/store/usePosStore";
 import { ProductSearchInput } from "../common/ProductSearchInput";
 import {
@@ -35,17 +41,9 @@ const UNASSIGNED_KEY = "__UNASSIGNED__";
 const getSuggestedQty = (product: ProductEntity): number =>
   Math.max(5, product.minLimit * 2 - product.stockPacks);
 
-const csvCell = (value: string | number): string =>
-  `"${String(value).replace(/"/g, '""')}"`;
-
-const sanitizeWhatsAppPhone = (phone?: string): string => {
-  if (!phone) return "";
-  return phone.replace(/\D/g, "").replace(/^00/, "");
-};
-
 /**
  * تبويب دفتر النواقص وتوزيع الطلبيات على المستودعات (Purchase Orders)
- * يستخدم نفس محرك البحث الضبابي والصوتي (fuzzySearch) وشريط البحث الموحّد في نقطة البيع
+ * يستخدم محرك البحث الضبابي والصوتي (fuzzySearch) وأدوات التصدير والمراسلة الموحّدة
  */
 export const PurchaseShortagesTab: React.FC<Props> = ({
   shortageProducts,
@@ -366,70 +364,29 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     setOrderQtyMap(resetMap);
   };
 
-  // بناء نص طلبية واتساب نظيف (خاص بالمستودع المختار أو مجمّع حسب المستودعات)
-  const buildWhatsAppOrderText = (): string => {
-    const dateStr = new Date().toLocaleDateString("ar-SA");
-
-    if (selectedSupplier) {
-      const lines = activeOrderItems.map(
-        ({ product, qty }, idx) =>
-          `${idx + 1}. ${product.name} (${product.scientificName}) — المطلوب: [${qty} علبة]`,
-      );
-
-      return [
-        `📋 *طلبية نواقص أدوية - ${settings.pharmacyName}*`,
-        `التاريخ: ${dateStr}`,
-        `إلى السادة: *${selectedSupplier.name}*${
-          selectedSupplier.salesRepName
-            ? ` (المندوب: ${selectedSupplier.salesRepName})`
-            : ""
-        }`,
-        `--------------------------------`,
-        ...lines,
-        `--------------------------------`,
-        `إجمالي الأصناف المطلوبة: ${lines.length} صنف`,
-        `هاتف الصيدلية: ${settings.phone}`,
-      ].join("\n");
-    }
-
-    // حالة عرض الكل أو الموزعة أو غير الموزعة: تجميع البنود حسب المستودع
-    const grouped = new Map<
-      string,
-      Array<{ product: ProductEntity; qty: number }>
-    >();
-
-    activeOrderItems.forEach(({ product, qty, supplier }) => {
-      const groupName = supplier ? supplier.name : "أصناف غير موزعة على مستودع";
-      const list = grouped.get(groupName) || [];
-      list.push({ product, qty });
-      grouped.set(groupName, list);
+  // توليد نص طلبية الواتساب عبر الأداة الموحّدة
+  const getOrderMessageText = (): string =>
+    buildWhatsAppOrderText({
+      pharmacyName: settings.pharmacyName,
+      pharmacyPhone: settings.phone,
+      supplier: selectedSupplier
+        ? {
+            name: selectedSupplier.name,
+            salesRepName: selectedSupplier.salesRepName,
+          }
+        : null,
+      items: activeOrderItems.map(({ product, qty, supplier }) => ({
+        name: product.name,
+        scientificName: product.scientificName,
+        qty,
+        unitLabel: "علبة",
+        supplierName: supplier?.name ?? null,
+      })),
     });
-
-    const blocks: string[] = [];
-    grouped.forEach((items, groupName) => {
-      const lines = items.map(
-        ({ product, qty }, idx) =>
-          `  ${idx + 1}. ${product.name} (${product.scientificName}) — [${qty} علبة]`,
-      );
-      blocks.push(
-        `📦 *${groupName}* (${items.length} صنف):\n${lines.join("\n")}`,
-      );
-    });
-
-    return [
-      `📋 *طلبيات نواقص أدوية - ${settings.pharmacyName}*`,
-      `التاريخ: ${dateStr}`,
-      `--------------------------------`,
-      ...blocks,
-      `--------------------------------`,
-      `إجمالي الأصناف المطلوبة: ${activeOrderItems.length} صنف`,
-      `هاتف الصيدلية: ${settings.phone}`,
-    ].join("\n");
-  };
 
   const handleCopyWhatsApp = async () => {
     if (activeOrderItems.length === 0) return;
-    const text = buildWhatsAppOrderText();
+    const text = getOrderMessageText();
     await navigator.clipboard.writeText(text);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 2500);
@@ -442,13 +399,13 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
   };
 
   const handleOpenWhatsAppDirect = () => {
-    if (activeOrderItems.length === 0 || !selectedSupplierWhatsAppPhone) return;
-    const text = buildWhatsAppOrderText();
-    const url = `https://wa.me/${selectedSupplierWhatsAppPhone}?text=${encodeURIComponent(text)}`;
+    if (activeOrderItems.length === 0 || !selectedSupplier) return;
+    const url = buildWhatsAppUrl(selectedSupplier.phone, getOrderMessageText());
+    if (!url) return;
     window.open(url, "_blank", "noopener,noreferrer");
   };
 
-  // تصدير ملف CSV متوافق مع Excel بالترميز العربي (UTF-8 BOM)
+  // تصدير ملف CSV عبر الأداة الموحّدة بترميز عربي UTF-8 BOM
   const handleExportCsvOrder = () => {
     if (activeOrderItems.length === 0) return;
 
@@ -465,47 +422,45 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
         : []),
     ];
 
-    const rows = activeOrderItems.map(({ product, qty, supplier }) => {
-      const baseColumns: (string | number)[] = [
-        csvCell(supplier?.name || "غير محدد"),
-        csvCell(product.barcode),
-        csvCell(product.name),
-        csvCell(product.scientificName),
-        product.stockPacks,
-        product.minLimit,
-        qty,
-      ];
+    const rows: CsvCellValue[][] = activeOrderItems.map(
+      ({ product, qty, supplier }) => {
+        const baseColumns: CsvCellValue[] = [
+          supplier?.name || "غير محدد",
+          product.barcode,
+          product.name,
+          product.scientificName,
+          product.stockPacks,
+          product.minLimit,
+          qty,
+        ];
 
-      if (canViewCost) {
-        baseColumns.push(
-          product.weightedCostPrice.toFixed(2),
-          (qty * product.weightedCostPrice).toFixed(2),
-        );
-      }
+        if (canViewCost) {
+          baseColumns.push(
+            product.weightedCostPrice.toFixed(2),
+            (qty * product.weightedCostPrice).toFixed(2),
+          );
+        }
 
-      return baseColumns.join(",");
-    });
+        return baseColumns;
+      },
+    );
 
-    const csvContent = "\uFEFF" + [headers.join(","), ...rows].join("\n");
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
     const datePart = new Date().toISOString().slice(0, 10);
     const safeSupplierSlug = selectedSupplier
       ? `_${selectedSupplier.name.replace(/[^\p{L}\p{N}_-]+/gu, "_")}`
       : "";
-    link.href = url;
-    link.download = `Purchase_Order${safeSupplierSlug}_${datePart}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+
+    const downloadedFileName = exportRowsToCsv({
+      fileName: `Purchase_Order${safeSupplierSlug}_${datePart}.csv`,
+      headers,
+      rows,
+    });
 
     setNotification({
       type: "success",
       message: selectedSupplier
         ? `تم تصدير طلبية (${selectedSupplier.name}) بنجاح.`
-        : `تم تصدير ملف طلبية النواقص (Purchase_Order_${datePart}.csv) بنجاح.`,
+        : `تم تصدير ملف طلبية النواقص (${downloadedFileName}) بنجاح.`,
     });
   };
 
@@ -519,7 +474,6 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
 
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
-      {/* الترويسة وملخص النواقص */}
       <div className="flex items-center justify-between flex-wrap gap-3 border-b border-slate-800 pb-3">
         <div>
           <h3 className="font-bold text-white text-sm flex items-center gap-2">

@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { ProductEntity, ControlledDrugMeta } from "../../domain/entities";
+import { ProductEntity, ControlledDrugMeta } from "../../../domain/entities";
 import { ShieldAlert } from "lucide-react";
 
 interface Props {

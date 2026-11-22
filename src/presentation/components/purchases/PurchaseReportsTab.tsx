@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { PurchaseInvoiceEntity } from "../../../domain/entities";
+import { CsvCellValue, exportRowsToCsv } from "../../../domain/utils/csvExport";
 import { usePosStore } from "../../../application/store/usePosStore";
 import {
   FileText,
@@ -32,9 +33,6 @@ const escapeHtml = (value: string): string =>
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
-
-const csvCell = (value: string | number): string =>
-  `"${String(value).replace(/"/g, '""')}"`;
 
 /**
  * تبويب تقارير وسجل فواتير الشراء والبونص بجدول كامل العرض
@@ -191,7 +189,7 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
     setExpandedIds(next);
   };
 
-  // تصدير تفصيلي لملف CSV متوافق مع Excel بترميز عربي (UTF-8 BOM) يشمل كافة حقول الفواتير والبنود
+  // تصدير تفصيلي لملف CSV عبر الأداة الموحّدة بترميز عربي (UTF-8 BOM) يشمل كافة حقول الفواتير والبنود
   const handleExportCsv = () => {
     if (filteredInvoices.length === 0) return;
 
@@ -217,78 +215,69 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
       "إجمالي السطر",
     ];
 
-    const rows: string[] = [];
+    const rows: CsvCellValue[][] = [];
     filteredInvoices.forEach((inv) => {
       const paymentLabel = inv.paymentMode === "CASH" ? "نقدي" : "آجل";
       const dateStr = inv.createdAt.slice(0, 16).replace("T", " ");
 
       if (inv.items.length === 0) {
-        rows.push(
-          [
-            csvCell(inv.id),
-            csvCell(dateStr),
-            csvCell(inv.supplierName),
-            csvCell(inv.supplierInvoiceNumber || "—"),
-            csvCell(paymentLabel),
-            inv.totalAmount.toFixed(2),
-            inv.totalBonusValue.toFixed(2),
-            csvCell("—"),
-            csvCell("—"),
-            csvCell("—"),
-            csvCell("—"),
-            0,
-            0,
-            "0.00",
-            0,
-            "0.00",
-            "0.00",
-            "0.00",
-            "0.00",
-          ].join(","),
-        );
+        rows.push([
+          inv.id,
+          dateStr,
+          inv.supplierName,
+          inv.supplierInvoiceNumber || "—",
+          paymentLabel,
+          inv.totalAmount.toFixed(2),
+          inv.totalBonusValue.toFixed(2),
+          "—",
+          "—",
+          "—",
+          "—",
+          0,
+          0,
+          "0.00",
+          0,
+          "0.00",
+          "0.00",
+          "0.00",
+          "0.00",
+        ]);
         return;
       }
 
       inv.items.forEach((item) => {
-        rows.push(
-          [
-            csvCell(inv.id),
-            csvCell(dateStr),
-            csvCell(inv.supplierName),
-            csvCell(inv.supplierInvoiceNumber || "—"),
-            csvCell(paymentLabel),
-            inv.totalAmount.toFixed(2),
-            inv.totalBonusValue.toFixed(2),
-            csvCell(item.productName),
-            csvCell(item.barcode),
-            csvCell(item.batchNumber),
-            csvCell(item.expiryDate),
-            item.purchasedPacks,
-            item.bonusPacks,
-            item.purchasePricePerPack.toFixed(2),
-            item.previousStockPacks,
-            item.previousWeightedCost.toFixed(2),
-            item.newWeightedCost.toFixed(2),
-            item.newPackSalePrice > 0
-              ? item.newPackSalePrice.toFixed(2)
-              : csvCell("بدون تغيير"),
-            item.lineTotal.toFixed(2),
-          ].join(","),
-        );
+        rows.push([
+          inv.id,
+          dateStr,
+          inv.supplierName,
+          inv.supplierInvoiceNumber || "—",
+          paymentLabel,
+          inv.totalAmount.toFixed(2),
+          inv.totalBonusValue.toFixed(2),
+          item.productName,
+          item.barcode,
+          item.batchNumber,
+          item.expiryDate,
+          item.purchasedPacks,
+          item.bonusPacks,
+          item.purchasePricePerPack.toFixed(2),
+          item.previousStockPacks,
+          item.previousWeightedCost.toFixed(2),
+          item.newWeightedCost.toFixed(2),
+          item.newPackSalePrice > 0
+            ? item.newPackSalePrice.toFixed(2)
+            : "بدون تغيير",
+          item.lineTotal.toFixed(2),
+        ]);
       });
     });
 
-    const csvContent = "\uFEFF" + [headers.join(","), ...rows].join("\n");
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
     const datePart = new Date().toISOString().slice(0, 10);
-    link.href = url;
-    link.download = `Purchase_Invoices_Report_${datePart}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    exportRowsToCsv({
+      fileName: `Purchase_Invoices_Report_${datePart}.csv`,
+      headers,
+      rows,
+    });
 
     setNotification({
       type: "success",
