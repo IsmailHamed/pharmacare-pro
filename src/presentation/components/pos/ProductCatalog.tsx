@@ -16,6 +16,8 @@ interface Props {
   onAddToCart: (product: ProductEntity, unit: "pack" | "strip") => void;
   onShowAlternatives: (product: ProductEntity) => void;
   invoiceMode: "SALE" | "RETURN";
+  // زر تبديل وضع العرض (مقسوم / بحث منسدل) يُعرض بمحاذاة شريط البحث دون استهلاك ارتفاع إضافي
+  layoutToggle?: React.ReactNode;
 }
 
 export const ProductCatalog = forwardRef<HTMLInputElement, Props>(
@@ -28,11 +30,13 @@ export const ProductCatalog = forwardRef<HTMLInputElement, Props>(
       onAddToCart,
       onShowAlternatives,
       invoiceMode,
+      layoutToggle,
     },
     ref,
   ) => {
     const hasQuery = searchQuery.trim().length > 0;
 
+    // اكتشاف مجموعات الأدوية المتشابهة اسماً (LASA) ضمن النتائج المعروضة حالياً
     const lasaRiskGroups = useMemo(
       () => buildLasaRiskGroupSet(products),
       [products],
@@ -40,18 +44,23 @@ export const ProductCatalog = forwardRef<HTMLInputElement, Props>(
 
     return (
       <div className="w-7/12 p-4 flex flex-col border-l border-slate-800">
-        <ProductSearchInput
-          ref={ref}
-          value={searchQuery}
-          onChange={onSearchChange}
-          onKeyDown={onSearchEnter}
-          resultsCount={products.length}
-          accent="blue"
-          inputBgClass="bg-slate-900"
-          shortcutHint="F2"
-          className="mb-3"
-        />
+        {/* صف شريط البحث الضبابي والصوتي الموحّد + زر التبديل إلى وضع البحث المنسدل */}
+        <div className="flex items-center gap-2 mb-3">
+          <ProductSearchInput
+            ref={ref}
+            value={searchQuery}
+            onChange={onSearchChange}
+            onKeyDown={onSearchEnter}
+            resultsCount={products.length}
+            accent="blue"
+            inputBgClass="bg-slate-900"
+            shortcutHint="F2"
+            className="flex-1"
+          />
+          {layoutToggle}
+        </div>
 
+        {/* جدول الأدوية */}
         <div className="flex-1 overflow-y-auto rounded-xl border border-slate-800 bg-slate-900/40 no-scrollbar">
           <table className="w-full text-right text-xs">
             <thead className="bg-slate-800/90 sticky top-0 text-slate-400 border-b border-slate-700 z-10">
@@ -77,6 +86,7 @@ export const ProductCatalog = forwardRef<HTMLInputElement, Props>(
                   p.stockPacks === 0 && p.stockLooseStrips === 0;
                 const isTopSearchMatch = hasQuery && idx === 0;
 
+                // تحليل مفتاح مجموعة LASA لاكتشاف تشابه الأسماء وتلوين الصف للتحذير البصري
                 const lasa = parseLasaDisplay(p.name, p.category);
                 const isLasaRisk =
                   lasa.lasaGroupKey.length >= 3 &&
@@ -98,6 +108,7 @@ export const ProductCatalog = forwardRef<HTMLInputElement, Props>(
                     </td>
 
                     <td className="py-2.5 px-3">
+                      {/* السطر الرئيسي: هوية الدواء وشارات العيارات والشكل الصيدلاني وتنبيه LASA */}
                       <DrugIdentityBadges
                         name={p.name}
                         category={p.category}
@@ -106,6 +117,7 @@ export const ProductCatalog = forwardRef<HTMLInputElement, Props>(
                         isTopMatch={isTopSearchMatch}
                         size="md"
                       />
+                      {/* السطر الفرعي: المادة الفعالة */}
                       <div className="text-[11px] text-slate-400 mt-0.5">
                         {p.scientificName}
                       </div>

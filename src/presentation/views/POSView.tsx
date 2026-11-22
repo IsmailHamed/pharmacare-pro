@@ -13,6 +13,7 @@ import {
 } from "../../domain/utils/fuzzySearch";
 import { SoundFeedbackService } from "../../infrastructure/audio/SoundFeedbackService";
 import { ProductCatalog } from "../components/pos/ProductCatalog";
+import { PosDropdownSearchBar } from "../components/pos/PosDropdownSearchBar";
 import { CartView } from "../components/pos/CartView";
 import { ControlledDrugModal } from "../components/pos/ControlledDrugModal";
 import { AlternativesModal } from "../components/pos/AlternativesModal";
@@ -25,7 +26,27 @@ import { useBarcodeScanner } from "../hooks/useBarcodeScanner";
 import { usePosZeroMouseShortcuts } from "../hooks/usePosZeroMouseShortcuts";
 import { useHeldInvoicesShortcuts } from "../hooks/useHeldInvoicesShortcuts";
 import { ProductEntity, DrugInteractionAlert } from "../../domain/entities";
-import { AlertTriangle, Inbox, ArrowRightLeft } from "lucide-react";
+import {
+  AlertTriangle,
+  Inbox,
+  ArrowRightLeft,
+  Columns2,
+  PanelTop,
+} from "lucide-react";
+
+// أوضاع عرض نقطة البيع: الوضع المقسوم الكلاسيكي (جدول + سلة) أو وضع البحث المنسدل (سلة موسّعة)
+type PosLayoutMode = "split" | "dropdown";
+const POS_LAYOUT_STORAGE_KEY = "pharmacare_pos_layout_mode";
+
+// قراءة تفضيل وضع العرض المحفوظ محلياً للجهاز مع الرجوع الآمن للوضع المقسوم عند أول تشغيل
+const loadSavedPosLayoutMode = (): PosLayoutMode => {
+  try {
+    const saved = window.localStorage.getItem(POS_LAYOUT_STORAGE_KEY);
+    return saved === "dropdown" ? "dropdown" : "split";
+  } catch {
+    return "split";
+  }
+};
 
 /**
  * شاشة نقطة البيع الموحدة (POS)
@@ -37,6 +58,32 @@ export const POSView: React.FC = () => {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
+  // حالة وضع عرض نقطة البيع المحفوظة محلياً (مقسوم أو بحث منسدل)
+  const [layoutMode, setLayoutMode] = useState<PosLayoutMode>(
+    loadSavedPosLayoutMode,
+  );
+  // تتبّع الصنف المظلّل حالياً داخل القائمة المنسدلة لربطه باختصار البدائل العلمية (F4)
+  const [highlightedDropdownProduct, setHighlightedDropdownProduct] =
+    useState<ProductEntity | null>(null);
+
+  // التبديل بين وضعي العرض وحفظ التفضيل في localStorage مع إعادة التركيز تلقائياً لخانة البحث
+  const handleToggleLayoutMode = useCallback(() => {
+    setLayoutMode((prev) => {
+      const next: PosLayoutMode = prev === "split" ? "dropdown" : "split";
+      try {
+        window.localStorage.setItem(POS_LAYOUT_STORAGE_KEY, next);
+      } catch {
+        // تجاهل خطأ التخزين في حال كان الوصول إلى localStorage مقيّداً
+      }
+      return next;
+    });
+    setHighlightedDropdownProduct(null);
+    window.setTimeout(() => {
+      searchInputRef.current?.focus();
+    }, 40);
+  }, []);
+
+  // التحقق من حالة الوردية المفتوحة وآخر وردية مغلقة لحساب العهدة المرحلة
   const openShift = useMemo(
     () => store.shifts.find((s) => s.status === "OPEN"),
     [store.shifts],
@@ -48,6 +95,7 @@ export const POSView: React.FC = () => {
 
   const isShiftLocked = !openShift;
 
+  // اكتشاف ما إذا كان المستخدم النشط يختلف عن صاحب عهدة الدرج المفتوحة حالياً
   const isDifferentShiftOwner = Boolean(
     openShift &&
     store.currentUser &&
@@ -57,6 +105,7 @@ export const POSView: React.FC = () => {
         openShift.pharmacistName.trim() !== store.currentUser.name.trim())),
   );
 
+  // تعطيل قارئ الباركود واختصارات لوحة المفاتيح عند فتح أي نافذة منبثقة أو عند قفل الوردية
   const isAnyModalOpen =
     isShiftLocked ||
     isHistoryOpen ||
@@ -64,8 +113,10 @@ export const POSView: React.FC = () => {
     Boolean(store.selectedProductForAlternatives) ||
     Boolean(store.lastPrintedInvoice);
 
+  // ربط قارئ الباركود الليزري وتنظيف حقل البحث بعد كل مسح ناجح
   useBarcodeScanner(!isAnyModalOpen, () => setSearchQuery(""));
 
+  // اختصارات «صفر ماوس» (+ / - / Tab / Delete) للتحكم السريع بآخر صنف مضاف للسلة
   usePosZeroMouseShortcuts({
     enabled: !isAnyModalOpen,
     searchQuery,
@@ -77,12 +128,14 @@ export const POSView: React.FC = () => {
     onRemoveItem: store.removeFromCart,
   });
 
+  // اختصارات التبديل السريع بين الفواتير المعلّقة (Alt + 1 .. Alt + 9)
   useHeldInvoicesShortcuts({
     enabled: !isAnyModalOpen,
     heldInvoices: store.heldInvoices,
     onResumeInvoice: store.resumeInvoice,
   });
 
+  // بناء فهرس البحث الضبابي والصوتي مرة واحدة عند تغيّر قائمة الأدوية
   const productSearchIndex = useMemo(
     () => buildProductSearchIndex(store.products),
     [store.products],
@@ -103,6 +156,7 @@ export const POSView: React.FC = () => {
     [cartSubtotal, store.discountPercent],
   );
 
+  // معالج الضغط على Enter داخل خانة البحث (مسح مباشر للباركود/الفاتورة أو إدراج أول مطابقة)
   const handleSearchEnter = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
       if (e.key !== "Enter" || isShiftLocked) return;
@@ -158,6 +212,7 @@ export const POSView: React.FC = () => {
     [store.invoices],
   );
 
+  // اختصارات الوظائف الأساسية لنقطة البيع (F1 إتمام البيع، F2 البحث، F4 البدائل، F5 تعليق، F6 مرتجع)
   useKeyboardShortcuts({
     onCheckout: () => {
       if (isShiftLocked) return;
@@ -170,7 +225,12 @@ export const POSView: React.FC = () => {
     },
     onAlternatives: () => {
       if (isShiftLocked) return;
-      const target = store.cart[0]?.product || filteredProducts[0] || null;
+      // أولوية لآخر صنف في السلة، ثم الصنف المظلّل في القائمة المنسدلة، ثم أول نتيجة بحث
+      const target =
+        store.cart[0]?.product ||
+        highlightedDropdownProduct ||
+        filteredProducts[0] ||
+        null;
       if (target) store.setSelectedProductForAlternatives(target);
     },
     onHoldResume: () => {
@@ -193,8 +253,35 @@ export const POSView: React.FC = () => {
     }
   }, [isAnyModalOpen]);
 
+  // زر تبديل وضع العرض المدمج بمحاذاة خانة البحث في كلا الوضعين دون استهلاك ارتفاع إضافي
+  const layoutToggleButton = (
+    <button
+      type="button"
+      onClick={handleToggleLayoutMode}
+      title={
+        layoutMode === "split"
+          ? "التبديل إلى وضع البحث المنسدل (إخفاء الجدول وتوسيع السلة على كامل الشاشة)"
+          : "العودة إلى الوضع الكلاسيكي المقسوم (جدول الأدوية + السلة)"
+      }
+      className="shrink-0 h-[42px] px-3 rounded-xl border border-slate-700 bg-slate-900 hover:bg-slate-800 hover:border-blue-500/70 text-slate-200 hover:text-white text-xs font-bold inline-flex items-center gap-1.5 transition"
+    >
+      {layoutMode === "split" ? (
+        <>
+          <PanelTop className="w-4 h-4 text-sky-400" />
+          <span className="hidden xl:inline">بحث منسدل</span>
+        </>
+      ) : (
+        <>
+          <Columns2 className="w-4 h-4 text-sky-400" />
+          <span className="hidden xl:inline">عرض مقسوم</span>
+        </>
+      )}
+    </button>
+  );
+
   return (
     <div className="relative flex-1 flex flex-col overflow-hidden">
+      {/* شريط تنبيه عند اختلاف المستخدم النشط عن صاحب عهدة الوردية المفتوحة */}
       {isDifferentShiftOwner && openShift && store.currentUser && (
         <div className="bg-amber-950/60 border-b border-amber-700/70 px-4 py-1.5 flex items-center justify-between gap-3 text-[11px] text-amber-200">
           <div className="flex items-center gap-2 min-w-0">
@@ -212,10 +299,12 @@ export const POSView: React.FC = () => {
         </div>
       )}
 
+      {/* شريط تحذيرات التداخلات الدوائية الحرجة بين أصناف السلة */}
       {store.interactionAlerts.length > 0 && (
         <InteractionAlertBar alerts={store.interactionAlerts} />
       )}
 
+      {/* شريط الفواتير المعلّقة وسجل الفواتير السريع */}
       <HeldInvoicesBar
         heldInvoices={store.heldInvoices}
         onResume={(id) => store.resumeInvoice(id)}
@@ -227,42 +316,91 @@ export const POSView: React.FC = () => {
         onOpenHistory={() => setIsHistoryOpen(true)}
       />
 
-      <div className="flex-1 flex overflow-hidden">
-        <ProductCatalog
-          ref={searchInputRef}
-          searchQuery={searchQuery}
-          onSearchChange={setSearchQuery}
-          onSearchEnter={handleSearchEnter}
-          products={filteredProducts}
-          onAddToCart={handleAddToCart}
-          onShowAlternatives={(p) => store.setSelectedProductForAlternatives(p)}
-          invoiceMode={store.invoiceMode}
-        />
+      {/* تبديل التخطيط بين الوضع الكلاسيكي المقسوم (جدول + سلة) ووضع البحث المنسدل (سلة موسّعة) */}
+      {layoutMode === "split" ? (
+        <div className="flex-1 flex overflow-hidden">
+          <ProductCatalog
+            ref={searchInputRef}
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            onSearchEnter={handleSearchEnter}
+            products={filteredProducts}
+            onAddToCart={handleAddToCart}
+            onShowAlternatives={(p) =>
+              store.setSelectedProductForAlternatives(p)
+            }
+            invoiceMode={store.invoiceMode}
+            layoutToggle={layoutToggleButton}
+          />
 
-        <CartView
-          cart={store.cart}
-          subtotal={cartSubtotal}
-          discountPercent={store.discountPercent}
-          paymentMode={store.paymentMode}
-          customerName={store.customerName}
-          invoiceMode={store.invoiceMode}
-          heldCount={store.heldInvoices.length}
-          returnSourceInvoiceId={store.returnSourceInvoiceId}
-          recentSaleInvoices={recentSaleInvoices}
-          isShortcutsPaused={isAnyModalOpen}
-          onLoadInvoiceForReturn={store.loadInvoiceForReturn}
-          onSetDiscount={store.setDiscountPercent}
-          onSetPaymentMode={store.setPaymentMode}
-          onSetCustomerName={store.setCustomerName}
-          updateQty={store.updateCartQty}
-          onToggleUnit={store.toggleCartItemUnit}
-          removeFromCart={store.removeFromCart}
-          onCheckout={() => void store.completeCheckout()}
-          onToggleReturn={store.toggleReturnMode}
-          onHold={() => store.holdCurrentInvoice()}
-        />
-      </div>
+          <CartView
+            cart={store.cart}
+            subtotal={cartSubtotal}
+            discountPercent={store.discountPercent}
+            paymentMode={store.paymentMode}
+            customerName={store.customerName}
+            invoiceMode={store.invoiceMode}
+            heldCount={store.heldInvoices.length}
+            returnSourceInvoiceId={store.returnSourceInvoiceId}
+            recentSaleInvoices={recentSaleInvoices}
+            isShortcutsPaused={isAnyModalOpen}
+            onLoadInvoiceForReturn={store.loadInvoiceForReturn}
+            onSetDiscount={store.setDiscountPercent}
+            onSetPaymentMode={store.setPaymentMode}
+            onSetCustomerName={store.setCustomerName}
+            updateQty={store.updateCartQty}
+            onToggleUnit={store.toggleCartItemUnit}
+            removeFromCart={store.removeFromCart}
+            onCheckout={() => void store.completeCheckout()}
+            onToggleReturn={store.toggleReturnMode}
+            onHold={() => store.holdCurrentInvoice()}
+          />
+        </div>
+      ) : (
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <PosDropdownSearchBar
+            ref={searchInputRef}
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            onDirectSearchEnter={handleSearchEnter}
+            products={filteredProducts}
+            allProducts={store.products}
+            onAddToCart={handleAddToCart}
+            onShowAlternatives={(p) =>
+              store.setSelectedProductForAlternatives(p)
+            }
+            onHighlightedProductChange={setHighlightedDropdownProduct}
+            invoiceMode={store.invoiceMode}
+            layoutToggle={layoutToggleButton}
+          />
 
+          <CartView
+            isExpanded
+            cart={store.cart}
+            subtotal={cartSubtotal}
+            discountPercent={store.discountPercent}
+            paymentMode={store.paymentMode}
+            customerName={store.customerName}
+            invoiceMode={store.invoiceMode}
+            heldCount={store.heldInvoices.length}
+            returnSourceInvoiceId={store.returnSourceInvoiceId}
+            recentSaleInvoices={recentSaleInvoices}
+            isShortcutsPaused={isAnyModalOpen}
+            onLoadInvoiceForReturn={store.loadInvoiceForReturn}
+            onSetDiscount={store.setDiscountPercent}
+            onSetPaymentMode={store.setPaymentMode}
+            onSetCustomerName={store.setCustomerName}
+            updateQty={store.updateCartQty}
+            onToggleUnit={store.toggleCartItemUnit}
+            removeFromCart={store.removeFromCart}
+            onCheckout={() => void store.completeCheckout()}
+            onToggleReturn={store.toggleReturnMode}
+            onHold={() => store.holdCurrentInvoice()}
+          />
+        </div>
+      )}
+
+      {/* طبقة قفل نقطة البيع عند عدم وجود وردية مفتوحة */}
       {isShiftLocked && (
         <ShiftLockOverlay
           currentUser={store.currentUser}
@@ -272,6 +410,7 @@ export const POSView: React.FC = () => {
         />
       )}
 
+      {/* نافذة توثيق صرف الأدوية المراقبة */}
       <ControlledDrugModal
         pendingItem={store.pendingControlledItem}
         onClose={() => store.setPendingControlledItem(null)}
@@ -280,6 +419,7 @@ export const POSView: React.FC = () => {
         }
       />
 
+      {/* نافذة البدائل العلمية المتوفرة (F4) */}
       <AlternativesModal
         targetProduct={store.selectedProductForAlternatives}
         alternatives={alternatives}
@@ -290,11 +430,13 @@ export const POSView: React.FC = () => {
         }}
       />
 
+      {/* نافذة معاينة وطباعة الإيصال الحراري */}
       <ThermalReceiptModal
         invoice={store.lastPrintedInvoice}
         onClose={() => store.setLastPrintedInvoice(null)}
       />
 
+      {/* نافذة سجل فواتير المبيعات والمرتجعات */}
       <InvoicesHistoryModal
         isOpen={isHistoryOpen}
         onClose={() => setIsHistoryOpen(false)}
