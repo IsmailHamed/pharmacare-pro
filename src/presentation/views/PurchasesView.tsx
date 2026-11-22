@@ -5,7 +5,6 @@ import { ProductEntity } from "../../domain/entities";
 import { parseLasaDisplay } from "../../domain/utils/lasaFormatter";
 import {
   PackagePlus,
-  CheckCircle2,
   Trash2,
   ClipboardList,
   FileText,
@@ -65,7 +64,6 @@ export const PurchasesView: React.FC = () => {
   const [paymentMode, setPaymentMode] = useState<"CASH" | "CREDIT">("CASH");
   const [lines, setLines] = useState<DraftLine[]>([]);
   const [lastAddedUid, setLastAddedUid] = useState<string | null>(null);
-  const [toast, setToast] = useState("");
 
   const batchInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
@@ -185,10 +183,6 @@ export const PurchasesView: React.FC = () => {
       setSupplierInvoiceNumber("");
       setLines([]);
       setLastAddedUid(null);
-      setToast(
-        "تم حفظ فاتورة المشتريات وتحديث التكلفة المرجحة والمخزون بنجاح!",
-      );
-      window.setTimeout(() => setToast(""), 3500);
     } catch (err) {
       alert(err instanceof Error ? err.message : "خطأ غير متوقع");
     }
@@ -217,21 +211,6 @@ export const PurchasesView: React.FC = () => {
 
   return (
     <div className="flex-1 p-6 overflow-y-auto bg-slate-950 text-slate-200 text-xs">
-      {toast && (
-        <div className="mb-4 bg-emerald-900/80 border border-emerald-600 text-emerald-200 p-3 rounded-xl flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <CheckCircle2 className="w-5 h-5 shrink-0" /> {toast}
-          </div>
-          <button
-            type="button"
-            onClick={() => setActiveSubTab("reports")}
-            className="text-[11px] font-bold bg-emerald-950/80 hover:bg-emerald-950 border border-emerald-700 px-3 py-1 rounded-lg transition"
-          >
-            عرض في تقارير الشراء
-          </button>
-        </div>
-      )}
-
       {/* الترويسة العليا الموحدة + زر إدارة دليل المستودعات */}
       <div className="mb-4 flex items-center justify-between flex-wrap gap-3">
         <div>
