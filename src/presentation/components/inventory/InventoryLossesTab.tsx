@@ -1,5 +1,23 @@
 import React, { useMemo, useState } from "react";
-import { ClipboardCheck, Search } from "lucide-react";
+import {
+  DEFAULT_DATE_RANGE,
+  DateRangeValue,
+  isDateRangeActive,
+  matchesDateRange,
+} from "../common/table/dateRangeUtils";
+import { DateRangeFilter } from "../common/table/DateRangeFilter";
+import {
+  SortAccessors,
+  SortDirection,
+  SortState,
+  useTableSort,
+} from "../common/table/useTableSort";
+import { useTablePagination } from "../common/table/useTablePagination";
+import { SortableTh } from "../common/table/SortableTh";
+import { DataTableToolbar } from "../common/table/DataTableToolbar";
+import { DataTableShell } from "../common/table/DataTableShell";
+import { TableLoadMoreFooter } from "../common/table/TableLoadMoreFooter";
+import { ClipboardCheck } from "lucide-react";
 
 export interface InventoryLossLog {
   id: string;
@@ -13,22 +31,81 @@ interface Props {
   logs: InventoryLossLog[];
 }
 
+// مفاتيح الأعمدة القابلة للفرز التفاعلي في سجل التوالف والفروقات الجردية
+type LossSortKey = "id" | "title" | "notes" | "createdAt" | "amount";
+
+// دوال استخراج قيم الأعمدة للفرز (مُعرّفة خارج المكوّن للحفاظ على ثبات المرجع)
+const LOSS_SORT_ACCESSORS: SortAccessors<InventoryLossLog, LossSortKey> = {
+  id: (log) => log.id,
+  title: (log) => log.title,
+  notes: (log) => log.notes || null,
+  createdAt: (log) => new Date(log.createdAt),
+  amount: (log) => log.amount,
+};
+
+// الترتيب الافتراضي للسجل (الأحدث أولاً) والاتجاه الابتدائي لكل عمود عند النقر الأول
+const DEFAULT_LOSS_SORT: SortState<LossSortKey> = {
+  key: "createdAt",
+  direction: "desc",
+};
+
+const LOSS_DEFAULT_DIRECTIONS: Partial<Record<LossSortKey, SortDirection>> = {
+  id: "asc",
+  title: "asc",
+  notes: "asc",
+  createdAt: "desc",
+  amount: "desc",
+};
+
 /**
  * تبويب سجل التوالف والكسور والفروقات الجردية المقيدة مالياً
+ * مبني على نواة الجداول الموحّدة (فلاتر التواريخ السريعة، فرز الأعمدة، والتحميل التدريجي)
  */
 export const InventoryLossesTab: React.FC<Props> = ({ logs }) => {
   const [searchQuery, setSearchQuery] = useState("");
+  // حالة نطاق التواريخ الموحّدة (الأزرار السريعة + النطاق اليدوي من/إلى)
+  const [dateRange, setDateRange] =
+    useState<DateRangeValue>(DEFAULT_DATE_RANGE);
 
-  const filteredLogs = useMemo(() => {
+  // تصفية السجلات حسب نطاق التواريخ ونص البحث (رقم التسوية، البيان، الملاحظات)
+  const matchedLogs = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return logs;
-    return logs.filter(
-      (log) =>
+
+    return logs.filter((log) => {
+      if (!matchesDateRange(log.createdAt, dateRange)) return false;
+      if (!q) return true;
+
+      return (
         log.id.toLowerCase().includes(q) ||
         log.title.toLowerCase().includes(q) ||
-        (log.notes || "").toLowerCase().includes(q),
-    );
-  }, [logs, searchQuery]);
+        (log.notes || "").toLowerCase().includes(q)
+      );
+    });
+  }, [logs, searchQuery, dateRange]);
+
+  // تطبيق الفرز التفاعلي بالأعمدة على السجلات المطابقة
+  const {
+    sortedItems: filteredLogs,
+    sortState,
+    toggleSort,
+    getSortDirection,
+  } = useTableSort(matchedLogs, {
+    accessors: LOSS_SORT_ACCESSORS,
+    defaultSort: DEFAULT_LOSS_SORT,
+    defaultDirections: LOSS_DEFAULT_DIRECTIONS,
+  });
+
+  // التحميل التدريجي للصفوف (50 تسوية في الدفعة) مع إعادة ضبط تلقائية عند تغيّر الفلاتر أو الفرز
+  const pagination = useTablePagination(filteredLogs, {
+    pageSize: 50,
+    resetDeps: [
+      searchQuery,
+      dateRange.from,
+      dateRange.to,
+      sortState?.key,
+      sortState?.direction,
+    ],
+  });
 
   const totalLossAmount = useMemo(
     () => logs.reduce((sum, e) => sum + e.amount, 0),
@@ -39,6 +116,14 @@ export const InventoryLossesTab: React.FC<Props> = ({ logs }) => {
     () => filteredLogs.reduce((sum, e) => sum + e.amount, 0),
     [filteredLogs],
   );
+
+  const hasActiveFilters =
+    Boolean(searchQuery.trim()) || isDateRangeActive(dateRange);
+
+  const handleResetFilters = () => {
+    setSearchQuery("");
+    setDateRange(DEFAULT_DATE_RANGE);
+  };
 
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
@@ -73,79 +158,130 @@ export const InventoryLossesTab: React.FC<Props> = ({ logs }) => {
         </div>
       </div>
 
-      {/* شريط البحث داخل سجل التوالف */}
-      {logs.length > 0 && (
-        <div className="flex items-center justify-between gap-3 bg-slate-950/70 border border-slate-800 p-2.5 rounded-xl">
-          <div className="relative flex-1">
-            <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="ابحث برقم التسوية، اسم الصنف، أو تفاصيل الملاحظات..."
-              className="w-full bg-slate-900 border border-slate-800 rounded-lg pr-9 pl-3 py-1.5 text-white outline-none focus:border-rose-500"
+      {/* الهيكل الموحّد للجدول (framed=false للحفاظ على البطاقة الخارجية الحالية) */}
+      <DataTableShell
+        framed={false}
+        totalCount={logs.length}
+        filteredCount={filteredLogs.length}
+        searchQuery={searchQuery}
+        onResetFilters={hasActiveFilters ? handleResetFilters : undefined}
+        stickyHeader
+        emptyState={{
+          icon: ClipboardCheck,
+          title: "لا توجد توالف أو فروقات جردية مقيدة مالياً حتى الآن.",
+          description:
+            "عند إجراء أي تسوية عجز أو تلف من تبويب المخزون ستظهر هنا تلقائياً مع قيمتها بالتكلفة.",
+        }}
+        noResultsState={{
+          description:
+            "لا توجد تسويات مطابقة لعبارة البحث أو نطاق التواريخ المحدد.",
+        }}
+        toolbar={
+          logs.length > 0 ? (
+            <DataTableToolbar
+              accent="rose"
+              searchValue={searchQuery}
+              onSearchChange={setSearchQuery}
+              searchPlaceholder="ابحث برقم التسوية، اسم الصنف، أو تفاصيل الملاحظات..."
+              secondaryFilters={
+                <DateRangeFilter
+                  value={dateRange}
+                  onChange={setDateRange}
+                  accent="rose"
+                />
+              }
+              hasActiveFilters={hasActiveFilters}
+              onResetFilters={handleResetFilters}
+              visibleCount={pagination.visibleCount}
+              filteredCount={filteredLogs.length}
+              totalCount={logs.length}
+              itemLabel="تسوية"
+              metaExtra={
+                <span className="font-mono text-slate-400">
+                  مجموع المطابق:{" "}
+                  <b className="text-rose-400">
+                    -{filteredLossAmount.toFixed(2)} ر.س
+                  </b>
+                </span>
+              }
             />
-          </div>
-          <div className="text-slate-400 font-mono shrink-0">
-            النتائج: <b className="text-white">{filteredLogs.length}</b> •
-            المجموع:{" "}
-            <b className="text-rose-400">
-              -{filteredLossAmount.toFixed(2)} ر.س
-            </b>
-          </div>
-        </div>
-      )}
-
-      {/* جدول السجلات أو الحالة الفارغة */}
-      {logs.length === 0 ? (
-        <div className="py-16 flex flex-col items-center justify-center text-slate-500 text-center gap-2">
-          <ClipboardCheck className="w-9 h-9 text-slate-700 stroke-1" />
-          <p className="font-bold text-slate-400">
-            لا توجد توالف أو فروقات جردية مقيدة مالياً حتى الآن.
-          </p>
-          <p className="text-[11px] text-slate-500">
-            عند إجراء أي تسوية عجز أو تلف من تبويب المخزون ستظهر هنا تلقائياً مع
-            قيمتها بالتكلفة.
-          </p>
-        </div>
-      ) : filteredLogs.length === 0 ? (
-        <div className="py-12 text-center text-slate-500">
-          لا توجد تسويات مطابقة لـ «{searchQuery.trim()}».
-        </div>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-right text-[11px]">
-            <thead>
-              <tr className="border-b border-slate-800 text-slate-400">
-                <th className="py-2 px-2">رقم التسوية</th>
-                <th className="py-2 px-2">البيان والصنف</th>
-                <th className="py-2 px-2">التفاصيل والملاحظات</th>
-                <th className="py-2 px-2">التاريخ</th>
-                <th className="py-2 px-2">قيمة الخسارة بالتكلفة</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/60 font-mono">
-              {filteredLogs.map((log) => (
-                <tr key={log.id} className="hover:bg-slate-800/40 transition">
-                  <td className="py-2.5 px-2 font-bold text-white">{log.id}</td>
-                  <td className="py-2.5 px-2 font-sans font-bold text-amber-300">
-                    {log.title}
-                  </td>
-                  <td className="py-2.5 px-2 font-sans text-slate-400">
-                    {log.notes || "—"}
-                  </td>
-                  <td className="py-2.5 px-2 text-slate-400">
-                    {new Date(log.createdAt).toLocaleString("ar-SA")}
-                  </td>
-                  <td className="py-2.5 px-2 font-bold text-rose-400">
-                    -{log.amount.toFixed(2)} ر.س
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+          ) : undefined
+        }
+        header={
+          <tr>
+            <SortableTh
+              direction={getSortDirection("id")}
+              onSort={() => toggleSort("id")}
+              accent="rose"
+            >
+              رقم التسوية
+            </SortableTh>
+            <SortableTh
+              direction={getSortDirection("title")}
+              onSort={() => toggleSort("title")}
+              accent="rose"
+            >
+              البيان والصنف
+            </SortableTh>
+            <SortableTh
+              direction={getSortDirection("notes")}
+              onSort={() => toggleSort("notes")}
+              accent="rose"
+            >
+              التفاصيل والملاحظات
+            </SortableTh>
+            <SortableTh
+              direction={getSortDirection("createdAt")}
+              onSort={() => toggleSort("createdAt")}
+              accent="rose"
+            >
+              التاريخ
+            </SortableTh>
+            <SortableTh
+              direction={getSortDirection("amount")}
+              onSort={() => toggleSort("amount")}
+              accent="rose"
+            >
+              قيمة الخسارة بالتكلفة
+            </SortableTh>
+          </tr>
+        }
+        footer={
+          <TableLoadMoreFooter
+            visibleCount={pagination.visibleCount}
+            totalCount={pagination.totalCount}
+            remainingCount={pagination.remainingCount}
+            pageSize={pagination.pageSize}
+            hasMore={pagination.hasMore}
+            onLoadMore={pagination.loadMore}
+            onShowAll={pagination.showAll}
+            itemLabel="تسوية"
+            accent="rose"
+            showSummaryWhenComplete
+          />
+        }
+      >
+        {pagination.visibleItems.map((log) => (
+          <tr
+            key={log.id}
+            className="hover:bg-slate-800/40 transition font-mono"
+          >
+            <td className="py-2.5 px-3 font-bold text-white">{log.id}</td>
+            <td className="py-2.5 px-3 font-sans font-bold text-amber-300">
+              {log.title}
+            </td>
+            <td className="py-2.5 px-3 font-sans text-slate-400">
+              {log.notes || "—"}
+            </td>
+            <td className="py-2.5 px-3 text-slate-400">
+              {new Date(log.createdAt).toLocaleString("ar-SA")}
+            </td>
+            <td className="py-2.5 px-3 font-bold text-rose-400">
+              -{log.amount.toFixed(2)} ر.س
+            </td>
+          </tr>
+        ))}
+      </DataTableShell>
     </div>
   );
 };

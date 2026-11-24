@@ -1,7 +1,19 @@
 import React, { useMemo, useState } from "react";
 import { CashExpenseEntity } from "../../../domain/entities";
 import { usePosStore } from "../../../application/store/usePosStore";
-import { Wallet, PlusCircle, Search, Filter, Lock, User } from "lucide-react";
+import {
+  DEFAULT_DATE_RANGE,
+  DateRangeValue,
+  isDateRangeActive,
+  matchesDateRange,
+} from "../common/table/dateRangeUtils";
+import { DateRangeFilter } from "../common/table/DateRangeFilter";
+import { FilterPillOption, FilterPills } from "../common/table/FilterPills";
+import { useTablePagination } from "../common/table/useTablePagination";
+import { DataTableToolbar } from "../common/table/DataTableToolbar";
+import { TableEmptyState } from "../common/table/TableEmptyState";
+import { TableLoadMoreFooter } from "../common/table/TableLoadMoreFooter";
+import { Wallet, PlusCircle, Lock, User } from "lucide-react";
 
 const EXPENSE_CATEGORY_LABELS: Record<CashExpenseEntity["category"], string> = {
   SUPPLIES: "مستلزمات وأكياس",
@@ -10,6 +22,14 @@ const EXPENSE_CATEGORY_LABELS: Record<CashExpenseEntity["category"], string> = {
   MAINTENANCE: "صيانة",
   OTHER: "أخرى",
 };
+
+type ShiftScopeFilter = "ALL" | "CURRENT";
+
+// خيارات نطاق الوردية الممرّرة إلى المكوّن الموحّد FilterPills
+const SHIFT_SCOPE_OPTIONS: readonly FilterPillOption<ShiftScopeFilter>[] = [
+  { id: "ALL", label: "كل الورديات", tone: "slate" },
+  { id: "CURRENT", label: "الوردية الحالية", tone: "amber" },
+];
 
 interface Props {
   expenses: CashExpenseEntity[];
@@ -24,7 +44,8 @@ interface Props {
 
 /**
  * بطاقة تسجيل ومتابعة مصروفات الصيدلية النثرية للوردية
- * مقفلة بصرياً عند إغلاق الوردية وتوثّق اسم المستخدم المنفّذ لكل قيد
+ * مقفلة بصرياً عند إغلاق الوردية وتوثّق اسم المستخدم المنفّذ لكل قيد،
+ * وتستخدم نواة الجداول الموحّدة للفلترة بالتاريخ والتحميل التدريجي
  */
 export const CashExpensesPanel: React.FC<Props> = ({
   expenses,
@@ -48,7 +69,10 @@ export const CashExpensesPanel: React.FC<Props> = ({
   const [filterCategory, setFilterCategory] = useState<
     "ALL" | CashExpenseEntity["category"]
   >("ALL");
-  const [onlyCurrentShift, setOnlyCurrentShift] = useState(false);
+  const [shiftScope, setShiftScope] = useState<ShiftScopeFilter>("ALL");
+  // حالة نطاق التواريخ الموحّدة (الأزرار السريعة + النطاق اليدوي من/إلى)
+  const [dateRange, setDateRange] =
+    useState<DateRangeValue>(DEFAULT_DATE_RANGE);
 
   // إخفاء قيود خسائر التوالف والجرد (INVENTORY-LOSS) عن غير المخولين لأنها محسوبة بالتكلفة المرجحة
   const accessibleExpenses = useMemo(
@@ -59,15 +83,22 @@ export const CashExpensesPanel: React.FC<Props> = ({
     [expenses, hasCostAndProfitAccess],
   );
 
+  // تصفية المصروفات حسب الوردية، الفئة، نطاق التواريخ الموحّد، وعبارة البحث
   const filteredExpenses = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return accessibleExpenses.filter((exp) => {
-      if (onlyCurrentShift && activeShiftId && exp.shiftId !== activeShiftId) {
+      if (
+        shiftScope === "CURRENT" &&
+        activeShiftId &&
+        exp.shiftId !== activeShiftId
+      ) {
         return false;
       }
       if (filterCategory !== "ALL" && exp.category !== filterCategory) {
         return false;
       }
+      if (!matchesDateRange(exp.createdAt, dateRange)) return false;
+
       if (
         q &&
         !exp.title.toLowerCase().includes(q) &&
@@ -80,16 +111,42 @@ export const CashExpensesPanel: React.FC<Props> = ({
     });
   }, [
     accessibleExpenses,
-    onlyCurrentShift,
+    shiftScope,
     activeShiftId,
     filterCategory,
+    dateRange,
     searchQuery,
   ]);
+
+  // التحميل التدريجي لقائمة المصروفات (50 مصروفاً في الدفعة) مع إعادة ضبط تلقائية عند تغيّر الفلاتر
+  const pagination = useTablePagination(filteredExpenses, {
+    pageSize: 50,
+    resetDeps: [
+      searchQuery,
+      filterCategory,
+      shiftScope,
+      dateRange.from,
+      dateRange.to,
+    ],
+  });
 
   const filteredTotal = useMemo(
     () => filteredExpenses.reduce((sum, exp) => sum + exp.amount, 0),
     [filteredExpenses],
   );
+
+  const hasActiveFilters =
+    Boolean(searchQuery.trim()) ||
+    filterCategory !== "ALL" ||
+    shiftScope !== "ALL" ||
+    isDateRangeActive(dateRange);
+
+  const handleResetFilters = () => {
+    setSearchQuery("");
+    setFilterCategory("ALL");
+    setShiftScope("ALL");
+    setDateRange(DEFAULT_DATE_RANGE);
+  };
 
   const handleCreateExpense = (e: React.FormEvent) => {
     e.preventDefault();
@@ -186,118 +243,142 @@ export const CashExpensesPanel: React.FC<Props> = ({
         </button>
       </form>
 
-      {/* شريط البحث والفلترة داخل سجل المصروفات */}
-      <div className="pt-2 border-t border-slate-800 space-y-2">
-        <div className="flex items-center justify-between gap-2 flex-wrap">
-          <span className="text-[11px] font-bold text-slate-300 flex items-center gap-1.5">
-            <Filter className="w-3.5 h-3.5 text-slate-400" />
-            سجل المصروفات ({filteredExpenses.length})
-          </span>
+      {/* شريط البحث والفلترة الموحّد لسجل المصروفات */}
+      {accessibleExpenses.length > 0 && (
+        <div className="pt-2.5 border-t border-slate-800">
+          <DataTableToolbar
+            accent="amber"
+            searchValue={searchQuery}
+            onSearchChange={setSearchQuery}
+            searchPlaceholder="بحث بالبيان، الملاحظات، أو اسم الموظف..."
+            filters={
+              <>
+                <select
+                  value={filterCategory}
+                  onChange={(e) =>
+                    setFilterCategory(
+                      e.target.value as "ALL" | CashExpenseEntity["category"],
+                    )
+                  }
+                  className="bg-slate-950 border border-slate-800 focus:border-amber-500 rounded-xl px-2.5 py-2 text-[11px] text-slate-200 outline-none"
+                >
+                  <option value="ALL">كل الفئات</option>
+                  {Object.entries(EXPENSE_CATEGORY_LABELS).map(
+                    ([key, label]) => (
+                      <option key={key} value={key}>
+                        {label}
+                      </option>
+                    ),
+                  )}
+                </select>
 
-          {activeShiftId && (
-            <button
-              type="button"
-              onClick={() => setOnlyCurrentShift((prev) => !prev)}
-              className={`text-[10px] px-2 py-0.5 rounded-md border font-bold transition ${
-                onlyCurrentShift
-                  ? "bg-amber-950/70 border-amber-700 text-amber-300"
-                  : "bg-slate-800 border-slate-700 text-slate-400 hover:text-white"
-              }`}
-            >
-              {onlyCurrentShift ? "الوردية الحالية فقط" : "كل الورديات"}
-            </button>
-          )}
-        </div>
-
-        {accessibleExpenses.length > 0 && (
-          <div className="flex gap-2">
-            <div className="relative flex-1">
-              <Search className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="بحث بالبيان أو اسم الموظف..."
-                className="w-full bg-slate-950 border border-slate-800 focus:border-amber-500 rounded-lg pr-8 pl-2.5 py-1.5 text-[11px] text-white outline-none"
+                {activeShiftId && (
+                  <FilterPills
+                    variant="segmented"
+                    options={SHIFT_SCOPE_OPTIONS}
+                    value={shiftScope}
+                    onChange={setShiftScope}
+                    ariaLabel="تصفية المصروفات حسب الوردية"
+                  />
+                )}
+              </>
+            }
+            secondaryFilters={
+              <DateRangeFilter
+                value={dateRange}
+                onChange={setDateRange}
+                accent="amber"
               />
-            </div>
-
-            <select
-              value={filterCategory}
-              onChange={(e) =>
-                setFilterCategory(
-                  e.target.value as "ALL" | CashExpenseEntity["category"],
-                )
-              }
-              className="bg-slate-950 border border-slate-800 rounded-lg px-2 py-1.5 text-[11px] text-slate-200 outline-none"
-            >
-              <option value="ALL">كل الفئات</option>
-              {Object.entries(EXPENSE_CATEGORY_LABELS).map(([key, label]) => (
-                <option key={key} value={key}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-      </div>
+            }
+            hasActiveFilters={hasActiveFilters}
+            onResetFilters={handleResetFilters}
+            visibleCount={pagination.visibleCount}
+            filteredCount={filteredExpenses.length}
+            totalCount={accessibleExpenses.length}
+            itemLabel="مصروف"
+          />
+        </div>
+      )}
 
       {/* قائمة المصروفات المسجلة */}
       <div className="flex-1 overflow-y-auto max-h-[300px] space-y-1.5 pr-0.5">
         {accessibleExpenses.length === 0 ? (
-          <div className="py-10 text-center text-slate-500 text-[11px]">
-            لا توجد مصروفات مسجلة حتى الآن.
-          </div>
+          <TableEmptyState
+            compact
+            variant="empty"
+            icon={Wallet}
+            title="لا توجد مصروفات مسجلة حتى الآن"
+            description="عند تسجيل أي مصروف نثري من الدرج سيظهر هنا مع اسم المنفّذ والتاريخ."
+          />
         ) : filteredExpenses.length === 0 ? (
-          <div className="py-8 text-center text-slate-500 text-[11px]">
-            لا توجد مصروفات مطابقة لخيارات البحث أو الفلترة الحالية.
-          </div>
+          <TableEmptyState
+            compact
+            variant="no-results"
+            searchQuery={searchQuery}
+            onResetFilters={handleResetFilters}
+            description="لا توجد مصروفات مطابقة لخيارات البحث أو الفلترة الحالية."
+          />
         ) : (
-          filteredExpenses.map((exp) => {
-            const isInventoryLoss = exp.shiftId === "INVENTORY-LOSS";
-            const categoryLabel =
-              EXPENSE_CATEGORY_LABELS[exp.category] || exp.category;
+          <>
+            {pagination.visibleItems.map((exp) => {
+              const isInventoryLoss = exp.shiftId === "INVENTORY-LOSS";
+              const categoryLabel =
+                EXPENSE_CATEGORY_LABELS[exp.category] || exp.category;
 
-            return (
-              <div
-                key={exp.id}
-                className="flex items-center justify-between gap-2 text-[11px] bg-slate-950 px-3 py-2 rounded-xl border border-slate-800 hover:border-slate-700 transition"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="font-bold text-slate-100 flex items-center gap-1.5 flex-wrap">
-                    <span className="truncate">{exp.title}</span>
-                    <span className="text-[9.5px] font-normal px-1.5 py-0.2 rounded bg-slate-800 text-slate-300 border border-slate-700">
-                      {categoryLabel}
-                    </span>
-                    {isInventoryLoss && (
-                      <span className="text-[9.5px] px-1.5 py-0.2 rounded bg-rose-950 text-rose-300 border border-rose-800">
-                        تالف/جرد
+              return (
+                <div
+                  key={exp.id}
+                  className="flex items-center justify-between gap-2 text-[11px] bg-slate-950 px-3 py-2 rounded-xl border border-slate-800 hover:border-slate-700 transition"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="font-bold text-slate-100 flex items-center gap-1.5 flex-wrap">
+                      <span className="truncate">{exp.title}</span>
+                      <span className="text-[9.5px] font-normal px-1.5 py-0.2 rounded bg-slate-800 text-slate-300 border border-slate-700">
+                        {categoryLabel}
                       </span>
-                    )}
+                      {isInventoryLoss && (
+                        <span className="text-[9.5px] px-1.5 py-0.2 rounded bg-rose-950 text-rose-300 border border-rose-800">
+                          تالف/جرد
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[10px] text-slate-500 mt-0.5 flex items-center gap-2 flex-wrap">
+                      <span className="font-mono">
+                        {new Date(exp.createdAt).toLocaleString("ar-SA")}
+                      </span>
+                      {exp.performedByName && (
+                        <span className="inline-flex items-center gap-0.5 text-sky-400/90">
+                          <User className="w-2.5 h-2.5" />
+                          {exp.performedByName}
+                        </span>
+                      )}
+                      {exp.notes && (
+                        <span className="truncate text-slate-400">
+                          • {exp.notes}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                  <div className="text-[10px] text-slate-500 mt-0.5 flex items-center gap-2 flex-wrap">
-                    <span className="font-mono">
-                      {new Date(exp.createdAt).toLocaleString("ar-SA")}
-                    </span>
-                    {exp.performedByName && (
-                      <span className="inline-flex items-center gap-0.5 text-sky-400/90">
-                        <User className="w-2.5 h-2.5" />
-                        {exp.performedByName}
-                      </span>
-                    )}
-                    {exp.notes && (
-                      <span className="truncate text-slate-400">
-                        • {exp.notes}
-                      </span>
-                    )}
-                  </div>
+                  <span className="font-mono font-bold text-rose-400 shrink-0">
+                    -{exp.amount.toFixed(2)}
+                  </span>
                 </div>
-                <span className="font-mono font-bold text-rose-400 shrink-0">
-                  -{exp.amount.toFixed(2)}
-                </span>
-              </div>
-            );
-          })
+              );
+            })}
+
+            {/* تذييل التحميل التدريجي الموحّد */}
+            <TableLoadMoreFooter
+              visibleCount={pagination.visibleCount}
+              totalCount={pagination.totalCount}
+              remainingCount={pagination.remainingCount}
+              pageSize={pagination.pageSize}
+              hasMore={pagination.hasMore}
+              onLoadMore={pagination.loadMore}
+              onShowAll={pagination.showAll}
+              itemLabel="مصروف"
+              accent="amber"
+            />
+          </>
         )}
       </div>
     </div>

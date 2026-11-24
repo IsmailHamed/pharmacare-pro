@@ -2,8 +2,26 @@ import React, { useEffect, useMemo, useState } from "react";
 import { LedgerPaymentItem } from "./LedgerPartyStatement";
 import { LedgerVoucherReceiptData } from "./LedgerVoucherReceiptModal";
 import {
+  DEFAULT_DATE_RANGE,
+  DateRangeValue,
+  isDateRangeActive,
+  matchesDateRange,
+} from "../common/table/dateRangeUtils";
+import { DateRangeFilter } from "../common/table/DateRangeFilter";
+import { FilterPillOption, FilterPills } from "../common/table/FilterPills";
+import {
+  SortAccessors,
+  SortDirection,
+  SortState,
+  useTableSort,
+} from "../common/table/useTableSort";
+import { useTablePagination } from "../common/table/useTablePagination";
+import { SortableTh } from "../common/table/SortableTh";
+import { DataTableToolbar } from "../common/table/DataTableToolbar";
+import { DataTableShell } from "../common/table/DataTableShell";
+import { TableLoadMoreFooter } from "../common/table/TableLoadMoreFooter";
+import {
   Receipt,
-  Search,
   Printer,
   ArrowDownLeft,
   ArrowUpRight,
@@ -13,6 +31,50 @@ import {
 
 type VoucherTypeFilter = "ALL" | "CUSTOMER" | "SUPPLIER";
 
+// مفاتيح الأعمدة القابلة للفرز التفاعلي في سجل سندات القبض والصرف
+type VoucherSortKey =
+  | "id"
+  | "partyType"
+  | "partyName"
+  | "amount"
+  | "createdAt"
+  | "notes";
+
+// خيارات فلتر نوع السند الممرّرة إلى المكوّن الموحّد FilterPills
+const VOUCHER_TYPE_OPTIONS: readonly FilterPillOption<VoucherTypeFilter>[] = [
+  { id: "ALL", label: "الكل", tone: "slate" },
+  { id: "CUSTOMER", label: "قبض (عملاء)", tone: "sky" },
+  { id: "SUPPLIER", label: "صرف (مستودعات)", tone: "purple" },
+];
+
+// دوال استخراج قيم الأعمدة للفرز (مُعرّفة خارج المكوّن للحفاظ على ثبات المرجع)
+const VOUCHER_SORT_ACCESSORS: SortAccessors<LedgerPaymentItem, VoucherSortKey> =
+  {
+    id: (p) => p.id,
+    partyType: (p) => (p.partyType === "CUSTOMER" ? "سند قبض" : "سند صرف"),
+    partyName: (p) => p.partyName,
+    amount: (p) => p.amount,
+    createdAt: (p) => new Date(p.createdAt),
+    notes: (p) => p.notes || null,
+  };
+
+// الترتيب الافتراضي للسجل (الأحدث أولاً) والاتجاه الابتدائي لكل عمود عند النقر الأول
+const DEFAULT_VOUCHER_SORT: SortState<VoucherSortKey> = {
+  key: "createdAt",
+  direction: "desc",
+};
+
+const VOUCHER_DEFAULT_DIRECTIONS: Partial<
+  Record<VoucherSortKey, SortDirection>
+> = {
+  id: "asc",
+  partyType: "asc",
+  partyName: "asc",
+  amount: "desc",
+  createdAt: "desc",
+  notes: "asc",
+};
+
 interface Props {
   ledgerPayments: LedgerPaymentItem[];
   canViewSuppliers: boolean;
@@ -21,7 +83,8 @@ interface Props {
 
 /**
  * سجل السندات الموحد (Audit Log)
- * يعرض جميع سندات القبض والصرف المسجلة بترتيب زمني مع البحث وإعادة الطباعة الحرارية
+ * يعرض جميع سندات القبض والصرف المسجلة بترتيب زمني مع البحث وإعادة الطباعة الحرارية،
+ * ومبني على نواة الجداول الموحّدة (فلاتر التواريخ السريعة، فرز الأعمدة، والتحميل التدريجي)
  */
 export const LedgerVouchersLog: React.FC<Props> = ({
   ledgerPayments,
@@ -30,6 +93,9 @@ export const LedgerVouchersLog: React.FC<Props> = ({
 }) => {
   const [searchQuery, setSearchQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState<VoucherTypeFilter>("ALL");
+  // حالة نطاق التواريخ الموحّدة (الأزرار السريعة + النطاق اليدوي من/إلى)
+  const [dateRange, setDateRange] =
+    useState<DateRangeValue>(DEFAULT_DATE_RANGE);
 
   // إغلاق آمن: إعادة الفلتر للكل إذا تم تبديل المستخدم لحساب لا يملك صلاحية عرض ذمم المستودعات
   useEffect(() => {
@@ -38,14 +104,14 @@ export const LedgerVouchersLog: React.FC<Props> = ({
     }
   }, [canViewSuppliers, typeFilter]);
 
-  // استبعاد سندات المستودعات عن غير المخولين وترتيب السندات من الأحدث للأقدم
-  const accessiblePayments = useMemo(() => {
-    const allowed = canViewSuppliers
-      ? ledgerPayments
-      : ledgerPayments.filter((p) => p.partyType === "CUSTOMER");
-
-    return [...allowed].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  }, [ledgerPayments, canViewSuppliers]);
+  // استبعاد سندات المستودعات عن غير المخولين
+  const accessiblePayments = useMemo(
+    () =>
+      canViewSuppliers
+        ? ledgerPayments
+        : ledgerPayments.filter((p) => p.partyType === "CUSTOMER"),
+    [ledgerPayments, canViewSuppliers],
+  );
 
   const stats = useMemo(() => {
     let customerCount = 0;
@@ -71,10 +137,13 @@ export const LedgerVouchersLog: React.FC<Props> = ({
     };
   }, [accessiblePayments]);
 
-  const filteredPayments = useMemo(() => {
+  // تصفية السندات حسب النوع ونطاق التواريخ الموحّد ونص البحث
+  const matchedPayments = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return accessiblePayments.filter((p) => {
       if (typeFilter !== "ALL" && p.partyType !== typeFilter) return false;
+      if (!matchesDateRange(p.createdAt, dateRange)) return false;
+
       if (
         q &&
         !p.id.toLowerCase().includes(q) &&
@@ -85,12 +154,48 @@ export const LedgerVouchersLog: React.FC<Props> = ({
       }
       return true;
     });
-  }, [accessiblePayments, typeFilter, searchQuery]);
+  }, [accessiblePayments, typeFilter, dateRange, searchQuery]);
+
+  // تطبيق الفرز التفاعلي بالأعمدة على السندات المطابقة
+  const {
+    sortedItems: filteredPayments,
+    sortState,
+    toggleSort,
+    getSortDirection,
+  } = useTableSort(matchedPayments, {
+    accessors: VOUCHER_SORT_ACCESSORS,
+    defaultSort: DEFAULT_VOUCHER_SORT,
+    defaultDirections: VOUCHER_DEFAULT_DIRECTIONS,
+  });
+
+  // التحميل التدريجي للصفوف (50 سنداً في الدفعة) مع إعادة ضبط تلقائية عند تغيّر الفلاتر أو الفرز
+  const pagination = useTablePagination(filteredPayments, {
+    pageSize: 50,
+    resetDeps: [
+      searchQuery,
+      typeFilter,
+      dateRange.from,
+      dateRange.to,
+      sortState?.key,
+      sortState?.direction,
+    ],
+  });
 
   const filteredTotal = useMemo(
     () => filteredPayments.reduce((sum, p) => sum + p.amount, 0),
     [filteredPayments],
   );
+
+  const hasActiveFilters =
+    Boolean(searchQuery.trim()) ||
+    typeFilter !== "ALL" ||
+    isDateRangeActive(dateRange);
+
+  const handleResetFilters = () => {
+    setSearchQuery("");
+    setTypeFilter("ALL");
+    setDateRange(DEFAULT_DATE_RANGE);
+  };
 
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
@@ -138,171 +243,210 @@ export const LedgerVouchersLog: React.FC<Props> = ({
         </div>
       </div>
 
-      {/* شريط البحث والفلترة حسب نوع السند */}
-      {accessiblePayments.length > 0 && (
-        <div className="flex items-center justify-between gap-3 bg-slate-950/70 border border-slate-800 p-2.5 rounded-xl flex-wrap">
-          <div className="relative flex-1 min-w-[220px]">
-            <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="ابحث برقم السند، اسم العميل أو المستودع، أو الملاحظات..."
-              className="w-full bg-slate-900 border border-slate-800 focus:border-emerald-500 rounded-lg pr-9 pl-3 py-1.5 text-white outline-none"
+      {/* الهيكل الموحّد للجدول (framed=false للحفاظ على البطاقة الخارجية الحالية) */}
+      <DataTableShell
+        framed={false}
+        totalCount={accessiblePayments.length}
+        filteredCount={filteredPayments.length}
+        searchQuery={searchQuery}
+        onResetFilters={hasActiveFilters ? handleResetFilters : undefined}
+        stickyHeader
+        emptyState={{
+          icon: Receipt,
+          title: "لا توجد سندات قبض أو صرف مسجلة حتى الآن.",
+          description:
+            "عند تسجيل أي دفعة من تبويب الذمم سيُحفظ السند هنا تلقائياً مع إمكانية إعادة طباعته في أي وقت.",
+        }}
+        noResultsState={{
+          description: "لا توجد سندات مطابقة لخيارات البحث أو الفلترة الحالية.",
+        }}
+        toolbar={
+          accessiblePayments.length > 0 ? (
+            <DataTableToolbar
+              accent="emerald"
+              searchValue={searchQuery}
+              onSearchChange={setSearchQuery}
+              searchPlaceholder="ابحث برقم السند، اسم العميل أو المستودع، أو الملاحظات..."
+              filters={
+                canViewSuppliers ? (
+                  <FilterPills
+                    variant="segmented"
+                    options={VOUCHER_TYPE_OPTIONS}
+                    value={typeFilter}
+                    onChange={setTypeFilter}
+                    ariaLabel="تصفية السندات حسب النوع"
+                  />
+                ) : undefined
+              }
+              secondaryFilters={
+                <DateRangeFilter
+                  value={dateRange}
+                  onChange={setDateRange}
+                  accent="emerald"
+                />
+              }
+              hasActiveFilters={hasActiveFilters}
+              onResetFilters={handleResetFilters}
+              visibleCount={pagination.visibleCount}
+              filteredCount={filteredPayments.length}
+              totalCount={accessiblePayments.length}
+              itemLabel="سند"
+              metaExtra={
+                <span className="font-mono text-slate-400">
+                  مجموع المطابق:{" "}
+                  <b className="text-emerald-400">
+                    {filteredTotal.toFixed(2)} ر.س
+                  </b>
+                </span>
+              }
             />
-          </div>
+          ) : undefined
+        }
+        header={
+          <tr>
+            <SortableTh
+              direction={getSortDirection("id")}
+              onSort={() => toggleSort("id")}
+              accent="emerald"
+            >
+              رقم السند
+            </SortableTh>
+            <SortableTh
+              direction={getSortDirection("partyType")}
+              onSort={() => toggleSort("partyType")}
+              accent="emerald"
+            >
+              النوع
+            </SortableTh>
+            <SortableTh
+              direction={getSortDirection("partyName")}
+              onSort={() => toggleSort("partyName")}
+              accent="emerald"
+            >
+              العميل / المستودع
+            </SortableTh>
+            <SortableTh
+              direction={getSortDirection("amount")}
+              onSort={() => toggleSort("amount")}
+              align="center"
+              accent="emerald"
+            >
+              المبلغ
+            </SortableTh>
+            <SortableTh
+              direction={getSortDirection("createdAt")}
+              onSort={() => toggleSort("createdAt")}
+              accent="emerald"
+            >
+              التاريخ والوقت
+            </SortableTh>
+            <SortableTh
+              direction={getSortDirection("notes")}
+              onSort={() => toggleSort("notes")}
+              accent="emerald"
+            >
+              الملاحظات
+            </SortableTh>
+            <th className="py-2.5 px-3 text-center">إعادة طباعة</th>
+          </tr>
+        }
+        footer={
+          <TableLoadMoreFooter
+            visibleCount={pagination.visibleCount}
+            totalCount={pagination.totalCount}
+            remainingCount={pagination.remainingCount}
+            pageSize={pagination.pageSize}
+            hasMore={pagination.hasMore}
+            onLoadMore={pagination.loadMore}
+            onShowAll={pagination.showAll}
+            itemLabel="سند"
+            accent="emerald"
+            showSummaryWhenComplete
+          />
+        }
+      >
+        {pagination.visibleItems.map((payment) => {
+          const isCustomer = payment.partyType === "CUSTOMER";
+          return (
+            <tr
+              key={payment.id}
+              className="hover:bg-slate-800/40 transition font-mono"
+            >
+              <td className="py-2.5 px-3 font-bold text-white whitespace-nowrap">
+                {payment.id}
+              </td>
 
-          <div className="flex items-center gap-2.5 flex-wrap shrink-0">
-            {canViewSuppliers && (
-              <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-lg border border-slate-800">
-                {(
-                  [
-                    { id: "ALL", label: "الكل" },
-                    { id: "CUSTOMER", label: "قبض (عملاء)" },
-                    { id: "SUPPLIER", label: "صرف (مستودعات)" },
-                  ] as const
-                ).map((tab) => (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    onClick={() => setTypeFilter(tab.id)}
-                    className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition ${
-                      typeFilter === tab.id
-                        ? "bg-slate-800 text-white"
-                        : "text-slate-400 hover:text-white"
-                    }`}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
-              </div>
-            )}
+              <td className="py-2.5 px-3 font-sans whitespace-nowrap">
+                <span
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                    isCustomer
+                      ? "bg-sky-950/60 border-sky-800 text-sky-300"
+                      : "bg-purple-950/60 border-purple-800 text-purple-300"
+                  }`}
+                >
+                  {isCustomer ? (
+                    <ArrowDownLeft className="w-3 h-3" />
+                  ) : (
+                    <ArrowUpRight className="w-3 h-3" />
+                  )}
+                  {isCustomer ? "سند قبض" : "سند صرف"}
+                </span>
+              </td>
 
-            <div className="text-slate-400 font-mono text-[11px]">
-              المعروض: <b className="text-white">{filteredPayments.length}</b> •
-              المجموع:{" "}
-              <b className="text-emerald-400">{filteredTotal.toFixed(2)} ر.س</b>
-            </div>
-          </div>
-        </div>
-      )}
+              <td className="py-2.5 px-3 font-sans">
+                <div className="flex items-center gap-1.5 font-bold text-slate-200">
+                  {isCustomer ? (
+                    <Users className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                  ) : (
+                    <Building2 className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                  )}
+                  <span>{payment.partyName}</span>
+                </div>
+              </td>
 
-      {/* جدول السندات أو الحالة الفارغة */}
-      {accessiblePayments.length === 0 ? (
-        <div className="py-16 flex flex-col items-center justify-center text-slate-500 text-center gap-2">
-          <Receipt className="w-9 h-9 text-slate-700 stroke-1" />
-          <p className="font-bold text-slate-400">
-            لا توجد سندات قبض أو صرف مسجلة حتى الآن.
-          </p>
-          <p className="text-[11px] text-slate-500">
-            عند تسجيل أي دفعة من تبويب الذمم سيُحفظ السند هنا تلقائياً مع
-            إمكانية إعادة طباعته في أي وقت.
-          </p>
-        </div>
-      ) : filteredPayments.length === 0 ? (
-        <div className="py-12 text-center text-slate-500">
-          لا توجد سندات مطابقة لخيارات البحث أو الفلترة الحالية.
-        </div>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-right text-[11px]">
-            <thead>
-              <tr className="border-b border-slate-800 text-slate-400">
-                <th className="py-2 px-2.5">رقم السند</th>
-                <th className="py-2 px-2.5">النوع</th>
-                <th className="py-2 px-2.5">العميل / المستودع</th>
-                <th className="py-2 px-2.5 text-center">المبلغ</th>
-                <th className="py-2 px-2.5">التاريخ والوقت</th>
-                <th className="py-2 px-2.5">الملاحظات</th>
-                <th className="py-2 px-2.5 text-center">إعادة طباعة</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/60 font-mono">
-              {filteredPayments.map((payment) => {
-                const isCustomer = payment.partyType === "CUSTOMER";
-                return (
-                  <tr
-                    key={payment.id}
-                    className="hover:bg-slate-800/40 transition"
-                  >
-                    <td className="py-2.5 px-2.5 font-bold text-white whitespace-nowrap">
-                      {payment.id}
-                    </td>
+              <td
+                className={`py-2.5 px-3 text-center font-extrabold whitespace-nowrap ${
+                  isCustomer ? "text-emerald-400" : "text-rose-400"
+                }`}
+              >
+                {isCustomer ? "+" : "-"}
+                {payment.amount.toFixed(2)} ر.س
+              </td>
 
-                    <td className="py-2.5 px-2.5 font-sans whitespace-nowrap">
-                      <span
-                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                          isCustomer
-                            ? "bg-sky-950/60 border-sky-800 text-sky-300"
-                            : "bg-purple-950/60 border-purple-800 text-purple-300"
-                        }`}
-                      >
-                        {isCustomer ? (
-                          <ArrowDownLeft className="w-3 h-3" />
-                        ) : (
-                          <ArrowUpRight className="w-3 h-3" />
-                        )}
-                        {isCustomer ? "سند قبض" : "سند صرف"}
-                      </span>
-                    </td>
+              <td className="py-2.5 px-3 text-slate-400 whitespace-nowrap">
+                {new Date(payment.createdAt).toLocaleString("ar-SA", {
+                  dateStyle: "short",
+                  timeStyle: "short",
+                })}
+              </td>
 
-                    <td className="py-2.5 px-2.5 font-sans">
-                      <div className="flex items-center gap-1.5 font-bold text-slate-200">
-                        {isCustomer ? (
-                          <Users className="w-3.5 h-3.5 text-sky-400 shrink-0" />
-                        ) : (
-                          <Building2 className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-                        )}
-                        <span>{payment.partyName}</span>
-                      </div>
-                    </td>
+              <td className="py-2.5 px-3 font-sans text-slate-400 max-w-[220px] truncate">
+                {payment.notes || "—"}
+              </td>
 
-                    <td
-                      className={`py-2.5 px-2.5 text-center font-extrabold whitespace-nowrap ${
-                        isCustomer ? "text-emerald-400" : "text-rose-400"
-                      }`}
-                    >
-                      {isCustomer ? "+" : "-"}
-                      {payment.amount.toFixed(2)} ر.س
-                    </td>
-
-                    <td className="py-2.5 px-2.5 text-slate-400 whitespace-nowrap">
-                      {new Date(payment.createdAt).toLocaleString("ar-SA", {
-                        dateStyle: "short",
-                        timeStyle: "short",
-                      })}
-                    </td>
-
-                    <td className="py-2.5 px-2.5 font-sans text-slate-400 max-w-[220px] truncate">
-                      {payment.notes || "—"}
-                    </td>
-
-                    <td className="py-2.5 px-2.5 text-center">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onReprintVoucher({
-                            id: payment.id,
-                            partyType: payment.partyType,
-                            partyName: payment.partyName,
-                            amount: payment.amount,
-                            createdAt: payment.createdAt,
-                            notes: payment.notes,
-                          })
-                        }
-                        title="إعادة طباعة السند الحراري (80mm)"
-                        className="inline-flex items-center gap-1 bg-slate-800 hover:bg-emerald-700 text-slate-200 hover:text-white font-sans font-bold px-2.5 py-1 rounded-lg transition"
-                      >
-                        <Printer className="w-3.5 h-3.5" /> طباعة
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+              <td className="py-2.5 px-3 text-center">
+                <button
+                  type="button"
+                  onClick={() =>
+                    onReprintVoucher({
+                      id: payment.id,
+                      partyType: payment.partyType,
+                      partyName: payment.partyName,
+                      amount: payment.amount,
+                      createdAt: payment.createdAt,
+                      notes: payment.notes,
+                    })
+                  }
+                  title="إعادة طباعة السند الحراري (80mm)"
+                  className="inline-flex items-center gap-1 bg-slate-800 hover:bg-emerald-700 text-slate-200 hover:text-white font-sans font-bold px-2.5 py-1 rounded-lg transition"
+                >
+                  <Printer className="w-3.5 h-3.5" /> طباعة
+                </button>
+              </td>
+            </tr>
+          );
+        })}
+      </DataTableShell>
     </div>
   );
 };

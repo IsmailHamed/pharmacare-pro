@@ -1,25 +1,91 @@
 import React, { useMemo, useState } from "react";
 import { ShiftSummaryEntity } from "../../../domain/entities";
 import {
-  History,
-  Search,
-  Filter,
-  CheckCircle2,
-  AlertOctagon,
-  UserCheck,
-} from "lucide-react";
+  DEFAULT_DATE_RANGE,
+  DateRangeValue,
+  isDateRangeActive,
+  matchesDateRange,
+} from "../common/table/dateRangeUtils";
+import { DateRangeFilter } from "../common/table/DateRangeFilter";
+import { FilterPillOption, FilterPills } from "../common/table/FilterPills";
+import {
+  SortAccessors,
+  SortDirection,
+  SortState,
+  useTableSort,
+} from "../common/table/useTableSort";
+import { useTablePagination } from "../common/table/useTablePagination";
+import { SortableTh } from "../common/table/SortableTh";
+import { DataTableToolbar } from "../common/table/DataTableToolbar";
+import { DataTableShell } from "../common/table/DataTableShell";
+import { TableLoadMoreFooter } from "../common/table/TableLoadMoreFooter";
+import { History, CheckCircle2, AlertOctagon, UserCheck } from "lucide-react";
 
 interface Props {
   closedShifts: ShiftSummaryEntity[];
 }
 
+type VarianceFilter = "ALL" | "WITH_VARIANCE";
+
+// مفاتيح الأعمدة القابلة للفرز التفاعلي في أرشيف الورديات المغلقة
+type ClosedShiftSortKey =
+  | "closedAt"
+  | "pharmacistName"
+  | "openingBalance"
+  | "cashSalesTotal"
+  | "expectedDrawerCash"
+  | "actualDrawerCash"
+  | "variance"
+  | "safeDropAmount"
+  | "nextShiftFloat";
+
+// دوال استخراج قيم الأعمدة للفرز (مُعرّفة خارج المكوّن للحفاظ على ثبات المرجع)
+const CLOSED_SHIFT_SORT_ACCESSORS: SortAccessors<
+  ShiftSummaryEntity,
+  ClosedShiftSortKey
+> = {
+  closedAt: (s) => (s.closedAt ? new Date(s.closedAt) : s.id),
+  pharmacistName: (s) => s.pharmacistName,
+  openingBalance: (s) => s.openingBalance,
+  cashSalesTotal: (s) => s.cashSalesTotal,
+  expectedDrawerCash: (s) => s.expectedDrawerCash,
+  actualDrawerCash: (s) => s.actualDrawerCash ?? 0,
+  variance: (s) => s.variance || 0,
+  safeDropAmount: (s) => s.safeDropAmount || 0,
+  nextShiftFloat: (s) => s.nextShiftFloat || 0,
+};
+
+// الترتيب الافتراضي للأرشيف (الأحدث إغلاقاً أولاً) والاتجاه الابتدائي لكل عمود عند النقر الأول
+const DEFAULT_CLOSED_SHIFT_SORT: SortState<ClosedShiftSortKey> = {
+  key: "closedAt",
+  direction: "desc",
+};
+
+const CLOSED_SHIFT_DEFAULT_DIRECTIONS: Partial<
+  Record<ClosedShiftSortKey, SortDirection>
+> = {
+  closedAt: "desc",
+  pharmacistName: "asc",
+  openingBalance: "desc",
+  cashSalesTotal: "desc",
+  expectedDrawerCash: "desc",
+  actualDrawerCash: "desc",
+  variance: "asc",
+  safeDropAmount: "desc",
+  nextShiftFloat: "desc",
+};
+
 /**
  * تبويب أرشيف تقارير تسليم الورديات السابقة (Z-Reports Archive)
- * يعرض ملخص الفروقات والتوريد للخزنة مع توثيق صاحب العهدة والمستخدم الذي أغلق الوردية
+ * يعرض ملخص الفروقات والتوريد للخزنة مع توثيق صاحب العهدة والمستخدم الذي أغلق الوردية،
+ * ومبني على نواة الجداول الموحّدة (فلاتر التواريخ السريعة، فرز الأعمدة، والتحميل التدريجي)
  */
 export const ClosedShiftsTable: React.FC<Props> = ({ closedShifts }) => {
   const [searchQuery, setSearchQuery] = useState("");
-  const [onlyWithVariance, setOnlyWithVariance] = useState(false);
+  const [varianceFilter, setVarianceFilter] = useState<VarianceFilter>("ALL");
+  // حالة نطاق التواريخ الموحّدة (الأزرار السريعة + النطاق اليدوي من/إلى)
+  const [dateRange, setDateRange] =
+    useState<DateRangeValue>(DEFAULT_DATE_RANGE);
 
   const archiveStats = useMemo(() => {
     let totalCashSales = 0;
@@ -43,10 +109,35 @@ export const ClosedShiftsTable: React.FC<Props> = ({ closedShifts }) => {
     };
   }, [closedShifts]);
 
-  const filteredShifts = useMemo(() => {
+  // خيارات فلتر الفروقات الممرّرة إلى المكوّن الموحّد FilterPills
+  const varianceFilterOptions = useMemo<FilterPillOption<VarianceFilter>[]>(
+    () => [
+      {
+        id: "ALL",
+        label: "كل الورديات",
+        count: closedShifts.length,
+        tone: "slate",
+      },
+      {
+        id: "WITH_VARIANCE",
+        label: "ذات الفارق",
+        count: archiveStats.varianceShiftsCount,
+        icon: AlertOctagon,
+        tone: "rose",
+      },
+    ],
+    [closedShifts.length, archiveStats.varianceShiftsCount],
+  );
+
+  // تصفية الورديات حسب حالة الفارق ونطاق التواريخ ونص البحث
+  const matchedShifts = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return closedShifts.filter((s) => {
-      if (onlyWithVariance && (s.variance || 0) === 0) return false;
+      if (varianceFilter === "WITH_VARIANCE" && (s.variance || 0) === 0) {
+        return false;
+      }
+      if (!matchesDateRange(s.closedAt, dateRange)) return false;
+
       if (
         q &&
         !s.id.toLowerCase().includes(q) &&
@@ -57,7 +148,32 @@ export const ClosedShiftsTable: React.FC<Props> = ({ closedShifts }) => {
       }
       return true;
     });
-  }, [closedShifts, searchQuery, onlyWithVariance]);
+  }, [closedShifts, searchQuery, varianceFilter, dateRange]);
+
+  // تطبيق الفرز التفاعلي بالأعمدة على الورديات المطابقة
+  const {
+    sortedItems: filteredShifts,
+    sortState,
+    toggleSort,
+    getSortDirection,
+  } = useTableSort(matchedShifts, {
+    accessors: CLOSED_SHIFT_SORT_ACCESSORS,
+    defaultSort: DEFAULT_CLOSED_SHIFT_SORT,
+    defaultDirections: CLOSED_SHIFT_DEFAULT_DIRECTIONS,
+  });
+
+  // التحميل التدريجي للصفوف (50 وردية في الدفعة) مع إعادة ضبط تلقائية عند تغيّر الفلاتر أو الفرز
+  const pagination = useTablePagination(filteredShifts, {
+    pageSize: 50,
+    resetDeps: [
+      searchQuery,
+      varianceFilter,
+      dateRange.from,
+      dateRange.to,
+      sortState?.key,
+      sortState?.direction,
+    ],
+  });
 
   const filteredSafeDrop = useMemo(
     () => filteredShifts.reduce((sum, s) => sum + (s.safeDropAmount || 0), 0),
@@ -68,6 +184,17 @@ export const ClosedShiftsTable: React.FC<Props> = ({ closedShifts }) => {
     () => filteredShifts.reduce((sum, s) => sum + (s.variance || 0), 0),
     [filteredShifts],
   );
+
+  const hasActiveFilters =
+    Boolean(searchQuery.trim()) ||
+    varianceFilter !== "ALL" ||
+    isDateRangeActive(dateRange);
+
+  const handleResetFilters = () => {
+    setSearchQuery("");
+    setVarianceFilter("ALL");
+    setDateRange(DEFAULT_DATE_RANGE);
+  };
 
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
@@ -138,169 +265,237 @@ export const ClosedShiftsTable: React.FC<Props> = ({ closedShifts }) => {
         </div>
       </div>
 
-      {/* شريط البحث والفلترة داخل الأرشيف */}
-      {closedShifts.length > 0 && (
-        <div className="flex items-center justify-between gap-3 bg-slate-950/70 border border-slate-800 p-2.5 rounded-xl flex-wrap">
-          <div className="relative flex-1 min-w-[220px]">
-            <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="ابحث برقم الوردية، صاحب العهدة، أو من أغلقها..."
-              className="w-full bg-slate-900 border border-slate-800 focus:border-sky-500 rounded-lg pr-9 pl-3 py-1.5 text-white outline-none"
+      {/* الهيكل الموحّد للجدول (framed=false للحفاظ على البطاقة الخارجية الحالية) */}
+      <DataTableShell
+        framed={false}
+        totalCount={closedShifts.length}
+        filteredCount={filteredShifts.length}
+        searchQuery={searchQuery}
+        onResetFilters={hasActiveFilters ? handleResetFilters : undefined}
+        stickyHeader
+        emptyState={{
+          icon: History,
+          title: "لا توجد ورديات مغلقة في الأرشيف حتى الآن.",
+          description:
+            "عند إغلاق الوردية واعتماد تقرير Z-Report سيُحفظ سجل المطابقة هنا تلقائياً.",
+        }}
+        noResultsState={{
+          description:
+            "لا توجد ورديات مطابقة لخيارات البحث أو الفلترة الحالية.",
+        }}
+        toolbar={
+          closedShifts.length > 0 ? (
+            <DataTableToolbar
+              accent="sky"
+              searchValue={searchQuery}
+              onSearchChange={setSearchQuery}
+              searchPlaceholder="ابحث برقم الوردية، صاحب العهدة، أو من أغلقها..."
+              filters={
+                <FilterPills
+                  variant="segmented"
+                  options={varianceFilterOptions}
+                  value={varianceFilter}
+                  onChange={setVarianceFilter}
+                  ariaLabel="تصفية الورديات حسب وجود فارق"
+                />
+              }
+              secondaryFilters={
+                <DateRangeFilter
+                  value={dateRange}
+                  onChange={setDateRange}
+                  accent="sky"
+                />
+              }
+              hasActiveFilters={hasActiveFilters}
+              onResetFilters={handleResetFilters}
+              visibleCount={pagination.visibleCount}
+              filteredCount={filteredShifts.length}
+              totalCount={closedShifts.length}
+              itemLabel="وردية"
+              metaExtra={
+                <div className="text-slate-400 font-mono text-[11px]">
+                  توريد:{" "}
+                  <b className="text-purple-400">
+                    {filteredSafeDrop.toFixed(2)}
+                  </b>{" "}
+                  • فارق:{" "}
+                  <b
+                    className={
+                      filteredVariance < 0
+                        ? "text-rose-400"
+                        : filteredVariance > 0
+                          ? "text-sky-400"
+                          : "text-emerald-400"
+                    }
+                  >
+                    {filteredVariance > 0
+                      ? `+${filteredVariance.toFixed(2)}`
+                      : filteredVariance.toFixed(2)}
+                  </b>
+                </div>
+              }
             />
-          </div>
-
-          <div className="flex items-center gap-3 flex-wrap shrink-0">
-            <button
-              type="button"
-              onClick={() => setOnlyWithVariance((prev) => !prev)}
-              className={`px-3 py-1.5 rounded-lg border font-bold flex items-center gap-1.5 transition ${
-                onlyWithVariance
-                  ? "bg-rose-950/60 border-rose-700 text-rose-300"
-                  : "bg-slate-900 hover:bg-slate-800 border-slate-700 text-slate-300"
-              }`}
+          ) : undefined
+        }
+        header={
+          <tr>
+            <SortableTh
+              direction={getSortDirection("closedAt")}
+              onSort={() => toggleSort("closedAt")}
+              accent="sky"
             >
-              <Filter className="w-3.5 h-3.5" />
-              الورديات ذات الفارق ({archiveStats.varianceShiftsCount})
-            </button>
+              رقم الوردية
+            </SortableTh>
+            <SortableTh
+              direction={getSortDirection("pharmacistName")}
+              onSort={() => toggleSort("pharmacistName")}
+              accent="sky"
+            >
+              صاحب العهدة / المُغلق
+            </SortableTh>
+            <SortableTh
+              direction={getSortDirection("openingBalance")}
+              onSort={() => toggleSort("openingBalance")}
+              accent="sky"
+            >
+              العهدة الافتتاحية
+            </SortableTh>
+            <SortableTh
+              direction={getSortDirection("cashSalesTotal")}
+              onSort={() => toggleSort("cashSalesTotal")}
+              accent="sky"
+            >
+              مبيعات الكاش
+            </SortableTh>
+            <SortableTh
+              direction={getSortDirection("expectedDrawerCash")}
+              onSort={() => toggleSort("expectedDrawerCash")}
+              accent="sky"
+            >
+              النقد المتوقع
+            </SortableTh>
+            <SortableTh
+              direction={getSortDirection("actualDrawerCash")}
+              onSort={() => toggleSort("actualDrawerCash")}
+              accent="sky"
+            >
+              الجرد الفعلي
+            </SortableTh>
+            <SortableTh
+              direction={getSortDirection("variance")}
+              onSort={() => toggleSort("variance")}
+              accent="sky"
+            >
+              الفارق (Variance)
+            </SortableTh>
+            <SortableTh
+              direction={getSortDirection("safeDropAmount")}
+              onSort={() => toggleSort("safeDropAmount")}
+              accent="sky"
+            >
+              المورّد للخزنة
+            </SortableTh>
+            <SortableTh
+              direction={getSortDirection("nextShiftFloat")}
+              onSort={() => toggleSort("nextShiftFloat")}
+              accent="sky"
+            >
+              العهدة المرحلة
+            </SortableTh>
+          </tr>
+        }
+        footer={
+          <TableLoadMoreFooter
+            visibleCount={pagination.visibleCount}
+            totalCount={pagination.totalCount}
+            remainingCount={pagination.remainingCount}
+            pageSize={pagination.pageSize}
+            hasMore={pagination.hasMore}
+            onLoadMore={pagination.loadMore}
+            onShowAll={pagination.showAll}
+            itemLabel="وردية"
+            accent="sky"
+            showSummaryWhenComplete
+          />
+        }
+      >
+        {pagination.visibleItems.map((s) => {
+          const variance = s.variance || 0;
+          const closedByDifferentUser = Boolean(
+            s.closedByName &&
+            ((s.closedByUserId &&
+              s.openedByUserId &&
+              s.closedByUserId !== s.openedByUserId) ||
+              s.closedByName.trim() !== s.pharmacistName.trim()),
+          );
 
-            <div className="text-slate-400 font-mono text-[11px]">
-              المعروض: <b className="text-white">{filteredShifts.length}</b> •
-              توريد:{" "}
-              <b className="text-purple-400">{filteredSafeDrop.toFixed(2)}</b> •
-              فارق:{" "}
-              <b
-                className={
-                  filteredVariance < 0
-                    ? "text-rose-400"
-                    : filteredVariance > 0
-                      ? "text-sky-400"
-                      : "text-emerald-400"
-                }
-              >
-                {filteredVariance > 0
-                  ? `+${filteredVariance.toFixed(2)}`
-                  : filteredVariance.toFixed(2)}
-              </b>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* جدول الأرشيف أو الحالة الفارغة */}
-      {closedShifts.length === 0 ? (
-        <div className="py-16 flex flex-col items-center justify-center text-slate-500 text-center gap-2">
-          <History className="w-9 h-9 text-slate-700 stroke-1" />
-          <p className="font-bold text-slate-400">
-            لا توجد ورديات مغلقة في الأرشيف حتى الآن.
-          </p>
-          <p className="text-[11px] text-slate-500">
-            عند إغلاق الوردية واعتماد تقرير Z-Report سيُحفظ سجل المطابقة هنا
-            تلقائياً.
-          </p>
-        </div>
-      ) : filteredShifts.length === 0 ? (
-        <div className="py-12 text-center text-slate-500">
-          لا توجد ورديات مطابقة لخيارات البحث أو الفلترة الحالية.
-        </div>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-right text-[11px]">
-            <thead>
-              <tr className="border-b border-slate-800 text-slate-400">
-                <th className="py-2 px-2">رقم الوردية</th>
-                <th className="py-2 px-2">صاحب العهدة / المُغلق</th>
-                <th className="py-2 px-2">العهدة الافتتاحية</th>
-                <th className="py-2 px-2">مبيعات الكاش</th>
-                <th className="py-2 px-2">النقد المتوقع</th>
-                <th className="py-2 px-2">الجرد الفعلي</th>
-                <th className="py-2 px-2">الفارق (Variance)</th>
-                <th className="py-2 px-2">المورّد للخزنة</th>
-                <th className="py-2 px-2">العهدة المرحلة</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/60 font-mono">
-              {filteredShifts.map((s) => {
-                const variance = s.variance || 0;
-                const closedByDifferentUser = Boolean(
-                  s.closedByName &&
-                  ((s.closedByUserId &&
-                    s.openedByUserId &&
-                    s.closedByUserId !== s.openedByUserId) ||
-                    s.closedByName.trim() !== s.pharmacistName.trim()),
-                );
-
-                return (
-                  <tr key={s.id} className="hover:bg-slate-800/40 transition">
-                    <td className="py-2.5 px-2">
-                      <div className="font-bold text-white">{s.id}</div>
-                      {s.closedAt && (
-                        <div className="text-[9.5px] text-slate-500 mt-0.5">
-                          {new Date(s.closedAt).toLocaleString("ar-SA", {
-                            dateStyle: "short",
-                            timeStyle: "short",
-                          })}
-                        </div>
-                      )}
-                    </td>
-                    <td className="py-2.5 px-2 font-sans">
-                      <div className="font-semibold text-slate-200">
-                        {s.pharmacistName}
-                      </div>
-                      {closedByDifferentUser && (
-                        <div className="inline-flex items-center gap-1 text-[9.5px] text-amber-300 bg-amber-950/50 border border-amber-800/70 px-1.5 py-0.5 rounded mt-0.5">
-                          <UserCheck className="w-2.5 h-2.5 shrink-0" />
-                          أغلقها: {s.closedByName}
-                        </div>
-                      )}
-                    </td>
-                    <td className="py-2.5 px-2">
-                      {s.openingBalance.toFixed(2)}
-                    </td>
-                    <td className="py-2.5 px-2 text-emerald-400">
-                      {s.cashSalesTotal.toFixed(2)}
-                    </td>
-                    <td className="py-2.5 px-2 text-amber-400">
-                      {s.expectedDrawerCash.toFixed(2)}
-                    </td>
-                    <td className="py-2.5 px-2 font-bold text-white">
-                      {(s.actualDrawerCash ?? 0).toFixed(2)}
-                    </td>
-                    <td className="py-2.5 px-2 font-bold">
-                      <span
-                        className={`inline-flex items-center gap-1 ${
-                          variance < 0
-                            ? "text-rose-400"
-                            : variance > 0
-                              ? "text-sky-400"
-                              : "text-emerald-400"
-                        }`}
-                      >
-                        {variance === 0 ? (
-                          <CheckCircle2 className="w-3.5 h-3.5" />
-                        ) : (
-                          <AlertOctagon className="w-3.5 h-3.5" />
-                        )}
-                        {variance > 0
-                          ? `+${variance.toFixed(2)}`
-                          : variance.toFixed(2)}
-                      </span>
-                    </td>
-                    <td className="py-2.5 px-2 text-purple-400">
-                      {(s.safeDropAmount || 0).toFixed(2)}
-                    </td>
-                    <td className="py-2.5 px-2 text-slate-300">
-                      {(s.nextShiftFloat || 0).toFixed(2)}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+          return (
+            <tr
+              key={s.id}
+              className="hover:bg-slate-800/40 transition font-mono"
+            >
+              <td className="py-2.5 px-3">
+                <div className="font-bold text-white">{s.id}</div>
+                {s.closedAt && (
+                  <div className="text-[9.5px] text-slate-500 mt-0.5">
+                    {new Date(s.closedAt).toLocaleString("ar-SA", {
+                      dateStyle: "short",
+                      timeStyle: "short",
+                    })}
+                  </div>
+                )}
+              </td>
+              <td className="py-2.5 px-3 font-sans">
+                <div className="font-semibold text-slate-200">
+                  {s.pharmacistName}
+                </div>
+                {closedByDifferentUser && (
+                  <div className="inline-flex items-center gap-1 text-[9.5px] text-amber-300 bg-amber-950/50 border border-amber-800/70 px-1.5 py-0.5 rounded mt-0.5">
+                    <UserCheck className="w-2.5 h-2.5 shrink-0" />
+                    أغلقها: {s.closedByName}
+                  </div>
+                )}
+              </td>
+              <td className="py-2.5 px-3">{s.openingBalance.toFixed(2)}</td>
+              <td className="py-2.5 px-3 text-emerald-400">
+                {s.cashSalesTotal.toFixed(2)}
+              </td>
+              <td className="py-2.5 px-3 text-amber-400">
+                {s.expectedDrawerCash.toFixed(2)}
+              </td>
+              <td className="py-2.5 px-3 font-bold text-white">
+                {(s.actualDrawerCash ?? 0).toFixed(2)}
+              </td>
+              <td className="py-2.5 px-3 font-bold">
+                <span
+                  className={`inline-flex items-center gap-1 ${
+                    variance < 0
+                      ? "text-rose-400"
+                      : variance > 0
+                        ? "text-sky-400"
+                        : "text-emerald-400"
+                  }`}
+                >
+                  {variance === 0 ? (
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                  ) : (
+                    <AlertOctagon className="w-3.5 h-3.5" />
+                  )}
+                  {variance > 0
+                    ? `+${variance.toFixed(2)}`
+                    : variance.toFixed(2)}
+                </span>
+              </td>
+              <td className="py-2.5 px-3 text-purple-400">
+                {(s.safeDropAmount || 0).toFixed(2)}
+              </td>
+              <td className="py-2.5 px-3 text-slate-300">
+                {(s.nextShiftFloat || 0).toFixed(2)}
+              </td>
+            </tr>
+          );
+        })}
+      </DataTableShell>
     </div>
   );
 };
