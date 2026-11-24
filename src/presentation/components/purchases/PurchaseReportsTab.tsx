@@ -17,6 +17,11 @@ import {
   useTableSort,
 } from "../common/table/useTableSort";
 import { useTablePagination } from "../common/table/useTablePagination";
+import {
+  TableColumnDef,
+  useTableColumns,
+} from "../common/table/useTableColumns";
+import { ColumnVisibilityMenu } from "../common/table/ColumnVisibilityMenu";
 import { SortableTh } from "../common/table/SortableTh";
 import { DataTableToolbar } from "../common/table/DataTableToolbar";
 import { DataTableShell } from "../common/table/DataTableShell";
@@ -41,7 +46,7 @@ interface Props {
 
 type PaymentFilter = "ALL" | "CASH" | "CREDIT";
 
-// مفاتيح الأعمدة القابلة للفرز التفاعلي في جدول تقارير فواتير الشراء
+// مفاتيح الأعمدة القابلة للفرز والتحكم في الظهور في جدول تقارير فواتير الشراء
 type PurchaseSortKey =
   | "createdAt"
   | "supplierInvoiceNumber"
@@ -50,6 +55,17 @@ type PurchaseSortKey =
   | "itemsCount"
   | "totalBonusValue"
   | "totalAmount";
+
+// تعريف أعمدة الجدول للتحكم في الإظهار والإخفاء (مع قفل العمودين الأساسيين)
+const PURCHASE_COLUMNS: readonly TableColumnDef<PurchaseSortKey>[] = [
+  { id: "createdAt", label: "رقم القيد والتاريخ", locked: true },
+  { id: "supplierInvoiceNumber", label: "فاتورة المورد" },
+  { id: "supplierName", label: "المستودع / المورد", locked: true },
+  { id: "paymentMode", label: "طريقة الدفع" },
+  { id: "itemsCount", label: "الأصناف والعلب" },
+  { id: "totalBonusValue", label: "قيمة البونص" },
+  { id: "totalAmount", label: "الإجمالي النهائي" },
+];
 
 // خيارات فلتر طريقة الدفع الممرّرة إلى المكوّن الموحّد FilterPills
 const PAYMENT_FILTER_OPTIONS: readonly FilterPillOption<PaymentFilter>[] = [
@@ -101,7 +117,7 @@ const escapeHtml = (value: string): string =>
 /**
  * تبويب تقارير وسجل فواتير الشراء والبونص بجدول كامل العرض
  * يعرض كافة تفاصيل الفواتير والبنود المشتراة والتكلفة المرجحة قبل/بعد البونص
- * باستخدام نواة الجداول الموحّدة (فلاتر التواريخ السريعة، فرز الأعمدة، والتحميل التدريجي)
+ * باستخدام نواة الجداول الموحّدة (فلاتر التواريخ السريعة، فرز الأعمدة، إظهار/إخفاء الأعمدة، والتحميل التدريجي)
  */
 export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
   const settings = usePosStore((s) => s.settings);
@@ -115,6 +131,9 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
   const [dateRange, setDateRange] =
     useState<DateRangeValue>(DEFAULT_DATE_RANGE);
   const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({});
+
+  // إدارة إظهار وإخفاء الأعمدة مع حفظ تفضيلات المستخدم في localStorage
+  const columnsState = useTableColumns("purchase_reports", PURCHASE_COLUMNS);
 
   // تجميع قائمة المستودعات من الفواتير المسجلة + دليل المستودعات
   const availableSuppliers = useMemo(() => {
@@ -264,18 +283,26 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
     setExpandedIds(next);
   };
 
-  // تصدير تفصيلي لملف CSV عبر الأداة الموحّدة بترميز عربي (UTF-8 BOM) يشمل كافة حقول الفواتير والبنود
+  // تصدير تفصيلي لملف CSV عبر الأداة الموحّدة بترميز عربي (UTF-8 BOM) يحترم أعمدة رأس الفاتورة الظاهرة + تفاصيل البنود
   const handleExportCsv = () => {
     if (filteredInvoices.length === 0) return;
 
-    const headers = [
+    const showSupplierInv = columnsState.isVisible("supplierInvoiceNumber");
+    const showPayment = columnsState.isVisible("paymentMode");
+    const showTotalAmount = columnsState.isVisible("totalAmount");
+    const showBonusValue = columnsState.isVisible("totalBonusValue");
+
+    const headers: string[] = [
       "رقم القيد الداخلي",
       "تاريخ ووقت الإدخال",
       "اسم المستودع / المورد",
-      "رقم فاتورة المورد",
-      "طريقة الدفع",
-      "إجمالي الفاتورة",
-      "إجمالي قيمة البونص",
+    ];
+    if (showSupplierInv) headers.push("رقم فاتورة المورد");
+    if (showPayment) headers.push("طريقة الدفع");
+    if (showTotalAmount) headers.push("إجمالي الفاتورة");
+    if (showBonusValue) headers.push("إجمالي قيمة البونص");
+
+    headers.push(
       "اسم الدواء",
       "الباركود",
       "رقم التشغيلة (Batch)",
@@ -288,22 +315,25 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
       "التكلفة المرجحة الجديدة",
       "سعر البيع الجديد",
       "إجمالي السطر",
-    ];
+    );
 
     const rows: CsvCellValue[][] = [];
     filteredInvoices.forEach((inv) => {
       const paymentLabel = inv.paymentMode === "CASH" ? "نقدي" : "آجل";
       const dateStr = inv.createdAt.slice(0, 16).replace("T", " ");
 
+      const buildInvoicePrefix = (): CsvCellValue[] => {
+        const prefix: CsvCellValue[] = [inv.id, dateStr, inv.supplierName];
+        if (showSupplierInv) prefix.push(inv.supplierInvoiceNumber || "—");
+        if (showPayment) prefix.push(paymentLabel);
+        if (showTotalAmount) prefix.push(inv.totalAmount.toFixed(2));
+        if (showBonusValue) prefix.push(inv.totalBonusValue.toFixed(2));
+        return prefix;
+      };
+
       if (inv.items.length === 0) {
         rows.push([
-          inv.id,
-          dateStr,
-          inv.supplierName,
-          inv.supplierInvoiceNumber || "—",
-          paymentLabel,
-          inv.totalAmount.toFixed(2),
-          inv.totalBonusValue.toFixed(2),
+          ...buildInvoicePrefix(),
           "—",
           "—",
           "—",
@@ -322,13 +352,7 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
 
       inv.items.forEach((item) => {
         rows.push([
-          inv.id,
-          dateStr,
-          inv.supplierName,
-          inv.supplierInvoiceNumber || "—",
-          paymentLabel,
-          inv.totalAmount.toFixed(2),
-          inv.totalBonusValue.toFixed(2),
+          ...buildInvoicePrefix(),
           item.productName,
           item.barcode,
           item.batchNumber,
@@ -627,6 +651,11 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
             onResetFilters={handleResetFilters}
             secondaryActions={
               <>
+                <ColumnVisibilityMenu
+                  columnsState={columnsState}
+                  accent="indigo"
+                />
+
                 {pagination.visibleItems.length > 0 && (
                   <button
                     type="button"
@@ -670,59 +699,73 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
         }
         header={
           <tr>
-            <SortableTh
-              direction={getSortDirection("createdAt")}
-              onSort={() => toggleSort("createdAt")}
-              accent="indigo"
-            >
-              رقم القيد والتاريخ
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("supplierInvoiceNumber")}
-              onSort={() => toggleSort("supplierInvoiceNumber")}
-              accent="indigo"
-            >
-              فاتورة المورد
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("supplierName")}
-              onSort={() => toggleSort("supplierName")}
-              accent="indigo"
-            >
-              المستودع / المورد
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("paymentMode")}
-              onSort={() => toggleSort("paymentMode")}
-              align="center"
-              accent="indigo"
-            >
-              طريقة الدفع
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("itemsCount")}
-              onSort={() => toggleSort("itemsCount")}
-              align="center"
-              accent="indigo"
-            >
-              الأصناف والعلب
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("totalBonusValue")}
-              onSort={() => toggleSort("totalBonusValue")}
-              align="center"
-              accent="indigo"
-            >
-              قيمة البونص
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("totalAmount")}
-              onSort={() => toggleSort("totalAmount")}
-              align="center"
-              accent="indigo"
-            >
-              الإجمالي النهائي
-            </SortableTh>
+            {columnsState.isVisible("createdAt") && (
+              <SortableTh
+                direction={getSortDirection("createdAt")}
+                onSort={() => toggleSort("createdAt")}
+                accent="indigo"
+              >
+                رقم القيد والتاريخ
+              </SortableTh>
+            )}
+            {columnsState.isVisible("supplierInvoiceNumber") && (
+              <SortableTh
+                direction={getSortDirection("supplierInvoiceNumber")}
+                onSort={() => toggleSort("supplierInvoiceNumber")}
+                accent="indigo"
+              >
+                فاتورة المورد
+              </SortableTh>
+            )}
+            {columnsState.isVisible("supplierName") && (
+              <SortableTh
+                direction={getSortDirection("supplierName")}
+                onSort={() => toggleSort("supplierName")}
+                accent="indigo"
+              >
+                المستودع / المورد
+              </SortableTh>
+            )}
+            {columnsState.isVisible("paymentMode") && (
+              <SortableTh
+                direction={getSortDirection("paymentMode")}
+                onSort={() => toggleSort("paymentMode")}
+                align="center"
+                accent="indigo"
+              >
+                طريقة الدفع
+              </SortableTh>
+            )}
+            {columnsState.isVisible("itemsCount") && (
+              <SortableTh
+                direction={getSortDirection("itemsCount")}
+                onSort={() => toggleSort("itemsCount")}
+                align="center"
+                accent="indigo"
+              >
+                الأصناف والعلب
+              </SortableTh>
+            )}
+            {columnsState.isVisible("totalBonusValue") && (
+              <SortableTh
+                direction={getSortDirection("totalBonusValue")}
+                onSort={() => toggleSort("totalBonusValue")}
+                align="center"
+                accent="indigo"
+              >
+                قيمة البونص
+              </SortableTh>
+            )}
+            {columnsState.isVisible("totalAmount") && (
+              <SortableTh
+                direction={getSortDirection("totalAmount")}
+                onSort={() => toggleSort("totalAmount")}
+                align="center"
+                accent="indigo"
+              >
+                الإجمالي النهائي
+              </SortableTh>
+            )}
             <th className="py-2.5 px-3 text-left">التفاصيل</th>
           </tr>
         }
@@ -763,68 +806,82 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
                     : "bg-slate-950/40 hover:bg-slate-800/55"
                 }`}
               >
-                <td className="py-3 px-3">
-                  <div className="flex items-center gap-1.5">
-                    {isExpanded ? (
-                      <ChevronDown className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                {columnsState.isVisible("createdAt") && (
+                  <td className="py-3 px-3">
+                    <div className="flex items-center gap-1.5">
+                      {isExpanded ? (
+                        <ChevronDown className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                      ) : (
+                        <ChevronLeft className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      )}
+                      <span className="font-mono font-bold text-indigo-300">
+                        {inv.id}
+                      </span>
+                    </div>
+                    <div className="text-[10.5px] font-mono text-slate-500 mt-0.5 pr-5">
+                      {new Date(inv.createdAt).toLocaleString("ar-SA", {
+                        dateStyle: "short",
+                        timeStyle: "short",
+                      })}
+                    </div>
+                  </td>
+                )}
+
+                {columnsState.isVisible("supplierInvoiceNumber") && (
+                  <td className="py-3 px-3 font-mono text-slate-200 font-bold">
+                    {inv.supplierInvoiceNumber || "—"}
+                  </td>
+                )}
+
+                {columnsState.isVisible("supplierName") && (
+                  <td className="py-3 px-3 font-bold text-white">
+                    {inv.supplierName}
+                  </td>
+                )}
+
+                {columnsState.isVisible("paymentMode") && (
+                  <td className="py-3 px-3 text-center">
+                    {inv.paymentMode === "CASH" ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-sky-950 border border-sky-800 text-sky-300">
+                        <Banknote className="w-3 h-3" /> نقدي
+                      </span>
                     ) : (
-                      <ChevronLeft className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                    )}
-                    <span className="font-mono font-bold text-indigo-300">
-                      {inv.id}
-                    </span>
-                  </div>
-                  <div className="text-[10.5px] font-mono text-slate-500 mt-0.5 pr-5">
-                    {new Date(inv.createdAt).toLocaleString("ar-SA", {
-                      dateStyle: "short",
-                      timeStyle: "short",
-                    })}
-                  </div>
-                </td>
-
-                <td className="py-3 px-3 font-mono text-slate-200 font-bold">
-                  {inv.supplierInvoiceNumber || "—"}
-                </td>
-
-                <td className="py-3 px-3 font-bold text-white">
-                  {inv.supplierName}
-                </td>
-
-                <td className="py-3 px-3 text-center">
-                  {inv.paymentMode === "CASH" ? (
-                    <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-sky-950 border border-sky-800 text-sky-300">
-                      <Banknote className="w-3 h-3" /> نقدي
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-950 border border-amber-800 text-amber-300">
-                      <CreditCard className="w-3 h-3" /> آجل
-                    </span>
-                  )}
-                </td>
-
-                <td className="py-3 px-3 text-center">
-                  <div className="font-mono font-bold text-slate-200">
-                    {inv.items.length} صنف
-                  </div>
-                  <div className="text-[10px] font-mono text-slate-400">
-                    {invoicePurchasedPacks} علبة
-                    {invoiceBonusPacks > 0 && (
-                      <span className="text-emerald-400 mr-1">
-                        (+{invoiceBonusPacks} بونص)
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-950 border border-amber-800 text-amber-300">
+                        <CreditCard className="w-3 h-3" /> آجل
                       </span>
                     )}
-                  </div>
-                </td>
+                  </td>
+                )}
 
-                <td className="py-3 px-3 text-center font-mono font-bold text-emerald-400">
-                  {inv.totalBonusValue > 0
-                    ? `+${inv.totalBonusValue.toFixed(2)} ر.س`
-                    : "0.00"}
-                </td>
+                {columnsState.isVisible("itemsCount") && (
+                  <td className="py-3 px-3 text-center">
+                    <div className="font-mono font-bold text-slate-200">
+                      {inv.items.length} صنف
+                    </div>
+                    <div className="text-[10px] font-mono text-slate-400">
+                      {invoicePurchasedPacks} علبة
+                      {invoiceBonusPacks > 0 && (
+                        <span className="text-emerald-400 mr-1">
+                          (+{invoiceBonusPacks} بونص)
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                )}
 
-                <td className="py-3 px-3 text-center font-mono font-extrabold text-sm text-white">
-                  {inv.totalAmount.toFixed(2)} ر.س
-                </td>
+                {columnsState.isVisible("totalBonusValue") && (
+                  <td className="py-3 px-3 text-center font-mono font-bold text-emerald-400">
+                    {inv.totalBonusValue > 0
+                      ? `+${inv.totalBonusValue.toFixed(2)} ر.س`
+                      : "0.00"}
+                  </td>
+                )}
+
+                {columnsState.isVisible("totalAmount") && (
+                  <td className="py-3 px-3 text-center font-mono font-extrabold text-sm text-white">
+                    {inv.totalAmount.toFixed(2)} ر.س
+                  </td>
+                )}
 
                 <td className="py-3 px-3 text-left">
                   <span
@@ -842,7 +899,7 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
               {/* جدول بنود الفاتورة التفصيلي بكافة المعلومات المحاسبية والمخزنية */}
               {isExpanded && (
                 <tr className="bg-slate-950/90">
-                  <td colSpan={8} className="p-3">
+                  <td colSpan={columnsState.visibleCount + 1} className="p-3">
                     <div className="rounded-xl border border-slate-800 bg-slate-900/90 overflow-hidden">
                       <div className="px-3 py-2 bg-slate-950 border-b border-slate-800 flex items-center justify-between flex-wrap gap-2 text-[11px]">
                         <span className="font-bold text-slate-200 flex items-center gap-1.5">

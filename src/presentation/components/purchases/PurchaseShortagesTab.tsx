@@ -19,6 +19,11 @@ import {
   useTableSort,
 } from "../common/table/useTableSort";
 import { useTablePagination } from "../common/table/useTablePagination";
+import {
+  TableColumnDef,
+  useTableColumns,
+} from "../common/table/useTableColumns";
+import { ColumnVisibilityMenu } from "../common/table/ColumnVisibilityMenu";
 import { SortableTh } from "../common/table/SortableTh";
 import { DataTableToolbar } from "../common/table/DataTableToolbar";
 import { DataTableShell } from "../common/table/DataTableShell";
@@ -48,7 +53,7 @@ const PAGE_SIZE = 50;
 const ASSIGNED_KEY = "__ASSIGNED__";
 const UNASSIGNED_KEY = "__UNASSIGNED__";
 
-// مفاتيح الأعمدة القابلة للفرز التفاعلي في جدول دفتر النواقص
+// مفاتيح الأعمدة القابلة للفرز والتحكم في الظهور في جدول دفتر النواقص
 type ShortageSortKey =
   | "name"
   | "stockPacks"
@@ -75,7 +80,7 @@ const getSuggestedQty = (product: ProductEntity): number =>
 /**
  * تبويب دفتر النواقص وتوزيع الطلبيات على المستودعات (Purchase Orders)
  * يستخدم محرك البحث الضبابي والصوتي (fuzzySearch)، أدوات التصدير والمراسلة الموحّدة،
- * ونواة الجداول الموحّدة (حبوب الفلترة، فرز الأعمدة، والتحميل التدريجي)
+ * ونواة الجداول الموحّدة (حبوب الفلترة، فرز الأعمدة، إظهار/إخفاء الأعمدة، والتحميل التدريجي)
  */
 export const PurchaseShortagesTab: React.FC<Props> = ({
   shortageProducts,
@@ -96,6 +101,30 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
   const [copied, setCopied] = useState(false);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // تعريف أعمدة جدول النواقص للتحكم في الإظهار والإخفاء مع احترام صلاحية عرض التكلفة
+  const shortageColumns = useMemo<TableColumnDef<ShortageSortKey>[]>(() => {
+    const base: TableColumnDef<ShortageSortKey>[] = [
+      { id: "name", label: "الدواء / المادة الفعالة", locked: true },
+      { id: "stockPacks", label: "الرصيد / الحد" },
+      { id: "supplierName", label: "المستودع الموجه له الطلب" },
+    ];
+    if (canViewCost) {
+      base.push({ id: "weightedCostPrice", label: "آخر تكلفة" });
+    }
+    base.push({
+      id: "orderQty",
+      label: "الكمية المطلوبة (علبة)",
+      locked: true,
+    });
+    if (canViewCost) {
+      base.push({ id: "estimatedTotal", label: "الإجمالي التقديري" });
+    }
+    return base;
+  }, [canViewCost]);
+
+  // إدارة إظهار وإخفاء الأعمدة مع حفظ تفضيلات المستخدم في localStorage
+  const columnsState = useTableColumns("purchase_shortages", shortageColumns);
 
   const shortageSearchIndex = useMemo(
     () => buildProductSearchIndex(shortageProducts),
@@ -514,43 +543,35 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     window.open(url, "_blank", "noopener,noreferrer");
   };
 
-  // تصدير ملف CSV عبر الأداة الموحّدة بترميز عربي UTF-8 BOM
+  // تصدير ملف CSV عبر الأداة الموحّدة بترميز عربي UTF-8 BOM مع احترام الأعمدة الظاهرة حالياً وصلاحية التكلفة
   const handleExportCsvOrder = () => {
     if (activeOrderItems.length === 0) return;
 
-    const headers = [
-      "المستودع المحدد",
-      "الباركود",
-      "الاسم التجاري للدواء",
-      "المادة الفعالة",
-      "الرصيد الحالي (علبة)",
-      "حد الطلب الأدنى",
-      "الكمية المطلوبة (علبة)",
-      ...(canViewCost
-        ? ["آخر تكلفة مرجحة للعلبة", "التكلفة التقديرية للسطر"]
-        : []),
-    ];
+    const showSupplier = columnsState.isVisible("supplierName");
+    const showStock = columnsState.isVisible("stockPacks");
+    const showCost = canViewCost && columnsState.isVisible("weightedCostPrice");
+    const showEstimated =
+      canViewCost && columnsState.isVisible("estimatedTotal");
+
+    const headers: string[] = [];
+    if (showSupplier) headers.push("المستودع المحدد");
+    headers.push("الباركود", "الاسم التجاري للدواء", "المادة الفعالة");
+    if (showStock) headers.push("الرصيد الحالي (علبة)", "حد الطلب الأدنى");
+    headers.push("الكمية المطلوبة (علبة)");
+    if (showCost) headers.push("آخر تكلفة مرجحة للعلبة");
+    if (showEstimated) headers.push("التكلفة التقديرية للسطر");
 
     const rows: CsvCellValue[][] = activeOrderItems.map(
       ({ product, qty, supplier }) => {
-        const baseColumns: CsvCellValue[] = [
-          supplier?.name || "غير محدد",
-          product.barcode,
-          product.name,
-          product.scientificName,
-          product.stockPacks,
-          product.minLimit,
-          qty,
-        ];
-
-        if (canViewCost) {
-          baseColumns.push(
-            product.weightedCostPrice.toFixed(2),
-            (qty * product.weightedCostPrice).toFixed(2),
-          );
-        }
-
-        return baseColumns;
+        const row: CsvCellValue[] = [];
+        if (showSupplier) row.push(supplier?.name || "غير محدد");
+        row.push(product.barcode, product.name, product.scientificName);
+        if (showStock) row.push(product.stockPacks, product.minLimit);
+        row.push(qty);
+        if (showCost) row.push(product.weightedCostPrice.toFixed(2));
+        if (showEstimated)
+          row.push((qty * product.weightedCostPrice).toFixed(2));
+        return row;
       },
     );
 
@@ -748,15 +769,21 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
               hasActiveFilters={hasActiveFilters}
               onResetFilters={handleResetFilters}
               actions={
-                <button
-                  type="button"
-                  onClick={handleResetSuggested}
-                  title="إعادة تعيين جميع الكميات للقيمة المقترحة تلقائياً"
-                  className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white px-2.5 py-2 rounded-xl font-bold flex items-center gap-1 transition"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  الكميات المقترحة
-                </button>
+                <>
+                  <ColumnVisibilityMenu
+                    columnsState={columnsState}
+                    accent="sky"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleResetSuggested}
+                    title="إعادة تعيين جميع الكميات للقيمة المقترحة تلقائياً"
+                    className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white px-2.5 py-2 rounded-xl font-bold flex items-center gap-1 transition"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    الكميات المقترحة
+                  </button>
+                </>
               }
               visibleCount={pagination.visibleCount}
               filteredCount={sortedShortages.length}
@@ -838,32 +865,38 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
                 className="rounded accent-indigo-500 cursor-pointer"
               />
             </th>
-            <SortableTh
-              direction={getSortDirection("name")}
-              onSort={() => toggleSort("name")}
-              accent="sky"
-              className="px-2"
-            >
-              الدواء / المادة الفعالة
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("stockPacks")}
-              onSort={() => toggleSort("stockPacks")}
-              align="center"
-              accent="sky"
-              className="px-2"
-            >
-              الرصيد / الحد
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("supplierName")}
-              onSort={() => toggleSort("supplierName")}
-              accent="sky"
-              className="px-2 min-w-[190px]"
-            >
-              المستودع الموجه له الطلب
-            </SortableTh>
-            {canViewCost && (
+            {columnsState.isVisible("name") && (
+              <SortableTh
+                direction={getSortDirection("name")}
+                onSort={() => toggleSort("name")}
+                accent="sky"
+                className="px-2"
+              >
+                الدواء / المادة الفعالة
+              </SortableTh>
+            )}
+            {columnsState.isVisible("stockPacks") && (
+              <SortableTh
+                direction={getSortDirection("stockPacks")}
+                onSort={() => toggleSort("stockPacks")}
+                align="center"
+                accent="sky"
+                className="px-2"
+              >
+                الرصيد / الحد
+              </SortableTh>
+            )}
+            {columnsState.isVisible("supplierName") && (
+              <SortableTh
+                direction={getSortDirection("supplierName")}
+                onSort={() => toggleSort("supplierName")}
+                accent="sky"
+                className="px-2 min-w-[190px]"
+              >
+                المستودع الموجه له الطلب
+              </SortableTh>
+            )}
+            {canViewCost && columnsState.isVisible("weightedCostPrice") && (
               <SortableTh
                 direction={getSortDirection("weightedCostPrice")}
                 onSort={() => toggleSort("weightedCostPrice")}
@@ -874,16 +907,18 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
                 آخر تكلفة
               </SortableTh>
             )}
-            <SortableTh
-              direction={getSortDirection("orderQty")}
-              onSort={() => toggleSort("orderQty")}
-              align="center"
-              accent="sky"
-              className="px-2"
-            >
-              الكمية المطلوبة (علبة)
-            </SortableTh>
-            {canViewCost && (
+            {columnsState.isVisible("orderQty") && (
+              <SortableTh
+                direction={getSortDirection("orderQty")}
+                onSort={() => toggleSort("orderQty")}
+                align="center"
+                accent="sky"
+                className="px-2"
+              >
+                الكمية المطلوبة (علبة)
+              </SortableTh>
+            )}
+            {canViewCost && columnsState.isVisible("estimatedTotal") && (
               <SortableTh
                 direction={getSortDirection("estimatedTotal")}
                 onSort={() => toggleSort("estimatedTotal")}
@@ -939,87 +974,95 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
                 />
               </td>
 
-              <td className="py-2.5 px-2">
-                <div className="font-bold text-white flex items-center gap-1.5">
-                  {p.stockPacks === 0 && (
-                    <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
-                  )}
-                  {p.name}
-                </div>
-                <div className="text-[10px] text-slate-400">
-                  {p.scientificName} |{" "}
-                  <span className="font-mono">{p.barcode}</span>
-                </div>
-              </td>
+              {columnsState.isVisible("name") && (
+                <td className="py-2.5 px-2">
+                  <div className="font-bold text-white flex items-center gap-1.5">
+                    {p.stockPacks === 0 && (
+                      <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                    )}
+                    {p.name}
+                  </div>
+                  <div className="text-[10px] text-slate-400">
+                    {p.scientificName} |{" "}
+                    <span className="font-mono">{p.barcode}</span>
+                  </div>
+                </td>
+              )}
 
-              <td className="py-2.5 px-2 text-center">
-                <span
-                  className={`font-mono font-bold px-2 py-0.5 rounded-full text-[11px] ${
-                    p.stockPacks === 0
-                      ? "bg-rose-950 text-rose-300 border border-rose-800"
-                      : "bg-amber-950 text-amber-300 border border-amber-800"
-                  }`}
-                >
-                  {p.stockPacks} / {p.minLimit}
-                </span>
-              </td>
+              {columnsState.isVisible("stockPacks") && (
+                <td className="py-2.5 px-2 text-center">
+                  <span
+                    className={`font-mono font-bold px-2 py-0.5 rounded-full text-[11px] ${
+                      p.stockPacks === 0
+                        ? "bg-rose-950 text-rose-300 border border-rose-800"
+                        : "bg-amber-950 text-amber-300 border border-amber-800"
+                    }`}
+                  >
+                    {p.stockPacks} / {p.minLimit}
+                  </span>
+                </td>
+              )}
 
-              <td className="py-2.5 px-2">
-                <select
-                  value={assignedId}
-                  onChange={(e) => handleAssignSingle(p.id, e.target.value)}
-                  className={`w-full rounded-lg px-2.5 py-1.5 text-xs outline-none border transition ${
-                    assignedId
-                      ? "bg-indigo-950/40 border-indigo-700 text-indigo-100 font-bold"
-                      : "bg-slate-900 border-slate-700 text-slate-300"
-                  }`}
-                >
-                  <option value="" className="bg-slate-900 text-slate-400">
-                    — غير محدد —
-                  </option>
-                  {activeSuppliers.map((sup) => (
-                    <option
-                      key={sup.id}
-                      value={sup.id}
-                      className="bg-slate-900 text-white"
-                    >
-                      {sup.name}
+              {columnsState.isVisible("supplierName") && (
+                <td className="py-2.5 px-2">
+                  <select
+                    value={assignedId}
+                    onChange={(e) => handleAssignSingle(p.id, e.target.value)}
+                    className={`w-full rounded-lg px-2.5 py-1.5 text-xs outline-none border transition ${
+                      assignedId
+                        ? "bg-indigo-950/40 border-indigo-700 text-indigo-100 font-bold"
+                        : "bg-slate-900 border-slate-700 text-slate-300"
+                    }`}
+                  >
+                    <option value="" className="bg-slate-900 text-slate-400">
+                      — غير محدد —
                     </option>
-                  ))}
-                  {assignedSupplierObj && !assignedSupplierObj.isActive && (
-                    <option
-                      value={assignedSupplierObj.id}
-                      className="bg-slate-900 text-slate-400"
-                    >
-                      {assignedSupplierObj.name} (مجمّد)
-                    </option>
-                  )}
-                </select>
-              </td>
+                    {activeSuppliers.map((sup) => (
+                      <option
+                        key={sup.id}
+                        value={sup.id}
+                        className="bg-slate-900 text-white"
+                      >
+                        {sup.name}
+                      </option>
+                    ))}
+                    {assignedSupplierObj && !assignedSupplierObj.isActive && (
+                      <option
+                        value={assignedSupplierObj.id}
+                        className="bg-slate-900 text-slate-400"
+                      >
+                        {assignedSupplierObj.name} (مجمّد)
+                      </option>
+                    )}
+                  </select>
+                </td>
+              )}
 
-              {canViewCost && (
+              {canViewCost && columnsState.isVisible("weightedCostPrice") && (
                 <td className="py-2.5 px-2 text-center font-mono text-amber-400">
                   {p.weightedCostPrice.toFixed(2)}
                 </td>
               )}
 
-              <td className="py-2.5 px-2 text-center">
-                <input
-                  type="number"
-                  min={0}
-                  max={500}
-                  value={qty}
-                  onChange={(e) =>
-                    setOrderQtyMap((prev) => ({
-                      ...prev,
-                      [p.id]: Math.max(0, Number(e.target.value) || 0),
-                    }))
-                  }
-                  className="w-20 bg-slate-800 border border-sky-700 rounded-lg p-1.5 text-center font-mono font-bold text-white outline-none focus:border-sky-400"
-                />
-              </td>
+              {columnsState.isVisible("orderQty") && (
+                <td className="py-2.5 px-2 text-center">
+                  <input
+                    type="number"
+                    min={0}
+                    max={500}
+                    value={qty}
+                    onChange={(e) =>
+                      setOrderQtyMap((prev) => ({
+                        ...prev,
+                        [p.id]: Math.max(0, Number(e.target.value) || 0),
+                      }))
+                    }
+                    className="w-20 bg-slate-800 border border-sky-700 rounded-lg p-1.5 text-center font-mono font-bold text-white outline-none focus:border-sky-400"
+                  />
+                </td>
+              )}
 
-              {canViewCost && (
+              {canViewCost && columnsState.isVisible("estimatedTotal") && (
                 <td className="py-2.5 px-3 text-left font-mono font-bold text-emerald-400">
                   {(qty * p.weightedCostPrice).toFixed(2)}
                 </td>

@@ -24,6 +24,15 @@ import {
   useTableSort,
 } from "../common/table/useTableSort";
 import { useTablePagination } from "../common/table/useTablePagination";
+import {
+  TableColumnDef,
+  useTableColumns,
+} from "../common/table/useTableColumns";
+import { ColumnVisibilityMenu } from "../common/table/ColumnVisibilityMenu";
+import {
+  TableExportButton,
+  TableExportColumn,
+} from "../common/table/TableExportButton";
 import { SortableTh } from "../common/table/SortableTh";
 import { DataTableToolbar } from "../common/table/DataTableToolbar";
 import { DataTableShell } from "../common/table/DataTableShell";
@@ -43,7 +52,7 @@ import {
 type LedgerScope = "customers" | "suppliers" | "vouchers";
 type BalanceFilter = "ALL" | "OPEN" | "OVERDUE_30";
 
-// مفاتيح الأعمدة القابلة للفرز التفاعلي في جدول الذمم والآجل
+// مفاتيح الأعمدة القابلة للفرز والتحكم في الظهور في جدول الذمم والآجل
 type LedgerSortKey =
   | "partyName"
   | "debtAgeDays"
@@ -104,7 +113,7 @@ const LEDGER_DEFAULT_DIRECTIONS: Partial<Record<LedgerSortKey, SortDirection>> =
 /**
  * تبويب الذمم والآجل بجدول كامل العرض (Full-Width Table)
  * النقر على أي عميل أو مستودع يفتح نافذة منبثقة (Modal) بكشف الحساب وتفاصيل العمليات،
- * ومبني على نواة الجداول الموحّدة (حبوب الفلترة، فرز الأعمدة، والتحميل التدريجي)
+ * ومبني على نواة الجداول الموحّدة (حبوب الفلترة، فرز الأعمدة، إظهار/إخفاء الأعمدة، والتصدير)
  */
 export const LedgerAccountsSection: React.FC<Props> = ({
   customerAccounts,
@@ -203,6 +212,72 @@ export const LedgerAccountsSection: React.FC<Props> = ({
   const isSupplierScope = activeScope === "suppliers";
   const scopeAccent = isSupplierScope ? "purple" : "sky";
 
+  // تعريف أعمدة جدول الذمم للتحكم في الإظهار والإخفاء (مع قفل عمود الاسم)
+  const ledgerColumns = useMemo<TableColumnDef<LedgerSortKey>[]>(
+    () => [
+      {
+        id: "partyName",
+        label: isSupplierScope ? "اسم المستودع" : "اسم العميل",
+        locked: true,
+      },
+      { id: "debtAgeDays", label: "الحالة وعمر الدين" },
+      { id: "lastTransactionAt", label: "آخر حركة" },
+      { id: "totalCreditAmount", label: "إجمالي الآجل" },
+      { id: "totalPaidAmount", label: "إجمالي المسدد" },
+      { id: "remainingBalance", label: "الرصيد المتبقي" },
+    ],
+    [isSupplierScope],
+  );
+
+  // حفظ تفضيلات الأعمدة لكل نطاق (عملاء / مستودعات) بشكل مستقل في localStorage
+  const columnsState = useTableColumns(
+    isSupplierScope ? "ledger_suppliers" : "ledger_customers",
+    ledgerColumns,
+  );
+
+  // أعمدة التصدير إلى Excel / CSV مرتبطة بمعرّفات الأعمدة لتصدير الحقول الظاهرة فقط
+  const exportColumns = useMemo<
+    TableExportColumn<PartyAccountSummary, LedgerSortKey>[]
+  >(
+    () => [
+      {
+        columnId: "partyName",
+        header: isSupplierScope ? "اسم المستودع" : "اسم العميل",
+        getValue: (acc) => acc.partyName,
+      },
+      {
+        columnId: "debtAgeDays",
+        header: "الحالة وعمر الدين",
+        getValue: (acc) => {
+          if (acc.remainingBalance <= 0) return "مسدد بالكامل";
+          const days = getDebtAgeDays(acc.lastTransactionAt);
+          return days === 0 ? "اليوم" : `${days} يوم`;
+        },
+      },
+      {
+        columnId: "lastTransactionAt",
+        header: "تاريخ آخر حركة",
+        getValue: (acc) => acc.lastTransactionAt.slice(0, 10),
+      },
+      {
+        columnId: "totalCreditAmount",
+        header: "إجمالي الآجل",
+        getValue: (acc) => acc.totalCreditAmount.toFixed(2),
+      },
+      {
+        columnId: "totalPaidAmount",
+        header: "إجمالي المسدد",
+        getValue: (acc) => acc.totalPaidAmount.toFixed(2),
+      },
+      {
+        columnId: "remainingBalance",
+        header: "الرصيد المتبقي",
+        getValue: (acc) => acc.remainingBalance.toFixed(2),
+      },
+    ],
+    [isSupplierScope],
+  );
+
   // خيارات حبوب فلتر حالة الرصيد الممرّرة إلى المكوّن الموحّد FilterPills
   const balanceFilterOptions = useMemo<FilterPillOption<BalanceFilter>[]>(
     () => [
@@ -255,7 +330,7 @@ export const LedgerAccountsSection: React.FC<Props> = ({
     });
   }, [activeSourceAccounts, searchQuery, balanceFilter]);
 
-  // تطبيق الفرز التفاعلي بالأعمدة على الحسابات المطابقة
+  // تطبيق الفرز التفاعلي بالأعمدة على الحسابات المطابقة (يُستخدم أيضاً لترتيب ملف التصدير)
   const {
     sortedItems: filteredAccounts,
     sortState,
@@ -563,6 +638,23 @@ export const LedgerAccountsSection: React.FC<Props> = ({
                   ariaLabel="تصفية حسابات الذمم حسب الحالة"
                 />
               }
+              actions={
+                <>
+                  <ColumnVisibilityMenu
+                    columnsState={columnsState}
+                    accent={scopeAccent}
+                  />
+                  <TableExportButton
+                    items={filteredAccounts}
+                    columns={exportColumns}
+                    isColumnVisible={columnsState.isVisible}
+                    fileNamePrefix={
+                      isSupplierScope ? "Suppliers_Ledger" : "Customers_Ledger"
+                    }
+                    itemLabel={isSupplierScope ? "مستودع" : "عميل"}
+                  />
+                </>
+              }
               hasActiveFilters={hasActiveFilters}
               onResetFilters={handleResetFilters}
               visibleCount={pagination.visibleCount}
@@ -578,48 +670,60 @@ export const LedgerAccountsSection: React.FC<Props> = ({
           }
           header={
             <tr>
-              <SortableTh
-                direction={getSortDirection("partyName")}
-                onSort={() => toggleSort("partyName")}
-                accent={scopeAccent}
-              >
-                {isSupplierScope ? "اسم المستودع" : "اسم العميل"}
-              </SortableTh>
-              <SortableTh
-                direction={getSortDirection("debtAgeDays")}
-                onSort={() => toggleSort("debtAgeDays")}
-                accent={scopeAccent}
-              >
-                الحالة وعمر الدين
-              </SortableTh>
-              <SortableTh
-                direction={getSortDirection("lastTransactionAt")}
-                onSort={() => toggleSort("lastTransactionAt")}
-                accent={scopeAccent}
-              >
-                آخر حركة
-              </SortableTh>
-              <SortableTh
-                direction={getSortDirection("totalCreditAmount")}
-                onSort={() => toggleSort("totalCreditAmount")}
-                accent={scopeAccent}
-              >
-                إجمالي الآجل
-              </SortableTh>
-              <SortableTh
-                direction={getSortDirection("totalPaidAmount")}
-                onSort={() => toggleSort("totalPaidAmount")}
-                accent={scopeAccent}
-              >
-                إجمالي المسدد
-              </SortableTh>
-              <SortableTh
-                direction={getSortDirection("remainingBalance")}
-                onSort={() => toggleSort("remainingBalance")}
-                accent={scopeAccent}
-              >
-                الرصيد المتبقي
-              </SortableTh>
+              {columnsState.isVisible("partyName") && (
+                <SortableTh
+                  direction={getSortDirection("partyName")}
+                  onSort={() => toggleSort("partyName")}
+                  accent={scopeAccent}
+                >
+                  {isSupplierScope ? "اسم المستودع" : "اسم العميل"}
+                </SortableTh>
+              )}
+              {columnsState.isVisible("debtAgeDays") && (
+                <SortableTh
+                  direction={getSortDirection("debtAgeDays")}
+                  onSort={() => toggleSort("debtAgeDays")}
+                  accent={scopeAccent}
+                >
+                  الحالة وعمر الدين
+                </SortableTh>
+              )}
+              {columnsState.isVisible("lastTransactionAt") && (
+                <SortableTh
+                  direction={getSortDirection("lastTransactionAt")}
+                  onSort={() => toggleSort("lastTransactionAt")}
+                  accent={scopeAccent}
+                >
+                  آخر حركة
+                </SortableTh>
+              )}
+              {columnsState.isVisible("totalCreditAmount") && (
+                <SortableTh
+                  direction={getSortDirection("totalCreditAmount")}
+                  onSort={() => toggleSort("totalCreditAmount")}
+                  accent={scopeAccent}
+                >
+                  إجمالي الآجل
+                </SortableTh>
+              )}
+              {columnsState.isVisible("totalPaidAmount") && (
+                <SortableTh
+                  direction={getSortDirection("totalPaidAmount")}
+                  onSort={() => toggleSort("totalPaidAmount")}
+                  accent={scopeAccent}
+                >
+                  إجمالي المسدد
+                </SortableTh>
+              )}
+              {columnsState.isVisible("remainingBalance") && (
+                <SortableTh
+                  direction={getSortDirection("remainingBalance")}
+                  onSort={() => toggleSort("remainingBalance")}
+                  accent={scopeAccent}
+                >
+                  الرصيد المتبقي
+                </SortableTh>
+              )}
               <th className="py-2.5 px-3 text-left">إجراءات</th>
             </tr>
           }
@@ -661,54 +765,68 @@ export const LedgerAccountsSection: React.FC<Props> = ({
                     : "bg-slate-950/40 hover:bg-slate-800/60"
                 }`}
               >
-                <td className="py-3 px-3 font-bold text-white">
-                  {acc.partyName}
-                </td>
+                {columnsState.isVisible("partyName") && (
+                  <td className="py-3 px-3 font-bold text-white">
+                    {acc.partyName}
+                  </td>
+                )}
 
-                <td className="py-3 px-3">
-                  {acc.remainingBalance > 0 ? (
-                    <span
-                      className={`inline-flex items-center gap-1 text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border ${
-                        ageDays > 60
-                          ? "bg-rose-950/70 border-rose-800 text-rose-300"
-                          : ageDays > 30
-                            ? "bg-amber-950/70 border-amber-800 text-amber-300"
-                            : "bg-emerald-950/50 border-emerald-800 text-emerald-300"
-                      }`}
-                    >
-                      <Clock className="w-3 h-3" />
-                      {ageDays === 0 ? "اليوم" : `${ageDays} يوم`}
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-950/60 border border-emerald-800 text-emerald-300">
-                      <CheckCircle2 className="w-3 h-3" /> مسدد بالكامل
-                    </span>
-                  )}
-                </td>
+                {columnsState.isVisible("debtAgeDays") && (
+                  <td className="py-3 px-3">
+                    {acc.remainingBalance > 0 ? (
+                      <span
+                        className={`inline-flex items-center gap-1 text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border ${
+                          ageDays > 60
+                            ? "bg-rose-950/70 border-rose-800 text-rose-300"
+                            : ageDays > 30
+                              ? "bg-amber-950/70 border-amber-800 text-amber-300"
+                              : "bg-emerald-950/50 border-emerald-800 text-emerald-300"
+                        }`}
+                      >
+                        <Clock className="w-3 h-3" />
+                        {ageDays === 0 ? "اليوم" : `${ageDays} يوم`}
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-950/60 border border-emerald-800 text-emerald-300">
+                        <CheckCircle2 className="w-3 h-3" /> مسدد بالكامل
+                      </span>
+                    )}
+                  </td>
+                )}
 
-                <td className="py-3 px-3 font-mono text-[11px] text-slate-400">
-                  {new Date(acc.lastTransactionAt).toLocaleDateString("ar-SA")}
-                </td>
+                {columnsState.isVisible("lastTransactionAt") && (
+                  <td className="py-3 px-3 font-mono text-[11px] text-slate-400">
+                    {new Date(acc.lastTransactionAt).toLocaleDateString(
+                      "ar-SA",
+                    )}
+                  </td>
+                )}
 
-                <td className="py-3 px-3 font-mono text-slate-200">
-                  {acc.totalCreditAmount.toFixed(2)} ر.س
-                </td>
+                {columnsState.isVisible("totalCreditAmount") && (
+                  <td className="py-3 px-3 font-mono text-slate-200">
+                    {acc.totalCreditAmount.toFixed(2)} ر.س
+                  </td>
+                )}
 
-                <td className="py-3 px-3 font-mono text-emerald-400">
-                  {acc.totalPaidAmount.toFixed(2)} ر.س
-                </td>
+                {columnsState.isVisible("totalPaidAmount") && (
+                  <td className="py-3 px-3 font-mono text-emerald-400">
+                    {acc.totalPaidAmount.toFixed(2)} ر.س
+                  </td>
+                )}
 
-                <td
-                  className={`py-3 px-3 font-mono font-extrabold text-sm ${
-                    acc.remainingBalance > 0
-                      ? isSupplierScope
-                        ? "text-rose-400"
-                        : "text-amber-400"
-                      : "text-emerald-400"
-                  }`}
-                >
-                  {acc.remainingBalance.toFixed(2)} ر.س
-                </td>
+                {columnsState.isVisible("remainingBalance") && (
+                  <td
+                    className={`py-3 px-3 font-mono font-extrabold text-sm ${
+                      acc.remainingBalance > 0
+                        ? isSupplierScope
+                          ? "text-rose-400"
+                          : "text-amber-400"
+                        : "text-emerald-400"
+                    }`}
+                  >
+                    {acc.remainingBalance.toFixed(2)} ر.س
+                  </td>
+                )}
 
                 <td className="py-3 px-3">
                   <div className="flex items-center justify-end gap-1.5">

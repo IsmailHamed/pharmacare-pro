@@ -15,13 +15,18 @@ import {
   useTableSort,
 } from "../components/common/table/useTableSort";
 import { useTablePagination } from "../components/common/table/useTablePagination";
+import {
+  TableColumnDef,
+  useTableColumns,
+} from "../components/common/table/useTableColumns";
+import { ColumnVisibilityMenu } from "../components/common/table/ColumnVisibilityMenu";
 import { SortableTh } from "../components/common/table/SortableTh";
 import { DataTableToolbar } from "../components/common/table/DataTableToolbar";
 import { DataTableShell } from "../components/common/table/DataTableShell";
 import { TableLoadMoreFooter } from "../components/common/table/TableLoadMoreFooter";
 import { ShieldAlert, FileSpreadsheet } from "lucide-react";
 
-// مفاتيح الأعمدة القابلة للفرز التفاعلي في دفتر الأدوية المراقبة
+// مفاتيح الأعمدة القابلة للفرز والتحكم في الظهور داخل دفتر الأدوية المراقبة
 type ControlledSortKey =
   | "dispensedAt"
   | "productName"
@@ -31,6 +36,18 @@ type ControlledSortKey =
   | "nationalId"
   | "doctorName"
   | "prescriptionId";
+
+// تعريف أعمدة الجدول للتحكم البصري في الإظهار والإخفاء (مع قفل التاريخ والدواء، ودون التأثير على التقرير الرسمي)
+const CONTROLLED_COLUMNS: readonly TableColumnDef<ControlledSortKey>[] = [
+  { id: "dispensedAt", label: "التاريخ", locked: true },
+  { id: "productName", label: "الدواء", locked: true },
+  { id: "qty", label: "الكمية" },
+  { id: "batchNumber", label: "الدفعة" },
+  { id: "patientName", label: "المريض" },
+  { id: "nationalId", label: "الرقم الوطني" },
+  { id: "doctorName", label: "الطبيب" },
+  { id: "prescriptionId", label: "الوصفة" },
+];
 
 // الترتيب الافتراضي للدفتر (الأحدث صرفاً أولاً) والاتجاه الابتدائي لكل عمود عند النقر الأول
 const DEFAULT_CONTROLLED_SORT: SortState<ControlledSortKey> = {
@@ -54,7 +71,7 @@ const CONTROLLED_DEFAULT_DIRECTIONS: Partial<
 /**
  * دفتر الأدوية المراقبة والنفسية
  * سجل رسمي جاهز للتصدير للجهات الصحية عبر ExcelService المعزولة،
- * ومبني على نواة الجداول الموحّدة (فلاتر التواريخ السريعة، فرز الأعمدة، والتحميل التدريجي).
+ * ومبني على نواة الجداول الموحّدة (فلاتر التواريخ السريعة، فرز الأعمدة، إظهار/إخفاء الأعمدة، والتحميل التدريجي).
  */
 export const ControlledRegistryView: React.FC = () => {
   const { controlledLogs } = usePosStore();
@@ -62,6 +79,12 @@ export const ControlledRegistryView: React.FC = () => {
   // حالة نطاق التواريخ الموحّدة (الأزرار السريعة + النطاق اليدوي من/إلى)
   const [dateRange, setDateRange] =
     useState<DateRangeValue>(DEFAULT_DATE_RANGE);
+
+  // إدارة إظهار وإخفاء الأعمدة بصرياً مع حفظ تفضيلات المستخدم في localStorage
+  const columnsState = useTableColumns(
+    "controlled_registry",
+    CONTROLLED_COLUMNS,
+  );
 
   // تصفية السجلات حسب نطاق التواريخ ونص البحث (المريض، الرقم الوطني، الدواء، الوصفة، الطبيب، الدفعة)
   const matchedLogs = useMemo(() => {
@@ -168,6 +191,7 @@ export const ControlledRegistryView: React.FC = () => {
             onSearchChange={setSearch}
             searchPlaceholder="بحث بالمريض، الرقم الوطني، الدواء، الوصفة، الطبيب، أو رقم الدفعة..."
             actions={
+              /* التصدير الرسمي يظل شاملاً لكافة الحقول الإجبارية عبر ExcelService */
               <button
                 type="button"
                 disabled={filtered.length === 0}
@@ -184,6 +208,9 @@ export const ControlledRegistryView: React.FC = () => {
                 accent="rose"
               />
             }
+            secondaryActions={
+              <ColumnVisibilityMenu columnsState={columnsState} accent="rose" />
+            }
             hasActiveFilters={hasActiveFilters}
             onResetFilters={handleResetFilters}
             visibleCount={pagination.visibleCount}
@@ -199,62 +226,78 @@ export const ControlledRegistryView: React.FC = () => {
         }
         header={
           <tr>
-            <SortableTh
-              direction={getSortDirection("dispensedAt")}
-              onSort={() => toggleSort("dispensedAt")}
-              accent="rose"
-            >
-              التاريخ
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("productName")}
-              onSort={() => toggleSort("productName")}
-              accent="rose"
-            >
-              الدواء
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("qty")}
-              onSort={() => toggleSort("qty")}
-              accent="rose"
-            >
-              الكمية
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("batchNumber")}
-              onSort={() => toggleSort("batchNumber")}
-              accent="rose"
-            >
-              الدفعة
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("patientName")}
-              onSort={() => toggleSort("patientName")}
-              accent="rose"
-            >
-              المريض
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("nationalId")}
-              onSort={() => toggleSort("nationalId")}
-              accent="rose"
-            >
-              الرقم الوطني
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("doctorName")}
-              onSort={() => toggleSort("doctorName")}
-              accent="rose"
-            >
-              الطبيب
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("prescriptionId")}
-              onSort={() => toggleSort("prescriptionId")}
-              accent="rose"
-            >
-              الوصفة
-            </SortableTh>
+            {columnsState.isVisible("dispensedAt") && (
+              <SortableTh
+                direction={getSortDirection("dispensedAt")}
+                onSort={() => toggleSort("dispensedAt")}
+                accent="rose"
+              >
+                التاريخ
+              </SortableTh>
+            )}
+            {columnsState.isVisible("productName") && (
+              <SortableTh
+                direction={getSortDirection("productName")}
+                onSort={() => toggleSort("productName")}
+                accent="rose"
+              >
+                الدواء
+              </SortableTh>
+            )}
+            {columnsState.isVisible("qty") && (
+              <SortableTh
+                direction={getSortDirection("qty")}
+                onSort={() => toggleSort("qty")}
+                accent="rose"
+              >
+                الكمية
+              </SortableTh>
+            )}
+            {columnsState.isVisible("batchNumber") && (
+              <SortableTh
+                direction={getSortDirection("batchNumber")}
+                onSort={() => toggleSort("batchNumber")}
+                accent="rose"
+              >
+                الدفعة
+              </SortableTh>
+            )}
+            {columnsState.isVisible("patientName") && (
+              <SortableTh
+                direction={getSortDirection("patientName")}
+                onSort={() => toggleSort("patientName")}
+                accent="rose"
+              >
+                المريض
+              </SortableTh>
+            )}
+            {columnsState.isVisible("nationalId") && (
+              <SortableTh
+                direction={getSortDirection("nationalId")}
+                onSort={() => toggleSort("nationalId")}
+                accent="rose"
+              >
+                الرقم الوطني
+              </SortableTh>
+            )}
+            {columnsState.isVisible("doctorName") && (
+              <SortableTh
+                direction={getSortDirection("doctorName")}
+                onSort={() => toggleSort("doctorName")}
+                accent="rose"
+              >
+                الطبيب
+              </SortableTh>
+            )}
+            {columnsState.isVisible("prescriptionId") && (
+              <SortableTh
+                direction={getSortDirection("prescriptionId")}
+                onSort={() => toggleSort("prescriptionId")}
+                accent="rose"
+              >
+                الوصفة
+              </SortableTh>
+            )}
           </tr>
         }
         footer={
@@ -274,24 +317,40 @@ export const ControlledRegistryView: React.FC = () => {
       >
         {pagination.visibleItems.map((l) => (
           <tr key={l.id} className="hover:bg-slate-800/40 transition">
-            <td className="py-2.5 px-3 font-mono text-slate-400">
-              {l.dispensedAt.slice(0, 16).replace("T", " ")}
-            </td>
-            <td className="py-2.5 px-3 font-bold text-white">
-              {l.productName}
-            </td>
-            <td className="py-2.5 px-3 font-mono">
-              {l.qty} {l.unit === "pack" ? "علبة" : "شريط"}
-            </td>
-            <td className="py-2.5 px-3 font-mono text-slate-400">
-              {l.batchNumber}
-            </td>
-            <td className="py-2.5 px-3">{l.patientName}</td>
-            <td className="py-2.5 px-3 font-mono">{l.nationalId}</td>
-            <td className="py-2.5 px-3">{l.doctorName}</td>
-            <td className="py-2.5 px-3 font-mono text-rose-300">
-              {l.prescriptionId}
-            </td>
+            {columnsState.isVisible("dispensedAt") && (
+              <td className="py-2.5 px-3 font-mono text-slate-400">
+                {l.dispensedAt.slice(0, 16).replace("T", " ")}
+              </td>
+            )}
+            {columnsState.isVisible("productName") && (
+              <td className="py-2.5 px-3 font-bold text-white">
+                {l.productName}
+              </td>
+            )}
+            {columnsState.isVisible("qty") && (
+              <td className="py-2.5 px-3 font-mono">
+                {l.qty} {l.unit === "pack" ? "علبة" : "شريط"}
+              </td>
+            )}
+            {columnsState.isVisible("batchNumber") && (
+              <td className="py-2.5 px-3 font-mono text-slate-400">
+                {l.batchNumber}
+              </td>
+            )}
+            {columnsState.isVisible("patientName") && (
+              <td className="py-2.5 px-3">{l.patientName}</td>
+            )}
+            {columnsState.isVisible("nationalId") && (
+              <td className="py-2.5 px-3 font-mono">{l.nationalId}</td>
+            )}
+            {columnsState.isVisible("doctorName") && (
+              <td className="py-2.5 px-3">{l.doctorName}</td>
+            )}
+            {columnsState.isVisible("prescriptionId") && (
+              <td className="py-2.5 px-3 font-mono text-rose-300">
+                {l.prescriptionId}
+              </td>
+            )}
           </tr>
         ))}
       </DataTableShell>

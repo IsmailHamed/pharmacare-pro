@@ -6,18 +6,22 @@ import {
 } from "../../../../domain/utils/csvExport";
 import { usePosStore } from "../../../../application/store/usePosStore";
 
-export interface TableExportColumn<T> {
+export interface TableExportColumn<T, K extends string = string> {
+  // معرّف العمود المرتبط بـ useTableColumns (يُستخدم لتصدير الأعمدة الظاهرة فقط)
+  columnId?: K;
   // عنوان العمود في الصف الأول من ملف Excel / CSV
   header: string;
   // دالة استخراج قيمة الخلية من كل سجل
   getValue: (item: T) => CsvCellValue;
 }
 
-export interface TableExportButtonProps<T> {
-  // قائمة السجلات المراد تصديرها (يُمرّر دائماً كامل النتائج المفلترة والمرتّبة وليس الدفعة المقصوصة)
+export interface TableExportButtonProps<T, K extends string = string> {
+  // قائمة السجلات المراد تصديرها (كامل النتائج المفلترة والمرتّبة)
   items: readonly T[];
-  // تعريف أعمدة التصدير الشاملة (المسموح بها للمستخدم، مستقلة عن إخفاء الأعمدة البصري)
-  columns: readonly TableExportColumn<T>[];
+  // تعريف أعمدة التصدير
+  columns: readonly TableExportColumn<T, K>[];
+  // دالة فحص ظهور العمود (عادةً columnsState.isVisible) لتصدير الأعمدة الظاهرة فقط
+  isColumnVisible?: (columnId: K) => boolean;
   // بادئة اسم الملف (يُضاف لها تاريخ اليوم وامتداد .csv تلقائياً)
   fileNamePrefix: string;
   // نص الزر الظاهر للمستخدم
@@ -33,28 +37,35 @@ export interface TableExportButtonProps<T> {
 
 /**
  * زر تصدير Excel / CSV الموحّد للجداول (TableExportButton)
- * يصدّر كافة الأعمدة المسموح بها للمستخدم لكامل النتائج المفلترة والمرتّبة
+ * يصدّر كامل النتائج المفلترة والمرتّبة مع احترام الأعمدة الظاهرة حالياً عند تمرير isColumnVisible
  */
-export function TableExportButton<T>({
+export function TableExportButton<T, K extends string = string>({
   items,
   columns,
+  isColumnVisible,
   fileNamePrefix,
   label = "تصدير Excel / CSV",
   itemLabel = "سجل",
   disabled = false,
   onExported,
   className = "",
-}: TableExportButtonProps<T>) {
+}: TableExportButtonProps<T, K>) {
   const setNotification = usePosStore((s) => s.setNotification);
 
-  const isDisabled = disabled || items.length === 0 || columns.length === 0;
+  // تصفية أعمدة التصدير لتطابق الأعمدة الظاهرة حالياً في الجدول
+  const activeColumns = isColumnVisible
+    ? columns.filter((col) => !col.columnId || isColumnVisible(col.columnId))
+    : columns;
+
+  const isDisabled =
+    disabled || items.length === 0 || activeColumns.length === 0;
 
   const handleExport = () => {
     if (isDisabled) return;
 
-    const headers = columns.map((col) => col.header);
+    const headers = activeColumns.map((col) => col.header);
     const rows: CsvCellValue[][] = items.map((item) =>
-      columns.map((col) => col.getValue(item)),
+      activeColumns.map((col) => col.getValue(item)),
     );
 
     const datePart = new Date().toISOString().slice(0, 10);
@@ -80,7 +91,7 @@ export function TableExportButton<T>({
       title={
         items.length === 0
           ? "لا توجد بيانات مطابقة للتصدير"
-          : `تصدير كافة النتائج المطابقة (${items.length} ${itemLabel})`
+          : `تصدير الأعمدة الظاهرة لكامل النتائج المطابقة (${items.length} ${itemLabel})`
       }
       className={`px-3 py-1.5 rounded-xl bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-[11px] inline-flex items-center gap-1.5 transition ${className}`}
     >

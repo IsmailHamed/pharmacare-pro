@@ -16,6 +16,15 @@ import {
   useTableSort,
 } from "../common/table/useTableSort";
 import { useTablePagination } from "../common/table/useTablePagination";
+import {
+  TableColumnDef,
+  useTableColumns,
+} from "../common/table/useTableColumns";
+import { ColumnVisibilityMenu } from "../common/table/ColumnVisibilityMenu";
+import {
+  TableExportButton,
+  TableExportColumn,
+} from "../common/table/TableExportButton";
 import { SortableTh } from "../common/table/SortableTh";
 import { DataTableToolbar } from "../common/table/DataTableToolbar";
 import { DataTableShell } from "../common/table/DataTableShell";
@@ -31,7 +40,7 @@ import {
 
 type VoucherTypeFilter = "ALL" | "CUSTOMER" | "SUPPLIER";
 
-// مفاتيح الأعمدة القابلة للفرز التفاعلي في سجل سندات القبض والصرف
+// مفاتيح الأعمدة القابلة للفرز والتحكم في الظهور في سجل سندات القبض والصرف
 type VoucherSortKey =
   | "id"
   | "partyType"
@@ -39,6 +48,50 @@ type VoucherSortKey =
   | "amount"
   | "createdAt"
   | "notes";
+
+// تعريف أعمدة جدول السندات للتحكم في الإظهار والإخفاء (مع قفل العمودين الأساسيين)
+const VOUCHER_COLUMNS: readonly TableColumnDef<VoucherSortKey>[] = [
+  { id: "id", label: "رقم السند", locked: true },
+  { id: "partyType", label: "النوع" },
+  { id: "partyName", label: "العميل / المستودع", locked: true },
+  { id: "amount", label: "المبلغ" },
+  { id: "createdAt", label: "التاريخ والوقت" },
+  { id: "notes", label: "الملاحظات" },
+];
+
+// أعمدة التصدير إلى Excel / CSV مرتبطة بمعرّفات الأعمدة لتصدير الحقول الظاهرة فقط
+const VOUCHER_EXPORT_COLUMNS: readonly TableExportColumn<
+  LedgerPaymentItem,
+  VoucherSortKey
+>[] = [
+  { columnId: "id", header: "رقم السند", getValue: (p) => p.id },
+  {
+    columnId: "partyType",
+    header: "نوع السند",
+    getValue: (p) => (p.partyType === "CUSTOMER" ? "سند قبض" : "سند صرف"),
+  },
+  {
+    columnId: "partyName",
+    header: "العميل / المستودع",
+    getValue: (p) => p.partyName,
+  },
+  {
+    columnId: "amount",
+    header: "المبلغ (ر.س)",
+    getValue: (p) =>
+      `${p.partyType === "CUSTOMER" ? "+" : "-"}${p.amount.toFixed(2)}`,
+  },
+  {
+    columnId: "createdAt",
+    header: "التاريخ والوقت",
+    getValue: (p) => p.createdAt.slice(0, 16).replace("T", " "),
+  },
+  {
+    columnId: "notes",
+    header: "الملاحظات",
+    getValue: (p) => p.notes || "—",
+  },
+];
 
 // خيارات فلتر نوع السند الممرّرة إلى المكوّن الموحّد FilterPills
 const VOUCHER_TYPE_OPTIONS: readonly FilterPillOption<VoucherTypeFilter>[] = [
@@ -84,7 +137,7 @@ interface Props {
 /**
  * سجل السندات الموحد (Audit Log)
  * يعرض جميع سندات القبض والصرف المسجلة بترتيب زمني مع البحث وإعادة الطباعة الحرارية،
- * ومبني على نواة الجداول الموحّدة (فلاتر التواريخ السريعة، فرز الأعمدة، والتحميل التدريجي)
+ * ومبني على نواة الجداول الموحّدة (فلاتر التواريخ السريعة، فرز الأعمدة، إظهار/إخفاء الأعمدة، والتصدير)
  */
 export const LedgerVouchersLog: React.FC<Props> = ({
   ledgerPayments,
@@ -96,6 +149,9 @@ export const LedgerVouchersLog: React.FC<Props> = ({
   // حالة نطاق التواريخ الموحّدة (الأزرار السريعة + النطاق اليدوي من/إلى)
   const [dateRange, setDateRange] =
     useState<DateRangeValue>(DEFAULT_DATE_RANGE);
+
+  // إدارة إظهار وإخفاء الأعمدة مع حفظ تفضيلات المستخدم في localStorage
+  const columnsState = useTableColumns("ledger_vouchers", VOUCHER_COLUMNS);
 
   // إغلاق آمن: إعادة الفلتر للكل إذا تم تبديل المستخدم لحساب لا يملك صلاحية عرض ذمم المستودعات
   useEffect(() => {
@@ -156,7 +212,7 @@ export const LedgerVouchersLog: React.FC<Props> = ({
     });
   }, [accessiblePayments, typeFilter, dateRange, searchQuery]);
 
-  // تطبيق الفرز التفاعلي بالأعمدة على السندات المطابقة
+  // تطبيق الفرز التفاعلي بالأعمدة على السندات المطابقة (يُستخدم أيضاً لترتيب ملف التصدير)
   const {
     sortedItems: filteredPayments,
     sortState,
@@ -285,6 +341,21 @@ export const LedgerVouchersLog: React.FC<Props> = ({
                   accent="emerald"
                 />
               }
+              secondaryActions={
+                <>
+                  <ColumnVisibilityMenu
+                    columnsState={columnsState}
+                    accent="emerald"
+                  />
+                  <TableExportButton
+                    items={filteredPayments}
+                    columns={VOUCHER_EXPORT_COLUMNS}
+                    isColumnVisible={columnsState.isVisible}
+                    fileNamePrefix="Ledger_Vouchers_Log"
+                    itemLabel="سند"
+                  />
+                </>
+              }
               hasActiveFilters={hasActiveFilters}
               onResetFilters={handleResetFilters}
               visibleCount={pagination.visibleCount}
@@ -304,49 +375,61 @@ export const LedgerVouchersLog: React.FC<Props> = ({
         }
         header={
           <tr>
-            <SortableTh
-              direction={getSortDirection("id")}
-              onSort={() => toggleSort("id")}
-              accent="emerald"
-            >
-              رقم السند
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("partyType")}
-              onSort={() => toggleSort("partyType")}
-              accent="emerald"
-            >
-              النوع
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("partyName")}
-              onSort={() => toggleSort("partyName")}
-              accent="emerald"
-            >
-              العميل / المستودع
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("amount")}
-              onSort={() => toggleSort("amount")}
-              align="center"
-              accent="emerald"
-            >
-              المبلغ
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("createdAt")}
-              onSort={() => toggleSort("createdAt")}
-              accent="emerald"
-            >
-              التاريخ والوقت
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("notes")}
-              onSort={() => toggleSort("notes")}
-              accent="emerald"
-            >
-              الملاحظات
-            </SortableTh>
+            {columnsState.isVisible("id") && (
+              <SortableTh
+                direction={getSortDirection("id")}
+                onSort={() => toggleSort("id")}
+                accent="emerald"
+              >
+                رقم السند
+              </SortableTh>
+            )}
+            {columnsState.isVisible("partyType") && (
+              <SortableTh
+                direction={getSortDirection("partyType")}
+                onSort={() => toggleSort("partyType")}
+                accent="emerald"
+              >
+                النوع
+              </SortableTh>
+            )}
+            {columnsState.isVisible("partyName") && (
+              <SortableTh
+                direction={getSortDirection("partyName")}
+                onSort={() => toggleSort("partyName")}
+                accent="emerald"
+              >
+                العميل / المستودع
+              </SortableTh>
+            )}
+            {columnsState.isVisible("amount") && (
+              <SortableTh
+                direction={getSortDirection("amount")}
+                onSort={() => toggleSort("amount")}
+                align="center"
+                accent="emerald"
+              >
+                المبلغ
+              </SortableTh>
+            )}
+            {columnsState.isVisible("createdAt") && (
+              <SortableTh
+                direction={getSortDirection("createdAt")}
+                onSort={() => toggleSort("createdAt")}
+                accent="emerald"
+              >
+                التاريخ والوقت
+              </SortableTh>
+            )}
+            {columnsState.isVisible("notes") && (
+              <SortableTh
+                direction={getSortDirection("notes")}
+                onSort={() => toggleSort("notes")}
+                accent="emerald"
+              >
+                الملاحظات
+              </SortableTh>
+            )}
             <th className="py-2.5 px-3 text-center">إعادة طباعة</th>
           </tr>
         }
@@ -372,57 +455,69 @@ export const LedgerVouchersLog: React.FC<Props> = ({
               key={payment.id}
               className="hover:bg-slate-800/40 transition font-mono"
             >
-              <td className="py-2.5 px-3 font-bold text-white whitespace-nowrap">
-                {payment.id}
-              </td>
+              {columnsState.isVisible("id") && (
+                <td className="py-2.5 px-3 font-bold text-white whitespace-nowrap">
+                  {payment.id}
+                </td>
+              )}
 
-              <td className="py-2.5 px-3 font-sans whitespace-nowrap">
-                <span
-                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                    isCustomer
-                      ? "bg-sky-950/60 border-sky-800 text-sky-300"
-                      : "bg-purple-950/60 border-purple-800 text-purple-300"
+              {columnsState.isVisible("partyType") && (
+                <td className="py-2.5 px-3 font-sans whitespace-nowrap">
+                  <span
+                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                      isCustomer
+                        ? "bg-sky-950/60 border-sky-800 text-sky-300"
+                        : "bg-purple-950/60 border-purple-800 text-purple-300"
+                    }`}
+                  >
+                    {isCustomer ? (
+                      <ArrowDownLeft className="w-3 h-3" />
+                    ) : (
+                      <ArrowUpRight className="w-3 h-3" />
+                    )}
+                    {isCustomer ? "سند قبض" : "سند صرف"}
+                  </span>
+                </td>
+              )}
+
+              {columnsState.isVisible("partyName") && (
+                <td className="py-2.5 px-3 font-sans">
+                  <div className="flex items-center gap-1.5 font-bold text-slate-200">
+                    {isCustomer ? (
+                      <Users className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                    ) : (
+                      <Building2 className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                    )}
+                    <span>{payment.partyName}</span>
+                  </div>
+                </td>
+              )}
+
+              {columnsState.isVisible("amount") && (
+                <td
+                  className={`py-2.5 px-3 text-center font-extrabold whitespace-nowrap ${
+                    isCustomer ? "text-emerald-400" : "text-rose-400"
                   }`}
                 >
-                  {isCustomer ? (
-                    <ArrowDownLeft className="w-3 h-3" />
-                  ) : (
-                    <ArrowUpRight className="w-3 h-3" />
-                  )}
-                  {isCustomer ? "سند قبض" : "سند صرف"}
-                </span>
-              </td>
+                  {isCustomer ? "+" : "-"}
+                  {payment.amount.toFixed(2)} ر.س
+                </td>
+              )}
 
-              <td className="py-2.5 px-3 font-sans">
-                <div className="flex items-center gap-1.5 font-bold text-slate-200">
-                  {isCustomer ? (
-                    <Users className="w-3.5 h-3.5 text-sky-400 shrink-0" />
-                  ) : (
-                    <Building2 className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-                  )}
-                  <span>{payment.partyName}</span>
-                </div>
-              </td>
+              {columnsState.isVisible("createdAt") && (
+                <td className="py-2.5 px-3 text-slate-400 whitespace-nowrap">
+                  {new Date(payment.createdAt).toLocaleString("ar-SA", {
+                    dateStyle: "short",
+                    timeStyle: "short",
+                  })}
+                </td>
+              )}
 
-              <td
-                className={`py-2.5 px-3 text-center font-extrabold whitespace-nowrap ${
-                  isCustomer ? "text-emerald-400" : "text-rose-400"
-                }`}
-              >
-                {isCustomer ? "+" : "-"}
-                {payment.amount.toFixed(2)} ر.س
-              </td>
-
-              <td className="py-2.5 px-3 text-slate-400 whitespace-nowrap">
-                {new Date(payment.createdAt).toLocaleString("ar-SA", {
-                  dateStyle: "short",
-                  timeStyle: "short",
-                })}
-              </td>
-
-              <td className="py-2.5 px-3 font-sans text-slate-400 max-w-[220px] truncate">
-                {payment.notes || "—"}
-              </td>
+              {columnsState.isVisible("notes") && (
+                <td className="py-2.5 px-3 font-sans text-slate-400 max-w-[220px] truncate">
+                  {payment.notes || "—"}
+                </td>
+              )}
 
               <td className="py-2.5 px-3 text-center">
                 <button

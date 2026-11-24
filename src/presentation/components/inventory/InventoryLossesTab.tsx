@@ -13,6 +13,15 @@ import {
   useTableSort,
 } from "../common/table/useTableSort";
 import { useTablePagination } from "../common/table/useTablePagination";
+import {
+  TableColumnDef,
+  useTableColumns,
+} from "../common/table/useTableColumns";
+import { ColumnVisibilityMenu } from "../common/table/ColumnVisibilityMenu";
+import {
+  TableExportButton,
+  TableExportColumn,
+} from "../common/table/TableExportButton";
 import { SortableTh } from "../common/table/SortableTh";
 import { DataTableToolbar } from "../common/table/DataTableToolbar";
 import { DataTableShell } from "../common/table/DataTableShell";
@@ -31,8 +40,41 @@ interface Props {
   logs: InventoryLossLog[];
 }
 
-// مفاتيح الأعمدة القابلة للفرز التفاعلي في سجل التوالف والفروقات الجردية
+// مفاتيح الأعمدة القابلة للفرز والتحكم في الظهور في سجل التوالف والفروقات الجردية
 type LossSortKey = "id" | "title" | "notes" | "createdAt" | "amount";
+
+// تعريف أعمدة جدول التوالف للتحكم في الإظهار والإخفاء (مع قفل العمودين الأساسيين)
+const LOSS_COLUMNS: readonly TableColumnDef<LossSortKey>[] = [
+  { id: "id", label: "رقم التسوية", locked: true },
+  { id: "title", label: "البيان والصنف", locked: true },
+  { id: "notes", label: "التفاصيل والملاحظات" },
+  { id: "createdAt", label: "التاريخ" },
+  { id: "amount", label: "قيمة الخسارة بالتكلفة" },
+];
+
+// أعمدة التصدير إلى Excel / CSV مرتبطة بمعرّفات الأعمدة لتصدير الحقول الظاهرة فقط
+const LOSS_EXPORT_COLUMNS: readonly TableExportColumn<
+  InventoryLossLog,
+  LossSortKey
+>[] = [
+  { columnId: "id", header: "رقم التسوية", getValue: (log) => log.id },
+  { columnId: "title", header: "البيان والصنف", getValue: (log) => log.title },
+  {
+    columnId: "notes",
+    header: "التفاصيل والملاحظات",
+    getValue: (log) => log.notes || "—",
+  },
+  {
+    columnId: "createdAt",
+    header: "التاريخ والوقت",
+    getValue: (log) => log.createdAt.slice(0, 16).replace("T", " "),
+  },
+  {
+    columnId: "amount",
+    header: "قيمة الخسارة بالتكلفة (ر.س)",
+    getValue: (log) => (-log.amount).toFixed(2),
+  },
+];
 
 // دوال استخراج قيم الأعمدة للفرز (مُعرّفة خارج المكوّن للحفاظ على ثبات المرجع)
 const LOSS_SORT_ACCESSORS: SortAccessors<InventoryLossLog, LossSortKey> = {
@@ -59,13 +101,16 @@ const LOSS_DEFAULT_DIRECTIONS: Partial<Record<LossSortKey, SortDirection>> = {
 
 /**
  * تبويب سجل التوالف والكسور والفروقات الجردية المقيدة مالياً
- * مبني على نواة الجداول الموحّدة (فلاتر التواريخ السريعة، فرز الأعمدة، والتحميل التدريجي)
+ * مبني على نواة الجداول الموحّدة (فلاتر التواريخ السريعة، فرز الأعمدة، إظهار/إخفاء الأعمدة، والتصدير)
  */
 export const InventoryLossesTab: React.FC<Props> = ({ logs }) => {
   const [searchQuery, setSearchQuery] = useState("");
   // حالة نطاق التواريخ الموحّدة (الأزرار السريعة + النطاق اليدوي من/إلى)
   const [dateRange, setDateRange] =
     useState<DateRangeValue>(DEFAULT_DATE_RANGE);
+
+  // إدارة إظهار وإخفاء الأعمدة مع حفظ تفضيلات المستخدم في localStorage
+  const columnsState = useTableColumns("inventory_losses", LOSS_COLUMNS);
 
   // تصفية السجلات حسب نطاق التواريخ ونص البحث (رقم التسوية، البيان، الملاحظات)
   const matchedLogs = useMemo(() => {
@@ -83,7 +128,7 @@ export const InventoryLossesTab: React.FC<Props> = ({ logs }) => {
     });
   }, [logs, searchQuery, dateRange]);
 
-  // تطبيق الفرز التفاعلي بالأعمدة على السجلات المطابقة
+  // تطبيق الفرز التفاعلي بالأعمدة على السجلات المطابقة (يُستخدم أيضاً لترتيب ملف التصدير)
   const {
     sortedItems: filteredLogs,
     sortState,
@@ -190,6 +235,21 @@ export const InventoryLossesTab: React.FC<Props> = ({ logs }) => {
                   accent="rose"
                 />
               }
+              secondaryActions={
+                <>
+                  <ColumnVisibilityMenu
+                    columnsState={columnsState}
+                    accent="rose"
+                  />
+                  <TableExportButton
+                    items={filteredLogs}
+                    columns={LOSS_EXPORT_COLUMNS}
+                    isColumnVisible={columnsState.isVisible}
+                    fileNamePrefix="Inventory_Losses_Log"
+                    itemLabel="تسوية"
+                  />
+                </>
+              }
               hasActiveFilters={hasActiveFilters}
               onResetFilters={handleResetFilters}
               visibleCount={pagination.visibleCount}
@@ -209,41 +269,51 @@ export const InventoryLossesTab: React.FC<Props> = ({ logs }) => {
         }
         header={
           <tr>
-            <SortableTh
-              direction={getSortDirection("id")}
-              onSort={() => toggleSort("id")}
-              accent="rose"
-            >
-              رقم التسوية
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("title")}
-              onSort={() => toggleSort("title")}
-              accent="rose"
-            >
-              البيان والصنف
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("notes")}
-              onSort={() => toggleSort("notes")}
-              accent="rose"
-            >
-              التفاصيل والملاحظات
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("createdAt")}
-              onSort={() => toggleSort("createdAt")}
-              accent="rose"
-            >
-              التاريخ
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("amount")}
-              onSort={() => toggleSort("amount")}
-              accent="rose"
-            >
-              قيمة الخسارة بالتكلفة
-            </SortableTh>
+            {columnsState.isVisible("id") && (
+              <SortableTh
+                direction={getSortDirection("id")}
+                onSort={() => toggleSort("id")}
+                accent="rose"
+              >
+                رقم التسوية
+              </SortableTh>
+            )}
+            {columnsState.isVisible("title") && (
+              <SortableTh
+                direction={getSortDirection("title")}
+                onSort={() => toggleSort("title")}
+                accent="rose"
+              >
+                البيان والصنف
+              </SortableTh>
+            )}
+            {columnsState.isVisible("notes") && (
+              <SortableTh
+                direction={getSortDirection("notes")}
+                onSort={() => toggleSort("notes")}
+                accent="rose"
+              >
+                التفاصيل والملاحظات
+              </SortableTh>
+            )}
+            {columnsState.isVisible("createdAt") && (
+              <SortableTh
+                direction={getSortDirection("createdAt")}
+                onSort={() => toggleSort("createdAt")}
+                accent="rose"
+              >
+                التاريخ
+              </SortableTh>
+            )}
+            {columnsState.isVisible("amount") && (
+              <SortableTh
+                direction={getSortDirection("amount")}
+                onSort={() => toggleSort("amount")}
+                accent="rose"
+              >
+                قيمة الخسارة بالتكلفة
+              </SortableTh>
+            )}
           </tr>
         }
         footer={
@@ -266,19 +336,29 @@ export const InventoryLossesTab: React.FC<Props> = ({ logs }) => {
             key={log.id}
             className="hover:bg-slate-800/40 transition font-mono"
           >
-            <td className="py-2.5 px-3 font-bold text-white">{log.id}</td>
-            <td className="py-2.5 px-3 font-sans font-bold text-amber-300">
-              {log.title}
-            </td>
-            <td className="py-2.5 px-3 font-sans text-slate-400">
-              {log.notes || "—"}
-            </td>
-            <td className="py-2.5 px-3 text-slate-400">
-              {new Date(log.createdAt).toLocaleString("ar-SA")}
-            </td>
-            <td className="py-2.5 px-3 font-bold text-rose-400">
-              -{log.amount.toFixed(2)} ر.س
-            </td>
+            {columnsState.isVisible("id") && (
+              <td className="py-2.5 px-3 font-bold text-white">{log.id}</td>
+            )}
+            {columnsState.isVisible("title") && (
+              <td className="py-2.5 px-3 font-sans font-bold text-amber-300">
+                {log.title}
+              </td>
+            )}
+            {columnsState.isVisible("notes") && (
+              <td className="py-2.5 px-3 font-sans text-slate-400">
+                {log.notes || "—"}
+              </td>
+            )}
+            {columnsState.isVisible("createdAt") && (
+              <td className="py-2.5 px-3 text-slate-400">
+                {new Date(log.createdAt).toLocaleString("ar-SA")}
+              </td>
+            )}
+            {columnsState.isVisible("amount") && (
+              <td className="py-2.5 px-3 font-bold text-rose-400">
+                -{log.amount.toFixed(2)} ر.س
+              </td>
+            )}
           </tr>
         ))}
       </DataTableShell>

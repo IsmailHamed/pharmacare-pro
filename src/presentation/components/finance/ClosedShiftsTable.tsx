@@ -15,6 +15,15 @@ import {
   useTableSort,
 } from "../common/table/useTableSort";
 import { useTablePagination } from "../common/table/useTablePagination";
+import {
+  TableColumnDef,
+  useTableColumns,
+} from "../common/table/useTableColumns";
+import { ColumnVisibilityMenu } from "../common/table/ColumnVisibilityMenu";
+import {
+  TableExportButton,
+  TableExportColumn,
+} from "../common/table/TableExportButton";
 import { SortableTh } from "../common/table/SortableTh";
 import { DataTableToolbar } from "../common/table/DataTableToolbar";
 import { DataTableShell } from "../common/table/DataTableShell";
@@ -27,7 +36,7 @@ interface Props {
 
 type VarianceFilter = "ALL" | "WITH_VARIANCE";
 
-// مفاتيح الأعمدة القابلة للفرز التفاعلي في أرشيف الورديات المغلقة
+// مفاتيح الأعمدة القابلة للفرز والتحكم في الظهور داخل أرشيف الورديات المغلقة
 type ClosedShiftSortKey =
   | "closedAt"
   | "pharmacistName"
@@ -38,6 +47,78 @@ type ClosedShiftSortKey =
   | "variance"
   | "safeDropAmount"
   | "nextShiftFloat";
+
+// تعريف أعمدة الجدول للتحكم في الإظهار والإخفاء (مع قفل العمودين الأساسيين)
+const CLOSED_SHIFT_COLUMNS: readonly TableColumnDef<ClosedShiftSortKey>[] = [
+  { id: "closedAt", label: "رقم الوردية والتاريخ", locked: true },
+  { id: "pharmacistName", label: "صاحب العهدة / المُغلق", locked: true },
+  { id: "openingBalance", label: "العهدة الافتتاحية" },
+  { id: "cashSalesTotal", label: "مبيعات الكاش" },
+  { id: "expectedDrawerCash", label: "النقد المتوقع" },
+  { id: "actualDrawerCash", label: "الجرد الفعلي" },
+  { id: "variance", label: "الفارق (Variance)" },
+  { id: "safeDropAmount", label: "المورّد للخزنة" },
+  { id: "nextShiftFloat", label: "العهدة المرحلة" },
+];
+
+// أعمدة التصدير إلى Excel / CSV مرتبطة بمعرّفات الأعمدة لتصدير الحقول الظاهرة فقط
+const CLOSED_SHIFT_EXPORT_COLUMNS: readonly TableExportColumn<
+  ShiftSummaryEntity,
+  ClosedShiftSortKey
+>[] = [
+  { columnId: "closedAt", header: "رقم الوردية", getValue: (s) => s.id },
+  {
+    columnId: "closedAt",
+    header: "تاريخ ووقت الإغلاق",
+    getValue: (s) =>
+      s.closedAt ? s.closedAt.slice(0, 16).replace("T", " ") : "—",
+  },
+  {
+    columnId: "pharmacistName",
+    header: "صاحب العهدة",
+    getValue: (s) => s.pharmacistName,
+  },
+  {
+    columnId: "pharmacistName",
+    header: "أغلقها",
+    getValue: (s) => s.closedByName || s.pharmacistName,
+  },
+  {
+    columnId: "openingBalance",
+    header: "العهدة الافتتاحية",
+    getValue: (s) => s.openingBalance.toFixed(2),
+  },
+  {
+    columnId: "cashSalesTotal",
+    header: "مبيعات الكاش",
+    getValue: (s) => s.cashSalesTotal.toFixed(2),
+  },
+  {
+    columnId: "expectedDrawerCash",
+    header: "النقد المتوقع",
+    getValue: (s) => s.expectedDrawerCash.toFixed(2),
+  },
+  {
+    columnId: "actualDrawerCash",
+    header: "الجرد الفعلي",
+    getValue: (s) => (s.actualDrawerCash ?? 0).toFixed(2),
+  },
+  {
+    columnId: "variance",
+    header: "الفارق (Variance)",
+    getValue: (s) => (s.variance || 0).toFixed(2),
+  },
+  {
+    columnId: "safeDropAmount",
+    header: "المورّد للخزنة",
+    getValue: (s) => (s.safeDropAmount || 0).toFixed(2),
+  },
+  {
+    columnId: "nextShiftFloat",
+    header: "العهدة المرحلة",
+    getValue: (s) => (s.nextShiftFloat || 0).toFixed(2),
+  },
+];
 
 // دوال استخراج قيم الأعمدة للفرز (مُعرّفة خارج المكوّن للحفاظ على ثبات المرجع)
 const CLOSED_SHIFT_SORT_ACCESSORS: SortAccessors<
@@ -78,7 +159,7 @@ const CLOSED_SHIFT_DEFAULT_DIRECTIONS: Partial<
 /**
  * تبويب أرشيف تقارير تسليم الورديات السابقة (Z-Reports Archive)
  * يعرض ملخص الفروقات والتوريد للخزنة مع توثيق صاحب العهدة والمستخدم الذي أغلق الوردية،
- * ومبني على نواة الجداول الموحّدة (فلاتر التواريخ السريعة، فرز الأعمدة، والتحميل التدريجي)
+ * ومبني على نواة الجداول الموحّدة (فلاتر التواريخ السريعة، فرز الأعمدة، إظهار/إخفاء الأعمدة، والتصدير)
  */
 export const ClosedShiftsTable: React.FC<Props> = ({ closedShifts }) => {
   const [searchQuery, setSearchQuery] = useState("");
@@ -86,6 +167,9 @@ export const ClosedShiftsTable: React.FC<Props> = ({ closedShifts }) => {
   // حالة نطاق التواريخ الموحّدة (الأزرار السريعة + النطاق اليدوي من/إلى)
   const [dateRange, setDateRange] =
     useState<DateRangeValue>(DEFAULT_DATE_RANGE);
+
+  // إدارة إظهار وإخفاء الأعمدة مع حفظ تفضيلات المستخدم في localStorage
+  const columnsState = useTableColumns("closed_shifts", CLOSED_SHIFT_COLUMNS);
 
   const archiveStats = useMemo(() => {
     let totalCashSales = 0;
@@ -150,7 +234,7 @@ export const ClosedShiftsTable: React.FC<Props> = ({ closedShifts }) => {
     });
   }, [closedShifts, searchQuery, varianceFilter, dateRange]);
 
-  // تطبيق الفرز التفاعلي بالأعمدة على الورديات المطابقة
+  // تطبيق الفرز التفاعلي بالأعمدة على الورديات المطابقة (يُستخدم أيضاً لترتيب ملف التصدير)
   const {
     sortedItems: filteredShifts,
     sortState,
@@ -306,6 +390,21 @@ export const ClosedShiftsTable: React.FC<Props> = ({ closedShifts }) => {
                   accent="sky"
                 />
               }
+              secondaryActions={
+                <>
+                  <ColumnVisibilityMenu
+                    columnsState={columnsState}
+                    accent="sky"
+                  />
+                  <TableExportButton
+                    items={filteredShifts}
+                    columns={CLOSED_SHIFT_EXPORT_COLUMNS}
+                    isColumnVisible={columnsState.isVisible}
+                    fileNamePrefix="Closed_Shifts_Archive"
+                    itemLabel="وردية"
+                  />
+                </>
+              }
               hasActiveFilters={hasActiveFilters}
               onResetFilters={handleResetFilters}
               visibleCount={pagination.visibleCount}
@@ -339,69 +438,87 @@ export const ClosedShiftsTable: React.FC<Props> = ({ closedShifts }) => {
         }
         header={
           <tr>
-            <SortableTh
-              direction={getSortDirection("closedAt")}
-              onSort={() => toggleSort("closedAt")}
-              accent="sky"
-            >
-              رقم الوردية
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("pharmacistName")}
-              onSort={() => toggleSort("pharmacistName")}
-              accent="sky"
-            >
-              صاحب العهدة / المُغلق
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("openingBalance")}
-              onSort={() => toggleSort("openingBalance")}
-              accent="sky"
-            >
-              العهدة الافتتاحية
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("cashSalesTotal")}
-              onSort={() => toggleSort("cashSalesTotal")}
-              accent="sky"
-            >
-              مبيعات الكاش
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("expectedDrawerCash")}
-              onSort={() => toggleSort("expectedDrawerCash")}
-              accent="sky"
-            >
-              النقد المتوقع
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("actualDrawerCash")}
-              onSort={() => toggleSort("actualDrawerCash")}
-              accent="sky"
-            >
-              الجرد الفعلي
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("variance")}
-              onSort={() => toggleSort("variance")}
-              accent="sky"
-            >
-              الفارق (Variance)
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("safeDropAmount")}
-              onSort={() => toggleSort("safeDropAmount")}
-              accent="sky"
-            >
-              المورّد للخزنة
-            </SortableTh>
-            <SortableTh
-              direction={getSortDirection("nextShiftFloat")}
-              onSort={() => toggleSort("nextShiftFloat")}
-              accent="sky"
-            >
-              العهدة المرحلة
-            </SortableTh>
+            {columnsState.isVisible("closedAt") && (
+              <SortableTh
+                direction={getSortDirection("closedAt")}
+                onSort={() => toggleSort("closedAt")}
+                accent="sky"
+              >
+                رقم الوردية
+              </SortableTh>
+            )}
+            {columnsState.isVisible("pharmacistName") && (
+              <SortableTh
+                direction={getSortDirection("pharmacistName")}
+                onSort={() => toggleSort("pharmacistName")}
+                accent="sky"
+              >
+                صاحب العهدة / المُغلق
+              </SortableTh>
+            )}
+            {columnsState.isVisible("openingBalance") && (
+              <SortableTh
+                direction={getSortDirection("openingBalance")}
+                onSort={() => toggleSort("openingBalance")}
+                accent="sky"
+              >
+                العهدة الافتتاحية
+              </SortableTh>
+            )}
+            {columnsState.isVisible("cashSalesTotal") && (
+              <SortableTh
+                direction={getSortDirection("cashSalesTotal")}
+                onSort={() => toggleSort("cashSalesTotal")}
+                accent="sky"
+              >
+                مبيعات الكاش
+              </SortableTh>
+            )}
+            {columnsState.isVisible("expectedDrawerCash") && (
+              <SortableTh
+                direction={getSortDirection("expectedDrawerCash")}
+                onSort={() => toggleSort("expectedDrawerCash")}
+                accent="sky"
+              >
+                النقد المتوقع
+              </SortableTh>
+            )}
+            {columnsState.isVisible("actualDrawerCash") && (
+              <SortableTh
+                direction={getSortDirection("actualDrawerCash")}
+                onSort={() => toggleSort("actualDrawerCash")}
+                accent="sky"
+              >
+                الجرد الفعلي
+              </SortableTh>
+            )}
+            {columnsState.isVisible("variance") && (
+              <SortableTh
+                direction={getSortDirection("variance")}
+                onSort={() => toggleSort("variance")}
+                accent="sky"
+              >
+                الفارق (Variance)
+              </SortableTh>
+            )}
+            {columnsState.isVisible("safeDropAmount") && (
+              <SortableTh
+                direction={getSortDirection("safeDropAmount")}
+                onSort={() => toggleSort("safeDropAmount")}
+                accent="sky"
+              >
+                المورّد للخزنة
+              </SortableTh>
+            )}
+            {columnsState.isVisible("nextShiftFloat") && (
+              <SortableTh
+                direction={getSortDirection("nextShiftFloat")}
+                onSort={() => toggleSort("nextShiftFloat")}
+                accent="sky"
+              >
+                العهدة المرحلة
+              </SortableTh>
+            )}
           </tr>
         }
         footer={
@@ -434,64 +551,82 @@ export const ClosedShiftsTable: React.FC<Props> = ({ closedShifts }) => {
               key={s.id}
               className="hover:bg-slate-800/40 transition font-mono"
             >
-              <td className="py-2.5 px-3">
-                <div className="font-bold text-white">{s.id}</div>
-                {s.closedAt && (
-                  <div className="text-[9.5px] text-slate-500 mt-0.5">
-                    {new Date(s.closedAt).toLocaleString("ar-SA", {
-                      dateStyle: "short",
-                      timeStyle: "short",
-                    })}
-                  </div>
-                )}
-              </td>
-              <td className="py-2.5 px-3 font-sans">
-                <div className="font-semibold text-slate-200">
-                  {s.pharmacistName}
-                </div>
-                {closedByDifferentUser && (
-                  <div className="inline-flex items-center gap-1 text-[9.5px] text-amber-300 bg-amber-950/50 border border-amber-800/70 px-1.5 py-0.5 rounded mt-0.5">
-                    <UserCheck className="w-2.5 h-2.5 shrink-0" />
-                    أغلقها: {s.closedByName}
-                  </div>
-                )}
-              </td>
-              <td className="py-2.5 px-3">{s.openingBalance.toFixed(2)}</td>
-              <td className="py-2.5 px-3 text-emerald-400">
-                {s.cashSalesTotal.toFixed(2)}
-              </td>
-              <td className="py-2.5 px-3 text-amber-400">
-                {s.expectedDrawerCash.toFixed(2)}
-              </td>
-              <td className="py-2.5 px-3 font-bold text-white">
-                {(s.actualDrawerCash ?? 0).toFixed(2)}
-              </td>
-              <td className="py-2.5 px-3 font-bold">
-                <span
-                  className={`inline-flex items-center gap-1 ${
-                    variance < 0
-                      ? "text-rose-400"
-                      : variance > 0
-                        ? "text-sky-400"
-                        : "text-emerald-400"
-                  }`}
-                >
-                  {variance === 0 ? (
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                  ) : (
-                    <AlertOctagon className="w-3.5 h-3.5" />
+              {columnsState.isVisible("closedAt") && (
+                <td className="py-2.5 px-3">
+                  <div className="font-bold text-white">{s.id}</div>
+                  {s.closedAt && (
+                    <div className="text-[9.5px] text-slate-500 mt-0.5">
+                      {new Date(s.closedAt).toLocaleString("ar-SA", {
+                        dateStyle: "short",
+                        timeStyle: "short",
+                      })}
+                    </div>
                   )}
-                  {variance > 0
-                    ? `+${variance.toFixed(2)}`
-                    : variance.toFixed(2)}
-                </span>
-              </td>
-              <td className="py-2.5 px-3 text-purple-400">
-                {(s.safeDropAmount || 0).toFixed(2)}
-              </td>
-              <td className="py-2.5 px-3 text-slate-300">
-                {(s.nextShiftFloat || 0).toFixed(2)}
-              </td>
+                </td>
+              )}
+              {columnsState.isVisible("pharmacistName") && (
+                <td className="py-2.5 px-3 font-sans">
+                  <div className="font-semibold text-slate-200">
+                    {s.pharmacistName}
+                  </div>
+                  {closedByDifferentUser && (
+                    <div className="inline-flex items-center gap-1 text-[9.5px] text-amber-300 bg-amber-950/50 border border-amber-800/70 px-1.5 py-0.5 rounded mt-0.5">
+                      <UserCheck className="w-2.5 h-2.5 shrink-0" />
+                      أغلقها: {s.closedByName}
+                    </div>
+                  )}
+                </td>
+              )}
+              {columnsState.isVisible("openingBalance") && (
+                <td className="py-2.5 px-3">{s.openingBalance.toFixed(2)}</td>
+              )}
+              {columnsState.isVisible("cashSalesTotal") && (
+                <td className="py-2.5 px-3 text-emerald-400">
+                  {s.cashSalesTotal.toFixed(2)}
+                </td>
+              )}
+              {columnsState.isVisible("expectedDrawerCash") && (
+                <td className="py-2.5 px-3 text-amber-400">
+                  {s.expectedDrawerCash.toFixed(2)}
+                </td>
+              )}
+              {columnsState.isVisible("actualDrawerCash") && (
+                <td className="py-2.5 px-3 font-bold text-white">
+                  {(s.actualDrawerCash ?? 0).toFixed(2)}
+                </td>
+              )}
+              {columnsState.isVisible("variance") && (
+                <td className="py-2.5 px-3 font-bold">
+                  <span
+                    className={`inline-flex items-center gap-1 ${
+                      variance < 0
+                        ? "text-rose-400"
+                        : variance > 0
+                          ? "text-sky-400"
+                          : "text-emerald-400"
+                    }`}
+                  >
+                    {variance === 0 ? (
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                    ) : (
+                      <AlertOctagon className="w-3.5 h-3.5" />
+                    )}
+                    {variance > 0
+                      ? `+${variance.toFixed(2)}`
+                      : variance.toFixed(2)}
+                  </span>
+                </td>
+              )}
+              {columnsState.isVisible("safeDropAmount") && (
+                <td className="py-2.5 px-3 text-purple-400">
+                  {(s.safeDropAmount || 0).toFixed(2)}
+                </td>
+              )}
+              {columnsState.isVisible("nextShiftFloat") && (
+                <td className="py-2.5 px-3 text-slate-300">
+                  {(s.nextShiftFloat || 0).toFixed(2)}
+                </td>
+              )}
             </tr>
           );
         })}
