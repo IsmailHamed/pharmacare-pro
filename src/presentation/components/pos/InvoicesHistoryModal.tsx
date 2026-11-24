@@ -2,9 +2,20 @@ import React, { useMemo, useState } from "react";
 import { usePosStore } from "../../../application/store/usePosStore";
 import { InvoiceEntity } from "../../../domain/entities/Invoice";
 import {
+  DEFAULT_DATE_RANGE,
+  DateRangeValue,
+  isDateRangeActive,
+  matchesDateRange,
+} from "../common/table/dateRangeUtils";
+import { DateRangeFilter } from "../common/table/DateRangeFilter";
+import { FilterPillOption, FilterPills } from "../common/table/FilterPills";
+import { useTablePagination } from "../common/table/useTablePagination";
+import { DataTableToolbar } from "../common/table/DataTableToolbar";
+import { TableEmptyState } from "../common/table/TableEmptyState";
+import { TableLoadMoreFooter } from "../common/table/TableLoadMoreFooter";
+import {
   FileText,
   X,
-  Search,
   Printer,
   Undo2,
   Eye,
@@ -21,6 +32,24 @@ interface Props {
   onClose: () => void;
 }
 
+type InvoiceTypeFilter = "ALL" | "SALE" | "RETURN";
+type InvoicePaymentFilter = "ALL" | "CASH" | "CREDIT";
+
+// خيارات فلتر نوع الفاتورة الممرّرة إلى المكوّن الموحّد FilterPills
+const TYPE_FILTER_OPTIONS: readonly FilterPillOption<InvoiceTypeFilter>[] = [
+  { id: "ALL", label: "الكل", tone: "slate" },
+  { id: "SALE", label: "مبيعات", tone: "emerald" },
+  { id: "RETURN", label: "مرتجعات", tone: "rose" },
+];
+
+// خيارات فلتر طريقة الدفع الممرّرة إلى المكوّن الموحّد FilterPills
+const PAYMENT_FILTER_OPTIONS: readonly FilterPillOption<InvoicePaymentFilter>[] =
+  [
+    { id: "ALL", label: "كل طرق الدفع", tone: "slate" },
+    { id: "CASH", label: "نقدي", tone: "sky" },
+    { id: "CREDIT", label: "آجل (ذمم)", tone: "amber" },
+  ];
+
 export const InvoicesHistoryModal: React.FC<Props> = ({ isOpen, onClose }) => {
   const { invoices, setLastPrintedInvoice, loadInvoiceForReturn } =
     usePosStore();
@@ -31,23 +60,24 @@ export const InvoicesHistoryModal: React.FC<Props> = ({ isOpen, onClose }) => {
   );
 
   const [searchQuery, setSearchQuery] = useState("");
-  const [typeFilter, setTypeFilter] = useState<"ALL" | "SALE" | "RETURN">(
-    "ALL",
-  );
-  const [paymentFilter, setPaymentFilter] = useState<"ALL" | "CASH" | "CREDIT">(
-    "ALL",
-  );
+  const [typeFilter, setTypeFilter] = useState<InvoiceTypeFilter>("ALL");
+  const [paymentFilter, setPaymentFilter] =
+    useState<InvoicePaymentFilter>("ALL");
+  // حالة نطاق التواريخ الموحّدة (الأزرار السريعة + النطاق اليدوي من/إلى)
+  const [dateRange, setDateRange] =
+    useState<DateRangeValue>(DEFAULT_DATE_RANGE);
   const [selectedInvoice, setSelectedInvoice] = useState<InvoiceEntity | null>(
     null,
   );
 
-  // فلترة الفواتير حسب نوع الفاتورة وطريقة الدفع ونص البحث (رقم الفاتورة / العميل / المنفّذ / الوردية / الدواء)
+  // فلترة الفواتير حسب نوع الفاتورة وطريقة الدفع ونطاق التواريخ ونص البحث (رقم الفاتورة / العميل / المنفّذ / الوردية / الدواء)
   const filteredInvoices = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return invoices.filter((inv) => {
       if (typeFilter !== "ALL" && inv.type !== typeFilter) return false;
       if (paymentFilter !== "ALL" && inv.paymentMode !== paymentFilter)
         return false;
+      if (!matchesDateRange(inv.createdAt, dateRange)) return false;
 
       if (!q) return true;
 
@@ -71,9 +101,35 @@ export const InvoicesHistoryModal: React.FC<Props> = ({ isOpen, onClose }) => {
         matchesDrug
       );
     });
-  }, [invoices, searchQuery, typeFilter, paymentFilter]);
+  }, [invoices, searchQuery, typeFilter, paymentFilter, dateRange]);
+
+  // التحميل التدريجي للفواتير (50 فاتورة في الدفعة) لمنع بطء القائمة مع تراكم السجلات
+  const pagination = useTablePagination(filteredInvoices, {
+    pageSize: 50,
+    resetDeps: [
+      searchQuery,
+      typeFilter,
+      paymentFilter,
+      dateRange.from,
+      dateRange.to,
+    ],
+  });
 
   if (!isOpen) return null;
+
+  const hasActiveFilters =
+    Boolean(searchQuery.trim()) ||
+    typeFilter !== "ALL" ||
+    paymentFilter !== "ALL" ||
+    isDateRangeActive(dateRange);
+
+  // إعادة ضبط كافة فلاتر البحث والنوع والدفع والتاريخ بضغطة واحدة
+  const handleResetFilters = () => {
+    setSearchQuery("");
+    setTypeFilter("ALL");
+    setPaymentFilter("ALL");
+    setDateRange(DEFAULT_DATE_RANGE);
+  };
 
   const activeInvoice =
     (selectedInvoice &&
@@ -118,184 +174,168 @@ export const InvoicesHistoryModal: React.FC<Props> = ({ isOpen, onClose }) => {
           </button>
         </div>
 
-        {/* شريط البحث والفلترة */}
-        <div className="p-3.5 bg-slate-950 border-b border-slate-800 flex items-center gap-3 flex-wrap shrink-0">
-          <div className="relative flex-1 min-w-[240px]">
-            <Search className="w-4 h-4 text-slate-400 absolute right-3 top-2.5" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="ابحث برقم الفاتورة (INV-...)، العميل، الموظف المنفّذ، الوردية، أو الدواء..."
-              className="w-full bg-slate-900 border border-slate-700 rounded-xl pr-9 pl-3 py-2 text-white outline-none focus:border-emerald-500"
-            />
-          </div>
-
-          <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-xl border border-slate-800">
-            <button
-              type="button"
-              onClick={() => setTypeFilter("ALL")}
-              className={`px-3 py-1 rounded-lg font-bold transition ${
-                typeFilter === "ALL"
-                  ? "bg-slate-700 text-white"
-                  : "text-slate-400 hover:text-white"
-              }`}
-            >
-              الكل
-            </button>
-            <button
-              type="button"
-              onClick={() => setTypeFilter("SALE")}
-              className={`px-3 py-1 rounded-lg font-bold transition ${
-                typeFilter === "SALE"
-                  ? "bg-emerald-600 text-white"
-                  : "text-slate-400 hover:text-white"
-              }`}
-            >
-              مبيعات
-            </button>
-            <button
-              type="button"
-              onClick={() => setTypeFilter("RETURN")}
-              className={`px-3 py-1 rounded-lg font-bold transition ${
-                typeFilter === "RETURN"
-                  ? "bg-rose-600 text-white"
-                  : "text-slate-400 hover:text-white"
-              }`}
-            >
-              مرتجعات
-            </button>
-          </div>
-
-          <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-xl border border-slate-800">
-            <button
-              type="button"
-              onClick={() => setPaymentFilter("ALL")}
-              className={`px-3 py-1 rounded-lg font-bold transition ${
-                paymentFilter === "ALL"
-                  ? "bg-slate-700 text-white"
-                  : "text-slate-400 hover:text-white"
-              }`}
-            >
-              كل طرق الدفع
-            </button>
-            <button
-              type="button"
-              onClick={() => setPaymentFilter("CASH")}
-              className={`px-3 py-1 rounded-lg font-bold transition ${
-                paymentFilter === "CASH"
-                  ? "bg-sky-600 text-white"
-                  : "text-slate-400 hover:text-white"
-              }`}
-            >
-              نقدي
-            </button>
-            <button
-              type="button"
-              onClick={() => setPaymentFilter("CREDIT")}
-              className={`px-3 py-1 rounded-lg font-bold transition ${
-                paymentFilter === "CREDIT"
-                  ? "bg-amber-600 text-white"
-                  : "text-slate-400 hover:text-white"
-              }`}
-            >
-              آجل (ذمم)
-            </button>
-          </div>
+        {/* شريط البحث والفلترة الموحّد (DataTableToolbar + FilterPills + DateRangeFilter) */}
+        <div className="p-3.5 bg-slate-950 border-b border-slate-800 shrink-0">
+          <DataTableToolbar
+            accent="emerald"
+            searchValue={searchQuery}
+            onSearchChange={setSearchQuery}
+            searchPlaceholder="ابحث برقم الفاتورة (INV-...)، العميل، الموظف المنفّذ، الوردية، أو الدواء..."
+            filters={
+              <>
+                <FilterPills
+                  variant="segmented"
+                  options={TYPE_FILTER_OPTIONS}
+                  value={typeFilter}
+                  onChange={setTypeFilter}
+                  ariaLabel="تصفية حسب نوع الفاتورة"
+                />
+                <FilterPills
+                  variant="segmented"
+                  options={PAYMENT_FILTER_OPTIONS}
+                  value={paymentFilter}
+                  onChange={setPaymentFilter}
+                  ariaLabel="تصفية حسب طريقة الدفع"
+                />
+              </>
+            }
+            secondaryFilters={
+              <DateRangeFilter
+                value={dateRange}
+                onChange={setDateRange}
+                accent="emerald"
+              />
+            }
+            hasActiveFilters={hasActiveFilters}
+            onResetFilters={handleResetFilters}
+            visibleCount={pagination.visibleCount}
+            filteredCount={filteredInvoices.length}
+            totalCount={invoices.length}
+            itemLabel="فاتورة"
+          />
         </div>
 
         {/* القسم الرئيسي: قائمة الفواتير يميناً + تفاصيل الفاتورة المحددة يساراً */}
         <div className="flex-1 flex overflow-hidden">
           {/* قائمة الفواتير */}
           <div className="w-7/12 border-l border-slate-800 overflow-y-auto p-3 space-y-2">
-            {filteredInvoices.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center text-slate-500">
-                <FileText className="w-10 h-10 mb-2 opacity-20" />
-                <p>لا توجد فواتير مطابقة لمعايير البحث</p>
-              </div>
+            {invoices.length === 0 ? (
+              <TableEmptyState
+                variant="empty"
+                icon={FileText}
+                title="لا توجد فواتير مسجلة في النظام حتى الآن"
+                description="ستظهر هنا كافة فواتير المبيعات والمرتجعات فور إصدارها من نقطة البيع."
+              />
+            ) : filteredInvoices.length === 0 ? (
+              <TableEmptyState
+                variant="no-results"
+                searchQuery={searchQuery}
+                onResetFilters={handleResetFilters}
+                description="لا توجد فواتير مطابقة لمعايير البحث أو الفلاتر الحالية."
+              />
             ) : (
-              filteredInvoices.map((inv) => {
-                const isSelected = activeInvoice?.id === inv.id;
-                return (
-                  <div
-                    key={inv.id}
-                    onClick={() => setSelectedInvoice(inv)}
-                    className={`p-3 rounded-xl border cursor-pointer transition flex items-center justify-between gap-2 ${
-                      isSelected
-                        ? "bg-slate-800/90 border-emerald-500 shadow"
-                        : "bg-slate-950/70 border-slate-800 hover:border-slate-700"
-                    }`}
-                  >
-                    <div className="space-y-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-mono font-extrabold text-white text-xs">
-                          {inv.id}
-                        </span>
-                        <span
-                          className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
-                            inv.type === "SALE"
-                              ? "bg-emerald-950 text-emerald-300 border border-emerald-800"
-                              : "bg-rose-950 text-rose-300 border border-rose-800"
-                          }`}
-                        >
-                          {inv.type === "SALE" ? "فاتورة بيع" : "فاتورة مرتجع"}
-                        </span>
-                        <span
-                          className={`text-[10px] px-2 py-0.5 rounded-full font-bold flex items-center gap-1 ${
-                            inv.paymentMode === "CASH"
-                              ? "bg-sky-950 text-sky-300 border border-sky-800"
-                              : "bg-amber-950 text-amber-300 border border-amber-800"
-                          }`}
-                        >
-                          {inv.paymentMode === "CASH" ? (
-                            <>
-                              <Banknote className="w-3 h-3" /> نقدي
-                            </>
-                          ) : (
-                            <>
-                              <CreditCard className="w-3 h-3" /> آجل
-                            </>
-                          )}
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-3 flex-wrap text-[11px] text-slate-400">
-                        <span className="flex items-center gap-1">
-                          <User className="w-3 h-3" />{" "}
-                          {inv.customerName || "عميل نقدي"}
-                        </span>
-                        {inv.performedByName && (
-                          <span className="flex items-center gap-1 text-sky-400">
-                            <UserCheck className="w-3 h-3" />
-                            {inv.performedByName}
+              <>
+                {pagination.visibleItems.map((inv) => {
+                  const isSelected = activeInvoice?.id === inv.id;
+                  return (
+                    <div
+                      key={inv.id}
+                      onClick={() => setSelectedInvoice(inv)}
+                      className={`p-3 rounded-xl border cursor-pointer transition flex items-center justify-between gap-2 ${
+                        isSelected
+                          ? "bg-slate-800/90 border-emerald-500 shadow"
+                          : "bg-slate-950/70 border-slate-800 hover:border-slate-700"
+                      }`}
+                    >
+                      <div className="space-y-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-mono font-extrabold text-white text-xs">
+                            {inv.id}
                           </span>
-                        )}
-                        <span className="flex items-center gap-1 font-mono">
-                          <Calendar className="w-3 h-3" />
-                          {new Date(inv.createdAt).toLocaleString("ar-SA")}
-                        </span>
-                        <span>({inv.items.length} أصناف)</span>
-                      </div>
-                    </div>
+                          <span
+                            className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                              inv.type === "SALE"
+                                ? "bg-emerald-950 text-emerald-300 border border-emerald-800"
+                                : "bg-rose-950 text-rose-300 border border-rose-800"
+                            }`}
+                          >
+                            {inv.type === "SALE"
+                              ? "فاتورة بيع"
+                              : "فاتورة مرتجع"}
+                          </span>
+                          <span
+                            className={`text-[10px] px-2 py-0.5 rounded-full font-bold flex items-center gap-1 ${
+                              inv.paymentMode === "CASH"
+                                ? "bg-sky-950 text-sky-300 border border-sky-800"
+                                : "bg-amber-950 text-amber-300 border border-amber-800"
+                            }`}
+                          >
+                            {inv.paymentMode === "CASH" ? (
+                              <>
+                                <Banknote className="w-3 h-3" /> نقدي
+                              </>
+                            ) : (
+                              <>
+                                <CreditCard className="w-3 h-3" /> آجل
+                              </>
+                            )}
+                          </span>
+                        </div>
 
-                    <div className="flex items-center gap-3 shrink-0">
-                      <div className="text-left">
-                        <div className="text-[10px] text-slate-400">الصافي</div>
-                        <div
-                          className={`font-mono font-extrabold text-sm ${
-                            inv.type === "RETURN"
-                              ? "text-rose-400"
-                              : "text-emerald-400"
-                          }`}
-                        >
-                          {inv.totalAmount.toFixed(2)} ر.س
+                        <div className="flex items-center gap-3 flex-wrap text-[11px] text-slate-400">
+                          <span className="flex items-center gap-1">
+                            <User className="w-3 h-3" />{" "}
+                            {inv.customerName || "عميل نقدي"}
+                          </span>
+                          {inv.performedByName && (
+                            <span className="flex items-center gap-1 text-sky-400">
+                              <UserCheck className="w-3 h-3" />
+                              {inv.performedByName}
+                            </span>
+                          )}
+                          <span className="flex items-center gap-1 font-mono">
+                            <Calendar className="w-3 h-3" />
+                            {new Date(inv.createdAt).toLocaleString("ar-SA")}
+                          </span>
+                          <span>({inv.items.length} أصناف)</span>
                         </div>
                       </div>
-                      <Eye className="w-4 h-4 text-slate-500" />
+
+                      <div className="flex items-center gap-3 shrink-0">
+                        <div className="text-left">
+                          <div className="text-[10px] text-slate-400">
+                            الصافي
+                          </div>
+                          <div
+                            className={`font-mono font-extrabold text-sm ${
+                              inv.type === "RETURN"
+                                ? "text-rose-400"
+                                : "text-emerald-400"
+                            }`}
+                          >
+                            {inv.totalAmount.toFixed(2)} ر.س
+                          </div>
+                        </div>
+                        <Eye className="w-4 h-4 text-slate-500" />
+                      </div>
                     </div>
-                  </div>
-                );
-              })
+                  );
+                })}
+
+                {/* تذييل التحميل التدريجي الموحّد (50 فاتورة في الدفعة) */}
+                <TableLoadMoreFooter
+                  visibleCount={pagination.visibleCount}
+                  totalCount={pagination.totalCount}
+                  remainingCount={pagination.remainingCount}
+                  pageSize={pagination.pageSize}
+                  hasMore={pagination.hasMore}
+                  onLoadMore={pagination.loadMore}
+                  onShowAll={pagination.showAll}
+                  itemLabel="فاتورة"
+                  accent="emerald"
+                  showSummaryWhenComplete
+                />
+              </>
             )}
           </div>
 
