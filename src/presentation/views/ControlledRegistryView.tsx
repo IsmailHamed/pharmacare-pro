@@ -25,7 +25,10 @@ import { DataTableToolbar } from "../components/common/table/DataTableToolbar";
 import { DataTableShell } from "../components/common/table/DataTableShell";
 import { TableLoadMoreFooter } from "../components/common/table/TableLoadMoreFooter";
 import { ShieldAlert, FileSpreadsheet } from "lucide-react";
-
+import {
+  TableExportButton,
+  TableExportColumn,
+} from "../components/common/table/TableExportButton";
 // مفاتيح الأعمدة القابلة للفرز والتحكم في الظهور داخل دفتر الأدوية المراقبة
 type ControlledSortKey =
   | "dispensedAt"
@@ -48,7 +51,56 @@ const CONTROLLED_COLUMNS: readonly TableColumnDef<ControlledSortKey>[] = [
   { id: "doctorName", label: "الطبيب" },
   { id: "prescriptionId", label: "الوصفة" },
 ];
+type ControlledLogItem = ReturnType<
+  typeof usePosStore.getState
+>["controlledLogs"][number];
 
+// أعمدة تصدير الجدول إلى Excel / CSV مرتبطة بمعرّفات الأعمدة لتصدير الحقول الظاهرة فقط
+const CONTROLLED_TABLE_EXPORT_COLUMNS: readonly TableExportColumn<
+  ControlledLogItem,
+  ControlledSortKey
+>[] = [
+  {
+    columnId: "dispensedAt",
+    header: "التاريخ",
+    getValue: (l) => l.dispensedAt.slice(0, 16).replace("T", " "),
+  },
+  {
+    columnId: "productName",
+    header: "الدواء",
+    getValue: (l) => l.productName,
+  },
+  {
+    columnId: "qty",
+    header: "الكمية",
+    getValue: (l) => `${l.qty} ${l.unit === "pack" ? "علبة" : "شريط"}`,
+  },
+  {
+    columnId: "batchNumber",
+    header: "الدفعة",
+    getValue: (l) => l.batchNumber,
+  },
+  {
+    columnId: "patientName",
+    header: "المريض",
+    getValue: (l) => l.patientName,
+  },
+  {
+    columnId: "nationalId",
+    header: "الرقم الوطني",
+    getValue: (l) => l.nationalId,
+  },
+  {
+    columnId: "doctorName",
+    header: "الطبيب",
+    getValue: (l) => l.doctorName,
+  },
+  {
+    columnId: "prescriptionId",
+    header: "الوصفة",
+    getValue: (l) => l.prescriptionId,
+  },
+];
 // الترتيب الافتراضي للدفتر (الأحدث صرفاً أولاً) والاتجاه الابتدائي لكل عمود عند النقر الأول
 const DEFAULT_CONTROLLED_SORT: SortState<ControlledSortKey> = {
   key: "dispensedAt",
@@ -209,7 +261,19 @@ export const ControlledRegistryView: React.FC = () => {
               />
             }
             secondaryActions={
-              <ColumnVisibilityMenu columnsState={columnsState} accent="rose" />
+              <>
+                <ColumnVisibilityMenu
+                  columnsState={columnsState}
+                  accent="rose"
+                />
+                <TableExportButton
+                  items={filtered}
+                  columns={CONTROLLED_TABLE_EXPORT_COLUMNS}
+                  isColumnVisible={columnsState.isVisible}
+                  fileNamePrefix="Controlled_Registry_Table"
+                  itemLabel="عملية صرف"
+                />
+              </>
             }
             hasActiveFilters={hasActiveFilters}
             onResetFilters={handleResetFilters}

@@ -651,11 +651,6 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
             onResetFilters={handleResetFilters}
             secondaryActions={
               <>
-                <ColumnVisibilityMenu
-                  columnsState={columnsState}
-                  accent="indigo"
-                />
-
                 {pagination.visibleItems.length > 0 && (
                   <button
                     type="button"
@@ -666,7 +661,10 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
                     {allExpanded ? "طي كل الأصناف" : "توسيع كل الأصناف"}
                   </button>
                 )}
-
+                <ColumnVisibilityMenu
+                  columnsState={columnsState}
+                  accent="indigo"
+                />
                 <button
                   type="button"
                   disabled={filteredInvoices.length === 0}

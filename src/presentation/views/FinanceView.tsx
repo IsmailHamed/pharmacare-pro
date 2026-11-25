@@ -5,6 +5,7 @@ import { ShiftZReportCard } from "../components/finance/ShiftZReportCard";
 import { CashExpensesPanel } from "../components/finance/CashExpensesPanel";
 import { LedgerAccountsSection } from "../components/finance/LedgerAccountsSection";
 import { ClosedShiftsTable } from "../components/finance/ClosedShiftsTable";
+import { InvoicesHistoryTab } from "../components/finance/InvoicesHistoryTab";
 import {
   IncomeStatementSummary,
   IncomeStatementTab,
@@ -14,12 +15,13 @@ import {
   Lock,
   Users,
   History,
+  FileText,
   TrendingUp,
   CheckCircle2,
   AlertCircle,
 } from "lucide-react";
 
-type FinanceSubTab = "shift" | "ledger" | "archive" | "income";
+type FinanceSubTab = "shift" | "ledger" | "archive" | "invoices" | "income";
 
 export const FinanceView: React.FC = () => {
   // التحقق من صلاحية المستخدم الحالي للاطلاع على التكلفة وصافي الربح (القيمة الافتراضية الآمنة: false)
@@ -306,6 +308,28 @@ export const FinanceView: React.FC = () => {
           </span>
         </button>
 
+        <button
+          type="button"
+          onClick={() => setActiveSubTab("invoices")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg font-bold transition ${
+            activeSubTab === "invoices"
+              ? "bg-teal-600 text-white shadow-md"
+              : "text-slate-400 hover:text-white hover:bg-slate-800"
+          }`}
+        >
+          <FileText className="w-4 h-4" />
+          سجل الفواتير
+          <span
+            className={`font-mono text-[10px] px-1.5 py-0.5 rounded-full ${
+              activeSubTab === "invoices"
+                ? "bg-teal-950/60 text-teal-100"
+                : "bg-slate-800 text-slate-300"
+            }`}
+          >
+            {invoices.length}
+          </span>
+        </button>
+
         {canViewCostAndProfit && (
           <button
             type="button"
@@ -360,7 +384,12 @@ export const FinanceView: React.FC = () => {
         <ClosedShiftsTable closedShifts={closedShifts} />
       )}
 
-      {/* التبويب الرابع: قائمة الدخل والأرباح المحاسبية (محمي بصلاحية canViewCostAndProfit) */}
+      {/* التبويب الرابع: سجل فواتير المبيعات والمرتجعات بجدول كامل العرض قابل للتوسيع */}
+      {activeSubTab === "invoices" && (
+        <InvoicesHistoryTab invoices={invoices} />
+      )}
+
+      {/* التبويب الخامس: قائمة الدخل والأرباح المحاسبية (محمي بصلاحية canViewCostAndProfit) */}
       {canViewCostAndProfit && activeSubTab === "income" && (
         <IncomeStatementTab
           incomeStatement={incomeStatement}

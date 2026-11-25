@@ -42,7 +42,10 @@ import {
   CheckCircle2,
   X,
 } from "lucide-react";
-
+import {
+  TableExportButton,
+  TableExportColumn,
+} from "../common/table/TableExportButton";
 interface Props {
   shortageProducts: ProductEntity[];
   canViewCost: boolean;
@@ -142,6 +145,77 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     return map;
   }, [suppliers]);
 
+  // أعمدة تصدير جدول النواقص إلى Excel / CSV مرتبطة بمعرّفات الأعمدة لتصدير الحقول الظاهرة فقط واحترام صلاحية التكلفة
+  const tableExportColumns = useMemo<
+    TableExportColumn<ProductEntity, ShortageSortKey>[]
+  >(() => {
+    const cols: TableExportColumn<ProductEntity, ShortageSortKey>[] = [
+      {
+        columnId: "name",
+        header: "الاسم التجاري للدواء",
+        getValue: (p) => p.name,
+      },
+      {
+        columnId: "name",
+        header: "المادة الفعالة",
+        getValue: (p) => p.scientificName,
+      },
+      { columnId: "name", header: "الباركود", getValue: (p) => p.barcode },
+      {
+        columnId: "stockPacks",
+        header: "الرصيد الحالي (علبة)",
+        getValue: (p) => p.stockPacks,
+      },
+      {
+        columnId: "stockPacks",
+        header: "حد الطلب الأدنى",
+        getValue: (p) => p.minLimit,
+      },
+      {
+        columnId: "supplierName",
+        header: "المستودع الموجه له الطلب",
+        getValue: (p) => {
+          const sid = assignedSupplierMap[p.id];
+          return sid
+            ? (suppliersById.get(sid)?.name ?? "غير محدد")
+            : "غير محدد";
+        },
+      },
+    ];
+
+    if (canViewCost) {
+      cols.push({
+        columnId: "weightedCostPrice",
+        header: "آخر تكلفة مرجحة",
+        getValue: (p) => p.weightedCostPrice.toFixed(2),
+      });
+    }
+
+    cols.push({
+      columnId: "orderQty",
+      header: "الكمية المطلوبة (علبة)",
+      getValue: (p) =>
+        orderQtyMap[p.id] !== undefined
+          ? orderQtyMap[p.id]
+          : getSuggestedQty(p),
+    });
+
+    if (canViewCost) {
+      cols.push({
+        columnId: "estimatedTotal",
+        header: "الإجمالي التقديري",
+        getValue: (p) => {
+          const qty =
+            orderQtyMap[p.id] !== undefined
+              ? orderQtyMap[p.id]
+              : getSuggestedQty(p);
+          return (qty * p.weightedCostPrice).toFixed(2);
+        },
+      });
+    }
+
+    return cols;
+  }, [canViewCost, assignedSupplierMap, suppliersById, orderQtyMap]);
   // اختصار F2 أو / للتركيز السريع على شريط البحث داخل دفتر النواقص
   useEffect(() => {
     const handleFocusShortcut = (e: KeyboardEvent) => {
@@ -773,6 +847,13 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
                   <ColumnVisibilityMenu
                     columnsState={columnsState}
                     accent="sky"
+                  />
+                  <TableExportButton
+                    items={sortedShortages}
+                    columns={tableExportColumns}
+                    isColumnVisible={columnsState.isVisible}
+                    fileNamePrefix="Purchase_Shortages_Table"
+                    itemLabel="صنف"
                   />
                   <button
                     type="button"
