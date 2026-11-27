@@ -11,55 +11,41 @@ import {
 } from "./LedgerVoucherReceiptModal";
 import {
   LedgerInvoiceItem,
-  LedgerPartyStatement,
   LedgerPaymentItem,
   LedgerPurchaseInvoiceItem,
 } from "./LedgerPartyStatement";
+import { getDebtAgeDays } from "./statement/ledgerStatement.config";
 import { LedgerVouchersLog } from "./LedgerVouchersLog";
-import { FilterPillOption, FilterPills } from "../common/table/FilterPills";
-import {
-  SortAccessors,
-  SortDirection,
-  SortState,
-  useTableSort,
-} from "../common/table/useTableSort";
+import { FilterPills } from "../common/table/FilterPills";
+import { useTableSort } from "../common/table/useTableSort";
 import { useTablePagination } from "../common/table/useTablePagination";
-import {
-  TableColumnDef,
-  useTableColumns,
-} from "../common/table/useTableColumns";
+import { useTableColumns } from "../common/table/useTableColumns";
 import { ColumnVisibilityMenu } from "../common/table/ColumnVisibilityMenu";
-import {
-  TableExportButton,
-  TableExportColumn,
-} from "../common/table/TableExportButton";
+import { TableExportButton } from "../common/table/TableExportButton";
 import { SortableTh } from "../common/table/SortableTh";
 import { DataTableToolbar } from "../common/table/DataTableToolbar";
 import { DataTableShell } from "../common/table/DataTableShell";
 import { TableLoadMoreFooter } from "../common/table/TableLoadMoreFooter";
 import {
-  Users,
+  BalanceFilter,
+  DEFAULT_LEDGER_SORT,
+  LEDGER_DEFAULT_DIRECTIONS,
+  LEDGER_SORT_ACCESSORS,
+  LedgerScope,
+  getBalanceFilterOptions,
+  getLedgerExportColumns,
+  getLedgerTableColumns,
+} from "./accounts/ledgerAccounts.config";
+import { LedgerScopeBar } from "./accounts/LedgerScopeBar";
+import { LedgerPartyStatementModal } from "./accounts/LedgerPartyStatementModal";
+import {
   Building2,
-  Receipt,
-  Clock,
   CheckCircle2,
-  Keyboard,
-  X,
+  Clock,
   Eye,
   HandCoins,
+  Users,
 } from "lucide-react";
-
-type LedgerScope = "customers" | "suppliers" | "vouchers";
-type BalanceFilter = "ALL" | "OPEN" | "OVERDUE_30";
-
-// مفاتيح الأعمدة القابلة للفرز والتحكم في الظهور في جدول الذمم والآجل
-type LedgerSortKey =
-  | "partyName"
-  | "debtAgeDays"
-  | "lastTransactionAt"
-  | "totalCreditAmount"
-  | "totalPaidAmount"
-  | "remainingBalance";
 
 interface Props {
   customerAccounts: PartyAccountSummary[];
@@ -76,39 +62,6 @@ interface Props {
   openShift?: ShiftSummaryEntity;
   canViewSuppliers?: boolean;
 }
-
-const getDebtAgeDays = (isoDate: string): number => {
-  const diffMs = Date.now() - new Date(isoDate).getTime();
-  return Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
-};
-
-// دوال استخراج قيم الأعمدة للفرز (تُبقي الحسابات المسددة بالكامل في الأسفل عند الفرز حسب عمر الدين)
-const LEDGER_SORT_ACCESSORS: SortAccessors<PartyAccountSummary, LedgerSortKey> =
-  {
-    partyName: (acc) => acc.partyName,
-    debtAgeDays: (acc) =>
-      acc.remainingBalance > 0 ? getDebtAgeDays(acc.lastTransactionAt) : null,
-    lastTransactionAt: (acc) => new Date(acc.lastTransactionAt),
-    totalCreditAmount: (acc) => acc.totalCreditAmount,
-    totalPaidAmount: (acc) => acc.totalPaidAmount,
-    remainingBalance: (acc) => acc.remainingBalance,
-  };
-
-// الترتيب الافتراضي للجدول (الأعلى رصيداً متبقياً أولاً) والاتجاه الابتدائي لكل عمود عند النقر الأول
-const DEFAULT_LEDGER_SORT: SortState<LedgerSortKey> = {
-  key: "remainingBalance",
-  direction: "desc",
-};
-
-const LEDGER_DEFAULT_DIRECTIONS: Partial<Record<LedgerSortKey, SortDirection>> =
-  {
-    partyName: "asc",
-    debtAgeDays: "desc",
-    lastTransactionAt: "desc",
-    totalCreditAmount: "desc",
-    totalPaidAmount: "desc",
-    remainingBalance: "desc",
-  };
 
 /**
  * تبويب الذمم والآجل بجدول كامل العرض (Full-Width Table)
@@ -210,22 +163,10 @@ export const LedgerAccountsSection: React.FC<Props> = ({
   );
 
   const isSupplierScope = activeScope === "suppliers";
-  const scopeAccent = isSupplierScope ? "purple" : "sky";
+  const scopeAccent: "purple" | "sky" = isSupplierScope ? "purple" : "sky";
 
-  // تعريف أعمدة جدول الذمم للتحكم في الإظهار والإخفاء (مع قفل عمود الاسم)
-  const ledgerColumns = useMemo<TableColumnDef<LedgerSortKey>[]>(
-    () => [
-      {
-        id: "partyName",
-        label: isSupplierScope ? "اسم المستودع" : "اسم العميل",
-        locked: true,
-      },
-      { id: "debtAgeDays", label: "الحالة وعمر الدين" },
-      { id: "lastTransactionAt", label: "آخر حركة" },
-      { id: "totalCreditAmount", label: "إجمالي الآجل" },
-      { id: "totalPaidAmount", label: "إجمالي المسدد" },
-      { id: "remainingBalance", label: "الرصيد المتبقي" },
-    ],
+  const ledgerColumns = useMemo(
+    () => getLedgerTableColumns(isSupplierScope),
     [isSupplierScope],
   );
 
@@ -235,81 +176,26 @@ export const LedgerAccountsSection: React.FC<Props> = ({
     ledgerColumns,
   );
 
-  // أعمدة التصدير إلى Excel / CSV مرتبطة بمعرّفات الأعمدة لتصدير الحقول الظاهرة فقط
-  const exportColumns = useMemo<
-    TableExportColumn<PartyAccountSummary, LedgerSortKey>[]
-  >(
-    () => [
-      {
-        columnId: "partyName",
-        header: isSupplierScope ? "اسم المستودع" : "اسم العميل",
-        getValue: (acc) => acc.partyName,
-      },
-      {
-        columnId: "debtAgeDays",
-        header: "الحالة وعمر الدين",
-        getValue: (acc) => {
-          if (acc.remainingBalance <= 0) return "مسدد بالكامل";
-          const days = getDebtAgeDays(acc.lastTransactionAt);
-          return days === 0 ? "اليوم" : `${days} يوم`;
-        },
-      },
-      {
-        columnId: "lastTransactionAt",
-        header: "تاريخ آخر حركة",
-        getValue: (acc) => acc.lastTransactionAt.slice(0, 10),
-      },
-      {
-        columnId: "totalCreditAmount",
-        header: "إجمالي الآجل",
-        getValue: (acc) => acc.totalCreditAmount.toFixed(2),
-      },
-      {
-        columnId: "totalPaidAmount",
-        header: "إجمالي المسدد",
-        getValue: (acc) => acc.totalPaidAmount.toFixed(2),
-      },
-      {
-        columnId: "remainingBalance",
-        header: "الرصيد المتبقي",
-        getValue: (acc) => acc.remainingBalance.toFixed(2),
-      },
-    ],
+  const exportColumns = useMemo(
+    () => getLedgerExportColumns(isSupplierScope),
     [isSupplierScope],
   );
 
-  // خيارات حبوب فلتر حالة الرصيد الممرّرة إلى المكوّن الموحّد FilterPills
-  const balanceFilterOptions = useMemo<FilterPillOption<BalanceFilter>[]>(
-    () => [
-      {
-        id: "ALL",
-        label: "الكل",
-        count: activeSourceAccounts.length,
-        tone: "slate",
-      },
-      {
-        id: "OPEN",
-        label: "مفتوحة",
-        count: isSupplierScope ? openSuppliersCount : openCustomersCount,
-        tone: scopeAccent,
-        highlightWhenInactive: true,
-      },
-      {
-        id: "OVERDUE_30",
-        label: "متأخرة +30 يوم",
-        count: overdueCountInScope,
-        icon: Clock,
-        tone: "rose",
-        highlightWhenInactive: overdueCountInScope > 0,
-      },
-    ],
+  const balanceFilterOptions = useMemo(
+    () =>
+      getBalanceFilterOptions({
+        totalCount: activeSourceAccounts.length,
+        openCount: isSupplierScope ? openSuppliersCount : openCustomersCount,
+        overdueCount: overdueCountInScope,
+        scopeAccent,
+      }),
     [
       activeSourceAccounts.length,
       isSupplierScope,
       openSuppliersCount,
       openCustomersCount,
-      scopeAccent,
       overdueCountInScope,
+      scopeAccent,
     ],
   );
 
@@ -493,105 +379,16 @@ export const LedgerAccountsSection: React.FC<Props> = ({
   return (
     <div className="space-y-4">
       {/* شريط المبدّل العلوي المدمج (العملاء / المستودعات / سجل السندات) */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-2.5 flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            type="button"
-            onClick={() => handleSwitchScope("customers")}
-            className={`px-3.5 py-2 rounded-xl font-bold flex items-center gap-2 transition ${
-              activeScope === "customers"
-                ? "bg-sky-600 text-white shadow-md"
-                : "bg-slate-950/60 text-slate-300 hover:bg-slate-800 border border-slate-800"
-            }`}
-          >
-            <Users className="w-4 h-4" />
-            <span>ذمم العملاء (لنا)</span>
-            <span
-              className={`font-mono text-[10px] px-1.5 py-0.5 rounded-full ${
-                activeScope === "customers"
-                  ? "bg-sky-950/60 text-sky-100"
-                  : "bg-slate-800 text-sky-300"
-              }`}
-            >
-              {openCustomersCount}
-            </span>
-            <span
-              className={`font-mono text-[11px] font-extrabold ${
-                activeScope === "customers" ? "text-sky-100" : "text-sky-400"
-              }`}
-            >
-              {totalReceivables.toFixed(2)} ر.س
-            </span>
-          </button>
-
-          {hasSuppliersAccess && (
-            <button
-              type="button"
-              onClick={() => handleSwitchScope("suppliers")}
-              className={`px-3.5 py-2 rounded-xl font-bold flex items-center gap-2 transition ${
-                activeScope === "suppliers"
-                  ? "bg-purple-600 text-white shadow-md"
-                  : "bg-slate-950/60 text-slate-300 hover:bg-slate-800 border border-slate-800"
-              }`}
-            >
-              <Building2 className="w-4 h-4" />
-              <span>ذمم المستودعات (علينا)</span>
-              <span
-                className={`font-mono text-[10px] px-1.5 py-0.5 rounded-full ${
-                  activeScope === "suppliers"
-                    ? "bg-purple-950/60 text-purple-100"
-                    : "bg-slate-800 text-purple-300"
-                }`}
-              >
-                {openSuppliersCount}
-              </span>
-              <span
-                className={`font-mono text-[11px] font-extrabold ${
-                  activeScope === "suppliers"
-                    ? "text-purple-100"
-                    : "text-purple-400"
-                }`}
-              >
-                {totalPayables.toFixed(2)} ر.س
-              </span>
-            </button>
-          )}
-
-          <button
-            type="button"
-            onClick={() => handleSwitchScope("vouchers")}
-            className={`px-3.5 py-2 rounded-xl font-bold flex items-center gap-2 transition ${
-              activeScope === "vouchers"
-                ? "bg-emerald-600 text-white shadow-md"
-                : "bg-slate-950/60 text-slate-300 hover:bg-slate-800 border border-slate-800"
-            }`}
-          >
-            <Receipt className="w-4 h-4" />
-            <span>سجل السندات</span>
-            <span
-              className={`font-mono text-[10px] px-1.5 py-0.5 rounded-full ${
-                activeScope === "vouchers"
-                  ? "bg-emerald-950/60 text-emerald-100"
-                  : "bg-slate-800 text-emerald-300"
-              }`}
-            >
-              {accessibleVouchersCount}
-            </span>
-          </button>
-        </div>
-
-        {/* تلميح اختصارات لوحة المفاتيح المدمج */}
-        {activeScope !== "vouchers" && (
-          <div className="hidden xl:flex items-center gap-2 text-[10px] text-slate-400 font-mono bg-slate-950/70 border border-slate-800 px-2.5 py-1.5 rounded-xl">
-            <Keyboard className="w-3.5 h-3.5 text-sky-400" />
-            <span>↑/↓ تنقل</span>
-            <span>•</span>
-            <span>Enter تفاصيل العمليات</span>
-            <span>•</span>
-            <span>F2 / بحث</span>
-          </div>
-        )}
-      </div>
+      <LedgerScopeBar
+        activeScope={activeScope}
+        hasSuppliersAccess={hasSuppliersAccess}
+        openCustomersCount={openCustomersCount}
+        totalReceivables={totalReceivables}
+        openSuppliersCount={openSuppliersCount}
+        totalPayables={totalPayables}
+        accessibleVouchersCount={accessibleVouchersCount}
+        onSwitchScope={handleSwitchScope}
+      />
 
       {/* عرض سجل السندات الموحد أو جدول الحسابات بعرض الصفحة الكامل عبر نواة الجداول الموحّدة */}
       {activeScope === "vouchers" ? (
@@ -869,51 +666,16 @@ export const LedgerAccountsSection: React.FC<Props> = ({
         </DataTableShell>
       )}
 
-      {/* نافذة تفاصيل العمليات وكشف الحساب التراكمي عند الضغط على صف العميل / المستودع */}
-      {modalParty && (
-        <div
-          className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-40 p-4 text-xs"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) {
-              setModalPartyName(null);
-            }
-          }}
-        >
-          <div className="bg-slate-950 border border-slate-700 rounded-2xl w-full max-w-4xl max-h-[88vh] flex flex-col overflow-hidden shadow-2xl">
-            <div className="px-4 py-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between gap-2 shrink-0">
-              <div className="flex items-center gap-2 min-w-0">
-                {modalParty.partyType === "SUPPLIER" ? (
-                  <Building2 className="w-4 h-4 text-purple-400 shrink-0" />
-                ) : (
-                  <Users className="w-4 h-4 text-sky-400 shrink-0" />
-                )}
-                <h3 className="font-bold text-white text-sm truncate">
-                  تفاصيل العمليات وكشف حساب: {modalParty.partyName}
-                </h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setModalPartyName(null)}
-                className="text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 p-1.5 rounded-lg transition"
-                title="إغلاق (Esc)"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="p-4 overflow-y-auto flex-1">
-              <LedgerPartyStatement
-                party={modalParty}
-                invoices={resolvedInvoices}
-                purchaseInvoices={resolvedPurchaseInvoices}
-                ledgerPayments={resolvedLedgerPayments}
-                onOpenPayment={setPaymentParty}
-                onReprintVoucher={setReceiptVoucher}
-              />
-            </div>
-          </div>
-        </div>
-      )}
+      {/* نافذة تفاصيل العمليات وكشف الحساب التراكمي */}
+      <LedgerPartyStatementModal
+        party={modalParty}
+        invoices={resolvedInvoices}
+        purchaseInvoices={resolvedPurchaseInvoices}
+        ledgerPayments={resolvedLedgerPayments}
+        onClose={() => setModalPartyName(null)}
+        onOpenPayment={setPaymentParty}
+        onReprintVoucher={setReceiptVoucher}
+      />
 
       {/* نافذة تسجيل سند القبض / الصرف السريع */}
       <LedgerPaymentModal
