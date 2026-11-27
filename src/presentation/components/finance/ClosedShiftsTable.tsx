@@ -7,154 +7,32 @@ import {
   matchesDateRange,
 } from "../common/table/dateRangeUtils";
 import { DateRangeFilter } from "../common/table/DateRangeFilter";
-import { FilterPillOption, FilterPills } from "../common/table/FilterPills";
-import {
-  SortAccessors,
-  SortDirection,
-  SortState,
-  useTableSort,
-} from "../common/table/useTableSort";
+import { FilterPills } from "../common/table/FilterPills";
+import { useTableSort } from "../common/table/useTableSort";
 import { useTablePagination } from "../common/table/useTablePagination";
-import {
-  TableColumnDef,
-  useTableColumns,
-} from "../common/table/useTableColumns";
+import { useTableColumns } from "../common/table/useTableColumns";
 import { ColumnVisibilityMenu } from "../common/table/ColumnVisibilityMenu";
-import {
-  TableExportButton,
-  TableExportColumn,
-} from "../common/table/TableExportButton";
+import { TableExportButton } from "../common/table/TableExportButton";
 import { SortableTh } from "../common/table/SortableTh";
 import { DataTableToolbar } from "../common/table/DataTableToolbar";
 import { DataTableShell } from "../common/table/DataTableShell";
 import { TableLoadMoreFooter } from "../common/table/TableLoadMoreFooter";
-import { History, CheckCircle2, AlertOctagon, UserCheck } from "lucide-react";
+import {
+  CLOSED_SHIFT_COLUMNS,
+  CLOSED_SHIFT_DEFAULT_DIRECTIONS,
+  CLOSED_SHIFT_EXPORT_COLUMNS,
+  CLOSED_SHIFT_SORT_ACCESSORS,
+  DEFAULT_CLOSED_SHIFT_SORT,
+  VarianceFilter,
+  computeClosedShiftsArchiveStats,
+  getVarianceFilterOptions,
+} from "./shifts/closedShifts.config";
+import { ClosedShiftsHeader } from "./shifts/ClosedShiftsHeader";
+import { AlertOctagon, CheckCircle2, History, UserCheck } from "lucide-react";
 
 interface Props {
   closedShifts: ShiftSummaryEntity[];
 }
-
-type VarianceFilter = "ALL" | "WITH_VARIANCE";
-
-// مفاتيح الأعمدة القابلة للفرز والتحكم في الظهور داخل أرشيف الورديات المغلقة
-type ClosedShiftSortKey =
-  | "closedAt"
-  | "pharmacistName"
-  | "openingBalance"
-  | "cashSalesTotal"
-  | "expectedDrawerCash"
-  | "actualDrawerCash"
-  | "variance"
-  | "safeDropAmount"
-  | "nextShiftFloat";
-
-// تعريف أعمدة الجدول للتحكم في الإظهار والإخفاء (مع قفل العمودين الأساسيين)
-const CLOSED_SHIFT_COLUMNS: readonly TableColumnDef<ClosedShiftSortKey>[] = [
-  { id: "closedAt", label: "رقم الوردية والتاريخ", locked: true },
-  { id: "pharmacistName", label: "صاحب العهدة / المُغلق", locked: true },
-  { id: "openingBalance", label: "العهدة الافتتاحية" },
-  { id: "cashSalesTotal", label: "مبيعات الكاش" },
-  { id: "expectedDrawerCash", label: "النقد المتوقع" },
-  { id: "actualDrawerCash", label: "الجرد الفعلي" },
-  { id: "variance", label: "الفارق (Variance)" },
-  { id: "safeDropAmount", label: "المورّد للخزنة" },
-  { id: "nextShiftFloat", label: "العهدة المرحلة" },
-];
-
-// أعمدة التصدير إلى Excel / CSV مرتبطة بمعرّفات الأعمدة لتصدير الحقول الظاهرة فقط
-const CLOSED_SHIFT_EXPORT_COLUMNS: readonly TableExportColumn<
-  ShiftSummaryEntity,
-  ClosedShiftSortKey
->[] = [
-  { columnId: "closedAt", header: "رقم الوردية", getValue: (s) => s.id },
-  {
-    columnId: "closedAt",
-    header: "تاريخ ووقت الإغلاق",
-    getValue: (s) =>
-      s.closedAt ? s.closedAt.slice(0, 16).replace("T", " ") : "—",
-  },
-  {
-    columnId: "pharmacistName",
-    header: "صاحب العهدة",
-    getValue: (s) => s.pharmacistName,
-  },
-  {
-    columnId: "pharmacistName",
-    header: "أغلقها",
-    getValue: (s) => s.closedByName || s.pharmacistName,
-  },
-  {
-    columnId: "openingBalance",
-    header: "العهدة الافتتاحية",
-    getValue: (s) => s.openingBalance.toFixed(2),
-  },
-  {
-    columnId: "cashSalesTotal",
-    header: "مبيعات الكاش",
-    getValue: (s) => s.cashSalesTotal.toFixed(2),
-  },
-  {
-    columnId: "expectedDrawerCash",
-    header: "النقد المتوقع",
-    getValue: (s) => s.expectedDrawerCash.toFixed(2),
-  },
-  {
-    columnId: "actualDrawerCash",
-    header: "الجرد الفعلي",
-    getValue: (s) => (s.actualDrawerCash ?? 0).toFixed(2),
-  },
-  {
-    columnId: "variance",
-    header: "الفارق (Variance)",
-    getValue: (s) => (s.variance || 0).toFixed(2),
-  },
-  {
-    columnId: "safeDropAmount",
-    header: "المورّد للخزنة",
-    getValue: (s) => (s.safeDropAmount || 0).toFixed(2),
-  },
-  {
-    columnId: "nextShiftFloat",
-    header: "العهدة المرحلة",
-    getValue: (s) => (s.nextShiftFloat || 0).toFixed(2),
-  },
-];
-
-// دوال استخراج قيم الأعمدة للفرز (مُعرّفة خارج المكوّن للحفاظ على ثبات المرجع)
-const CLOSED_SHIFT_SORT_ACCESSORS: SortAccessors<
-  ShiftSummaryEntity,
-  ClosedShiftSortKey
-> = {
-  closedAt: (s) => (s.closedAt ? new Date(s.closedAt) : s.id),
-  pharmacistName: (s) => s.pharmacistName,
-  openingBalance: (s) => s.openingBalance,
-  cashSalesTotal: (s) => s.cashSalesTotal,
-  expectedDrawerCash: (s) => s.expectedDrawerCash,
-  actualDrawerCash: (s) => s.actualDrawerCash ?? 0,
-  variance: (s) => s.variance || 0,
-  safeDropAmount: (s) => s.safeDropAmount || 0,
-  nextShiftFloat: (s) => s.nextShiftFloat || 0,
-};
-
-// الترتيب الافتراضي للأرشيف (الأحدث إغلاقاً أولاً) والاتجاه الابتدائي لكل عمود عند النقر الأول
-const DEFAULT_CLOSED_SHIFT_SORT: SortState<ClosedShiftSortKey> = {
-  key: "closedAt",
-  direction: "desc",
-};
-
-const CLOSED_SHIFT_DEFAULT_DIRECTIONS: Partial<
-  Record<ClosedShiftSortKey, SortDirection>
-> = {
-  closedAt: "desc",
-  pharmacistName: "asc",
-  openingBalance: "desc",
-  cashSalesTotal: "desc",
-  expectedDrawerCash: "desc",
-  actualDrawerCash: "desc",
-  variance: "asc",
-  safeDropAmount: "desc",
-  nextShiftFloat: "desc",
-};
 
 /**
  * تبويب أرشيف تقارير تسليم الورديات السابقة (Z-Reports Archive)
@@ -171,45 +49,18 @@ export const ClosedShiftsTable: React.FC<Props> = ({ closedShifts }) => {
   // إدارة إظهار وإخفاء الأعمدة مع حفظ تفضيلات المستخدم في localStorage
   const columnsState = useTableColumns("closed_shifts", CLOSED_SHIFT_COLUMNS);
 
-  const archiveStats = useMemo(() => {
-    let totalCashSales = 0;
-    let totalSafeDrop = 0;
-    let netVariance = 0;
-    let varianceShiftsCount = 0;
-
-    closedShifts.forEach((s) => {
-      totalCashSales += s.cashSalesTotal;
-      totalSafeDrop += s.safeDropAmount || 0;
-      const variance = s.variance || 0;
-      netVariance += variance;
-      if (variance !== 0) varianceShiftsCount += 1;
-    });
-
-    return {
-      totalCashSales,
-      totalSafeDrop,
-      netVariance,
-      varianceShiftsCount,
-    };
-  }, [closedShifts]);
+  const archiveStats = useMemo(
+    () => computeClosedShiftsArchiveStats(closedShifts),
+    [closedShifts],
+  );
 
   // خيارات فلتر الفروقات الممرّرة إلى المكوّن الموحّد FilterPills
-  const varianceFilterOptions = useMemo<FilterPillOption<VarianceFilter>[]>(
-    () => [
-      {
-        id: "ALL",
-        label: "كل الورديات",
-        count: closedShifts.length,
-        tone: "slate",
-      },
-      {
-        id: "WITH_VARIANCE",
-        label: "ذات الفارق",
-        count: archiveStats.varianceShiftsCount,
-        icon: AlertOctagon,
-        tone: "rose",
-      },
-    ],
+  const varianceFilterOptions = useMemo(
+    () =>
+      getVarianceFilterOptions(
+        closedShifts.length,
+        archiveStats.varianceShiftsCount,
+      ),
     [closedShifts.length, archiveStats.varianceShiftsCount],
   );
 
@@ -283,71 +134,10 @@ export const ClosedShiftsTable: React.FC<Props> = ({ closedShifts }) => {
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
       {/* الترويسة وبطاقات الملخص */}
-      <div className="flex items-center justify-between flex-wrap gap-3 border-b border-slate-800 pb-3">
-        <div>
-          <h3 className="font-bold text-white text-sm flex items-center gap-2">
-            <History className="w-4 h-4 text-sky-400" /> سجل تقارير تسليم
-            الورديات السابقة (Z-Reports Archive)
-          </h3>
-          <p className="text-slate-400 text-[11px] mt-0.5">
-            أرشيف كامل لمطابقات الدرج، المبالغ المورّدة للخزنة، والعهد المرحلة
-            لكل وردية مغلقة.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2.5 flex-wrap">
-          <div className="bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-center">
-            <div className="text-[10px] text-slate-400">عدد الورديات</div>
-            <div className="font-mono font-bold text-white text-sm">
-              {closedShifts.length}
-            </div>
-          </div>
-
-          <div className="bg-emerald-950/30 border border-emerald-800/70 rounded-xl px-3.5 py-2 text-center">
-            <div className="text-[10px] text-emerald-300/80">
-              إجمالي مبيعات الكاش
-            </div>
-            <div className="font-mono font-extrabold text-emerald-400 text-sm">
-              {archiveStats.totalCashSales.toFixed(2)} ر.س
-            </div>
-          </div>
-
-          <div className="bg-purple-950/30 border border-purple-800/70 rounded-xl px-3.5 py-2 text-center">
-            <div className="text-[10px] text-purple-300/80">
-              إجمالي المورّد للخزنة
-            </div>
-            <div className="font-mono font-extrabold text-purple-400 text-sm">
-              {archiveStats.totalSafeDrop.toFixed(2)} ر.س
-            </div>
-          </div>
-
-          <div
-            className={`rounded-xl px-3.5 py-2 text-center border ${
-              archiveStats.netVariance < 0
-                ? "bg-rose-950/35 border-rose-800/70"
-                : archiveStats.netVariance > 0
-                  ? "bg-sky-950/35 border-sky-800/70"
-                  : "bg-slate-950 border-slate-800"
-            }`}
-          >
-            <div className="text-[10px] text-slate-400">صافي الفروقات</div>
-            <div
-              className={`font-mono font-extrabold text-sm ${
-                archiveStats.netVariance < 0
-                  ? "text-rose-400"
-                  : archiveStats.netVariance > 0
-                    ? "text-sky-400"
-                    : "text-emerald-400"
-              }`}
-            >
-              {archiveStats.netVariance > 0
-                ? `+${archiveStats.netVariance.toFixed(2)}`
-                : archiveStats.netVariance.toFixed(2)}{" "}
-              ر.س
-            </div>
-          </div>
-        </div>
-      </div>
+      <ClosedShiftsHeader
+        totalShiftsCount={closedShifts.length}
+        stats={archiveStats}
+      />
 
       {/* الهيكل الموحّد للجدول (framed=false للحفاظ على البطاقة الخارجية الحالية) */}
       <DataTableShell
