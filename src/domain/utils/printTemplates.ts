@@ -1,3 +1,4 @@
+export * from "./print";
 export type ThermalLabelPresetId =
   | "38x25"
   | "40x30"

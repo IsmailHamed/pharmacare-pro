@@ -325,7 +325,6 @@ export const InvoicesHistoryModal: React.FC<Props> = ({ isOpen, onClose }) => {
                 <ColumnVisibilityMenu
                   columnsState={columnsState}
                   accent="emerald"
-                  label="الحقول"
                 />
                 <TableExportButton
                   items={filteredInvoices}
