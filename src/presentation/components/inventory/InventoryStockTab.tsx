@@ -1,4 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { InvoiceEntity, ProductEntity } from "../../../domain/entities";
 import {
   buildProductSearchIndex,
@@ -7,97 +13,30 @@ import {
 import { usePosStore } from "../../../application/store/usePosStore";
 import { ProductSearchInput } from "../common/ProductSearchInput";
 import { ProductDetailsModal } from "./ProductDetailsModal";
-import { FilterPillOption, FilterPills } from "../common/table/FilterPills";
-import {
-  SortAccessors,
-  SortDirection,
-  useTableSort,
-} from "../common/table/useTableSort";
+import { FilterPills } from "../common/table/FilterPills";
+import { useTableSort } from "../common/table/useTableSort";
 import { useTablePagination } from "../common/table/useTablePagination";
-import {
-  TableColumnDef,
-  useTableColumns,
-} from "../common/table/useTableColumns";
+import { useTableColumns } from "../common/table/useTableColumns";
 import { ColumnVisibilityMenu } from "../common/table/ColumnVisibilityMenu";
-import {
-  TableExportButton,
-  TableExportColumn,
-} from "../common/table/TableExportButton";
+import { TableExportButton } from "../common/table/TableExportButton";
 import { SortableTh } from "../common/table/SortableTh";
 import { DataTableToolbar } from "../common/table/DataTableToolbar";
 import { DataTableShell } from "../common/table/DataTableShell";
 import { TableLoadMoreFooter } from "../common/table/TableLoadMoreFooter";
 import {
-  Flame,
-  Clock,
-  AlertTriangle,
-  ArchiveRestore,
-  CheckCircle2,
-  Keyboard,
-  Eye,
-  ClipboardCheck,
-  ShieldAlert,
-  Package,
-} from "lucide-react";
-
-const PAGE_SIZE = 50;
-
-type InventoryFilterMode =
-  | "ALL"
-  | "EXP_30"
-  | "EXP_90"
-  | "EXP_180"
-  | "LOW_STOCK"
-  | "DEAD_STOCK";
-
-// مفاتيح الأعمدة القابلة للفرز والتحكم في الظهور في جدول المخزون ورادار الصلاحيات
-type InventorySortKey =
-  | "name"
-  | "category"
-  | "stockPacks"
-  | "nearestExpiry"
-  | "packPrice"
-  | "weightedCostPrice";
-
-// الاتجاه الابتدائي المفضّل لكل عمود عند النقر الأول (الأقل رصيداً والأقرب صلاحية أولاً)
-const INVENTORY_DEFAULT_DIRECTIONS: Partial<
-  Record<InventorySortKey, SortDirection>
-> = {
-  name: "asc",
-  category: "asc",
-  stockPacks: "asc",
-  nearestExpiry: "asc",
-  packPrice: "desc",
-  weightedCostPrice: "desc",
-};
-
-interface NearestExpiryInfo {
-  days: number;
-  expiryDate: string | null;
-  activeBatchesCount: number;
-}
-
-const getNearestExpiryInfo = (product: ProductEntity): NearestExpiryInfo => {
-  const activeBatches = (product.batches || [])
-    .filter((b) => b.qtyPacks > 0 && Boolean(b.expiryDate))
-    .sort((a, b) => a.expiryDate.localeCompare(b.expiryDate));
-
-  if (activeBatches.length === 0) {
-    return { days: 9999, expiryDate: null, activeBatchesCount: 0 };
-  }
-
-  const nearest = activeBatches[0];
-  const expMs = new Date(nearest.expiryDate).getTime();
-  const days = Number.isNaN(expMs)
-    ? 9999
-    : Math.ceil((expMs - Date.now()) / (1000 * 60 * 60 * 24));
-
-  return {
-    days,
-    expiryDate: nearest.expiryDate,
-    activeBatchesCount: activeBatches.length,
-  };
-};
+  INVENTORY_DEFAULT_DIRECTIONS,
+  INVENTORY_PAGE_SIZE,
+  InventoryFilterMode,
+  NearestExpiryInfo,
+  computeInventoryRadarStats,
+  createInventorySortAccessors,
+  getInventoryExportColumns,
+  getInventoryFilterPillOptions,
+  getInventoryTableColumns,
+  getNearestExpiryInfo,
+} from "./stock/inventoryStock.config";
+import { InventoryStockRow } from "./stock/InventoryStockRow";
+import { Keyboard, Package } from "lucide-react";
 
 interface Props {
   products: ProductEntity[];
@@ -106,6 +45,12 @@ interface Props {
   onPrintBarcode: (product: ProductEntity) => void;
   onAdjustStock: (product: ProductEntity, batchId?: string) => void;
 }
+
+const EMPTY_EXPIRY_INFO: NearestExpiryInfo = {
+  days: 9999,
+  expiryDate: null,
+  activeBatchesCount: 0,
+};
 
 /**
  * تبويب المخزون ورادار الصلاحيات بتصميم الجدول الكامل الموحّد (Full-Width Table)
@@ -137,20 +82,17 @@ export const InventoryStockTab: React.FC<Props> = ({
   const searchInputRef = useRef<HTMLInputElement>(null);
   const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
 
-  // تعريف أعمدة الجدول القابلة للإظهار/الإخفاء مع احترام صلاحية عرض التكلفة
-  const inventoryColumns = useMemo<TableColumnDef<InventorySortKey>[]>(() => {
-    const base: TableColumnDef<InventorySortKey>[] = [
-      { id: "name", label: "الدواء / المادة الفعالة", locked: true },
-      { id: "category", label: "التصنيف" },
-      { id: "stockPacks", label: "الرصيد المتاح" },
-      { id: "nearestExpiry", label: "أقرب صلاحية (FEFO)" },
-      { id: "packPrice", label: "سعر البيع" },
-    ];
-    if (canViewCost) {
-      base.push({ id: "weightedCostPrice", label: "التكلفة / الهامش" });
-    }
-    return base;
-  }, [canViewCost]);
+  const setRowRef = useCallback(
+    (productId: string, el: HTMLTableRowElement | null) => {
+      rowRefs.current[productId] = el;
+    },
+    [],
+  );
+
+  const inventoryColumns = useMemo(
+    () => getInventoryTableColumns(canViewCost),
+    [canViewCost],
+  );
 
   // إدارة إظهار وإخفاء الأعمدة مع حفظ تفضيلات المستخدم في localStorage
   const columnsState = useTableColumns("inventory_stock", inventoryColumns);
@@ -189,108 +131,20 @@ export const InventoryStockTab: React.FC<Props> = ({
     return map;
   }, [products]);
 
-  // أعمدة التصدير إلى Excel / CSV مرتبطة بمعرّفات الأعمدة لتصدير الحقول الظاهرة فقط واحترام صلاحية التكلفة
-  const exportColumns = useMemo<
-    TableExportColumn<ProductEntity, InventorySortKey>[]
-  >(() => {
-    const cols: TableExportColumn<ProductEntity, InventorySortKey>[] = [
-      { columnId: "name", header: "الاسم التجاري", getValue: (p) => p.name },
-      {
-        columnId: "name",
-        header: "المادة الفعالة",
-        getValue: (p) => p.scientificName,
-      },
-      { columnId: "name", header: "الباركود", getValue: (p) => p.barcode },
-      {
-        columnId: "category",
-        header: "التصنيف",
-        getValue: (p) => p.category || "عام",
-      },
-      {
-        columnId: "stockPacks",
-        header: "الرصيد (علبة)",
-        getValue: (p) => p.stockPacks,
-      },
-      {
-        columnId: "stockPacks",
-        header: "أشرطة فرط",
-        getValue: (p) => p.stockLooseStrips,
-      },
-      {
-        columnId: "stockPacks",
-        header: "حد الطلب الأدنى",
-        getValue: (p) => p.minLimit,
-      },
-      {
-        columnId: "nearestExpiry",
-        header: "أقرب تاريخ صلاحية",
-        getValue: (p) => expiryInfoMap.get(p.id)?.expiryDate || "—",
-      },
-      {
-        columnId: "nearestExpiry",
-        header: "الأيام المتبقية للصلاحية",
-        getValue: (p) => {
-          const info = expiryInfoMap.get(p.id);
-          return info?.expiryDate ? info.days : "—";
-        },
-      },
-      {
-        columnId: "packPrice",
-        header: "سعر البيع (علبة)",
-        getValue: (p) => p.packPrice.toFixed(2),
-      },
-    ];
+  const exportColumns = useMemo(
+    () => getInventoryExportColumns(canViewCost, expiryInfoMap),
+    [canViewCost, expiryInfoMap],
+  );
 
-    if (canViewCost) {
-      cols.push(
-        {
-          columnId: "weightedCostPrice",
-          header: "التكلفة المرجحة",
-          getValue: (p) => p.weightedCostPrice.toFixed(2),
-        },
-        {
-          columnId: "weightedCostPrice",
-          header: "هامش الربح (%)",
-          getValue: (p) =>
-            `${(
-              ((p.packPrice - p.weightedCostPrice) /
-                Math.max(0.01, p.weightedCostPrice)) *
-              100
-            ).toFixed(0)}%`,
-        },
-      );
-    }
-
-    return cols;
-  }, [canViewCost, expiryInfoMap]);
-
-  const radarStats = useMemo(() => {
-    let lowStockCount = 0;
-    let exp30Count = 0;
-    let exp90Count = 0;
-    let exp180Count = 0;
-    let deadStockCount = 0;
-
-    products.forEach((p) => {
-      if (p.stockPacks <= p.minLimit) lowStockCount++;
-      const days = expiryInfoMap.get(p.id)?.days ?? 9999;
-      if (days <= 30) exp30Count++;
-      else if (days <= 90) exp90Count++;
-      else if (days <= 180) exp180Count++;
-
-      if (p.stockPacks > p.minLimit && !soldProductIdsLast60Days.has(p.id)) {
-        deadStockCount++;
-      }
-    });
-
-    return {
-      lowStockCount,
-      exp30Count,
-      exp90Count,
-      exp180Count,
-      deadStockCount,
-    };
-  }, [products, expiryInfoMap, soldProductIdsLast60Days]);
+  const radarStats = useMemo(
+    () =>
+      computeInventoryRadarStats(
+        products,
+        expiryInfoMap,
+        soldProductIdsLast60Days,
+      ),
+    [products, expiryInfoMap, soldProductIdsLast60Days],
+  );
 
   // دمج البحث الضبابي والصوتي (مع الحفاظ على ترتيب الدقة) مع فلاتر التصنيف والرادار
   const filteredProducts = useMemo(() => {
@@ -330,20 +184,8 @@ export const InventoryStockTab: React.FC<Props> = ({
     soldProductIdsLast60Days,
   ]);
 
-  // دوال استخراج قيم الأعمدة للفرز (مع إبقاء الأصناف بدون صلاحية مسجلة في الأسفل تلقائياً)
-  const sortAccessors = useMemo<SortAccessors<ProductEntity, InventorySortKey>>(
-    () => ({
-      name: (p) => p.name,
-      category: (p) => p.category || "عام",
-      stockPacks: (p) =>
-        p.stockPacks + p.stockLooseStrips / Math.max(1, p.stripsPerPack),
-      nearestExpiry: (p) => {
-        const info = expiryInfoMap.get(p.id);
-        return info?.expiryDate ? info.days : null;
-      },
-      packPrice: (p) => p.packPrice,
-      weightedCostPrice: (p) => p.weightedCostPrice,
-    }),
+  const sortAccessors = useMemo(
+    () => createInventorySortAccessors(expiryInfoMap),
     [expiryInfoMap],
   );
 
@@ -363,7 +205,7 @@ export const InventoryStockTab: React.FC<Props> = ({
 
   // اقتصاص العناصر المرئية عبر التحميل التدريجي الموحّد (50 صفاً) لمنع تجمّد الـ DOM عند وجود 10,000+ دواء
   const pagination = useTablePagination(sortedProducts, {
-    pageSize: PAGE_SIZE,
+    pageSize: INVENTORY_PAGE_SIZE,
     resetDeps: [
       filterMode,
       selectedCategory,
@@ -482,56 +324,22 @@ export const InventoryStockTab: React.FC<Props> = ({
     resetSort();
   };
 
-  // بناء خيارات حبوب رادار الصلاحيات والمخزون الممرّرة إلى المكوّن الموحّد FilterPills
-  const filterPillOptions = useMemo<FilterPillOption<InventoryFilterMode>[]>(
-    () => [
-      {
-        id: "ALL",
-        label: "الكل",
-        count: products.length,
-        tone: "slate",
-      },
-      {
-        id: "EXP_30",
-        label: "خطر ≤30 يوماً",
-        count: radarStats.exp30Count,
-        icon: Flame,
-        tone: "rose",
-        highlightWhenInactive: true,
-      },
-      {
-        id: "EXP_90",
-        label: "قريبة 31–90 يوماً",
-        count: radarStats.exp90Count,
-        icon: Clock,
-        tone: "amber",
-        highlightWhenInactive: true,
-      },
-      {
-        id: "EXP_180",
-        label: "تنبيه 91–180 يوماً",
-        count: radarStats.exp180Count,
-        tone: "amber",
-        highlightWhenInactive: true,
-      },
-      {
-        id: "LOW_STOCK",
-        label: "نواقص",
-        count: radarStats.lowStockCount,
-        icon: AlertTriangle,
-        tone: "sky",
-        highlightWhenInactive: true,
-      },
-      {
-        id: "DEAD_STOCK",
-        label: "راكد",
-        count: radarStats.deadStockCount,
-        icon: ArchiveRestore,
-        tone: "purple",
-        highlightWhenInactive: true,
-      },
-    ],
+  const filterPillOptions = useMemo(
+    () => getInventoryFilterPillOptions(products.length, radarStats),
     [products.length, radarStats],
+  );
+
+  const handleOpenProductDetails = useCallback((productId: string) => {
+    setHighlightedProductId(productId);
+    setDetailsProductId(productId);
+  }, []);
+
+  const handleQuickAdjustStock = useCallback(
+    (product: ProductEntity) => {
+      setHighlightedProductId(product.id);
+      onAdjustStock(product);
+    },
+    [onAdjustStock],
   );
 
   return (
@@ -710,210 +518,23 @@ export const InventoryStockTab: React.FC<Props> = ({
           />
         }
       >
-        {visibleProducts.map((p) => {
-          const isHighlighted = highlightedProduct?.id === p.id;
-          const expiryInfo = expiryInfoMap.get(p.id) || {
-            days: 9999,
-            expiryDate: null,
-            activeBatchesCount: 0,
-          };
-          const isLowStock = p.stockPacks <= p.minLimit;
-          const isDeadStock =
-            p.stockPacks > p.minLimit && !soldProductIdsLast60Days.has(p.id);
-          const profitMarginPercent = (
-            ((p.packPrice - p.weightedCostPrice) /
-              Math.max(0.01, p.weightedCostPrice)) *
-            100
-          ).toFixed(0);
-          const stripsPerPack = Math.max(1, p.stripsPerPack);
-
-          return (
-            <tr
-              key={p.id}
-              ref={(el) => {
-                rowRefs.current[p.id] = el;
-              }}
-              onClick={() => {
-                setHighlightedProductId(p.id);
-                setDetailsProductId(p.id);
-              }}
-              className={`cursor-pointer transition ${
-                isHighlighted
-                  ? "bg-amber-950/25"
-                  : "bg-slate-950/40 hover:bg-slate-800/60"
-              }`}
-            >
-              {/* الاسم والمادة الفعالة والباركود */}
-              {columnsState.isVisible("name") && (
-                <td className="py-3 px-3">
-                  <div className="font-bold text-white flex items-center gap-1.5 flex-wrap">
-                    <span>{p.name}</span>
-                    {p.isControlled && (
-                      <span
-                        title="دواء مراقب / نفسي"
-                        className="inline-flex items-center gap-0.5 text-[9.5px] bg-rose-950 border border-rose-800 text-rose-300 px-1.5 py-0.2 rounded-full"
-                      >
-                        <ShieldAlert className="w-2.5 h-2.5" /> مراقب
-                      </span>
-                    )}
-                    {isDeadStock && (
-                      <span className="text-[9.5px] bg-purple-950 border border-purple-800 text-purple-300 px-1.5 py-0.2 rounded-full">
-                        راكد
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-[10.5px] text-slate-400 mt-0.5 flex items-center gap-2 flex-wrap">
-                    <span>{p.scientificName}</span>
-                    <span className="font-mono text-slate-500">
-                      • {p.barcode}
-                    </span>
-                  </div>
-                </td>
-              )}
-
-              {/* التصنيف */}
-              {columnsState.isVisible("category") && (
-                <td className="py-3 px-3">
-                  <span className="text-[10.5px] bg-slate-900 border border-slate-800 text-slate-300 px-2 py-0.5 rounded-md">
-                    {p.category || "عام"}
-                  </span>
-                </td>
-              )}
-
-              {/* الرصيد المتاح */}
-              {columnsState.isVisible("stockPacks") && (
-                <td className="py-3 px-3 text-center">
-                  <div
-                    className={`font-mono font-extrabold ${
-                      p.stockPacks === 0
-                        ? "text-rose-400"
-                        : isLowStock
-                          ? "text-amber-400"
-                          : "text-white"
-                    }`}
-                  >
-                    {p.stockPacks} علبة
-                    {p.stockLooseStrips > 0 && (
-                      <span className="text-[10.5px] text-sky-400 mr-1">
-                        +{p.stockLooseStrips} ش
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-[10px] text-slate-500 font-mono">
-                    {isLowStock ? (
-                      <span className="text-sky-400 font-sans font-bold">
-                        تحت الحد ({p.minLimit})
-                      </span>
-                    ) : (
-                      `الحد: ${p.minLimit}`
-                    )}
-                  </div>
-                </td>
-              )}
-
-              {/* أقرب صلاحية (FEFO) */}
-              {columnsState.isVisible("nearestExpiry") && (
-                <td className="py-3 px-3">
-                  {!expiryInfo.expiryDate ? (
-                    <span className="text-[11px] text-slate-500">—</span>
-                  ) : (
-                    <div className="space-y-0.5">
-                      <div>
-                        {expiryInfo.days <= 0 ? (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-rose-950 border border-rose-700 text-rose-300 px-2 py-0.5 rounded-full">
-                            <Flame className="w-3 h-3" /> منتهية الصلاحية
-                          </span>
-                        ) : expiryInfo.days <= 30 ? (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold bg-rose-950/80 border border-rose-800 text-rose-300 px-2 py-0.5 rounded-full">
-                            <Flame className="w-3 h-3" /> {expiryInfo.days} يوم
-                          </span>
-                        ) : expiryInfo.days <= 90 ? (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold bg-orange-950/80 border border-orange-800 text-orange-300 px-2 py-0.5 rounded-full">
-                            <Clock className="w-3 h-3" /> {expiryInfo.days} يوم
-                          </span>
-                        ) : expiryInfo.days <= 180 ? (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold bg-amber-950/70 border border-amber-800 text-amber-300 px-2 py-0.5 rounded-full">
-                            <Clock className="w-3 h-3" /> {expiryInfo.days} يوم
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold bg-emerald-950/50 border border-emerald-800 text-emerald-300 px-2 py-0.5 rounded-full">
-                            <CheckCircle2 className="w-3 h-3" />{" "}
-                            {expiryInfo.expiryDate}
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-[10px] font-mono text-slate-500">
-                        {expiryInfo.days <= 180
-                          ? `${expiryInfo.expiryDate} • `
-                          : ""}
-                        {expiryInfo.activeBatchesCount} تشغيلة
-                      </div>
-                    </div>
-                  )}
-                </td>
-              )}
-
-              {/* سعر البيع */}
-              {columnsState.isVisible("packPrice") && (
-                <td className="py-3 px-3 text-center">
-                  <div className="font-mono font-extrabold text-emerald-400">
-                    {p.packPrice.toFixed(2)}
-                  </div>
-                  {stripsPerPack > 1 && (
-                    <div className="text-[10px] font-mono text-slate-500">
-                      الشريط: {(p.packPrice / stripsPerPack).toFixed(2)}
-                    </div>
-                  )}
-                </td>
-              )}
-
-              {/* التكلفة والهامش (محمي بصلاحية canViewCostAndProfit) */}
-              {canViewCost && columnsState.isVisible("weightedCostPrice") && (
-                <td className="py-3 px-3 text-center">
-                  <div className="font-mono font-bold text-amber-400">
-                    {p.weightedCostPrice.toFixed(2)}
-                  </div>
-                  <div className="text-[10px] font-mono text-sky-400">
-                    +{profitMarginPercent}%
-                  </div>
-                </td>
-              )}
-
-              {/* إجراءات مدمجة غير مزدحمة */}
-              <td className="py-3 px-3">
-                <div className="flex items-center justify-end gap-1.5">
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setHighlightedProductId(p.id);
-                      setDetailsProductId(p.id);
-                    }}
-                    className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-bold text-[11px] inline-flex items-center gap-1 transition"
-                  >
-                    <Eye className="w-3.5 h-3.5 text-amber-400" />
-                    التفاصيل
-                  </button>
-
-                  {canAdjustStock && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setHighlightedProductId(p.id);
-                        onAdjustStock(p);
-                      }}
-                      title="تسوية جرد / تالف سريعة"
-                      className="p-1.5 rounded-lg bg-slate-800 hover:bg-amber-600 border border-slate-700 text-amber-400 hover:text-white transition"
-                    >
-                      <ClipboardCheck className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-              </td>
-            </tr>
-          );
-        })}
+        {visibleProducts.map((p) => (
+          <InventoryStockRow
+            key={p.id}
+            product={p}
+            isHighlighted={highlightedProduct?.id === p.id}
+            isDeadStock={
+              p.stockPacks > p.minLimit && !soldProductIdsLast60Days.has(p.id)
+            }
+            expiryInfo={expiryInfoMap.get(p.id) || EMPTY_EXPIRY_INFO}
+            canViewCost={canViewCost}
+            canAdjustStock={canAdjustStock}
+            isColumnVisible={columnsState.isVisible}
+            setRowRef={setRowRef}
+            onOpenDetails={handleOpenProductDetails}
+            onAdjustStock={handleQuickAdjustStock}
+          />
+        ))}
       </DataTableShell>
 
       {/* نافذة بطاقة تفاصيل الدواء والتشغيلات */}
