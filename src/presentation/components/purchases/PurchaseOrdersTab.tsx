@@ -1039,7 +1039,6 @@ export const PurchaseOrdersTab: React.FC<Props> = ({
                     columns={exportColumns}
                     isColumnVisible={columnsState.isVisible}
                     fileNamePrefix="Purchase_Orders"
-                    label="تصدير الجدول"
                     itemLabel="أمر شراء"
                   />
                 </>
