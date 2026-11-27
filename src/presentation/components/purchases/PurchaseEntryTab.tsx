@@ -16,8 +16,11 @@ import {
   PurchaseLineInput,
 } from "../../../application/use-cases/AddPurchaseWithBonus";
 import { ProductQuickPicker } from "../common/ProductQuickPicker";
-import { DrugIdentityBadges } from "../common/DrugIdentityBadges";
-import { Trash2, Settings2, Barcode, ClipboardCheck, X } from "lucide-react";
+import {
+  PurchaseDraftLine,
+  PurchaseInvoiceLineCard,
+} from "./entry/PurchaseInvoiceLineCard";
+import { Settings2, Barcode, ClipboardCheck, X } from "lucide-react";
 
 interface Props {
   products: ProductEntity[];
@@ -37,23 +40,12 @@ interface Props {
   ) => Promise<unknown>;
 }
 
-interface DraftLine {
-  uid: string;
-  productId: string;
-  batchNumber: string;
-  expiryDate: string;
-  purchasedPacks: number;
-  bonusPacks: number;
-  purchasePricePerPack: number;
-  newPackSalePrice: number;
-}
-
 const createDraftLineForProduct = (
   product: ProductEntity,
   overrides?: Partial<
-    Pick<DraftLine, "purchasedPacks" | "purchasePricePerPack">
+    Pick<PurchaseDraftLine, "purchasedPacks" | "purchasePricePerPack">
   >,
-): DraftLine => ({
+): PurchaseDraftLine => ({
   uid: uuidv4(),
   productId: product.id,
   batchNumber: "",
@@ -85,14 +77,21 @@ export const PurchaseEntryTab: React.FC<Props> = ({
   const [useManualSupplier, setUseManualSupplier] = useState(false);
   const [supplierInvoiceNumber, setSupplierInvoiceNumber] = useState("");
   const [paymentMode, setPaymentMode] = useState<"CASH" | "CREDIT">("CASH");
-  const [lines, setLines] = useState<DraftLine[]>([]);
+  const [lines, setLines] = useState<PurchaseDraftLine[]>([]);
   const [lastAddedUid, setLastAddedUid] = useState<string | null>(null);
 
   const batchInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const loadedOrderIdRef = useRef<string | null>(null);
 
+  const setBatchInputRef = useCallback(
+    (uid: string, el: HTMLInputElement | null) => {
+      batchInputRefs.current[uid] = el;
+    },
+    [],
+  );
+
   const updateLinesState = useCallback(
-    (updater: (prev: DraftLine[]) => DraftLine[]) => {
+    (updater: (prev: PurchaseDraftLine[]) => PurchaseDraftLine[]) => {
       setLines((prev) => {
         const next = updater(prev);
         onLinesCountChange?.(next.length);
@@ -124,7 +123,7 @@ export const PurchaseEntryTab: React.FC<Props> = ({
     setUseManualSupplier(!supplierInDirectory);
     setSupplier(pendingOrder.supplierName);
 
-    const prefilledLines: DraftLine[] = [];
+    const prefilledLines: PurchaseDraftLine[] = [];
     for (const item of pendingOrder.items) {
       const remainingPacks = Math.max(
         0,
@@ -197,15 +196,21 @@ export const PurchaseEntryTab: React.FC<Props> = ({
     [updateLinesState],
   );
 
-  const updateLine = (uid: string, patch: Partial<DraftLine>) => {
-    updateLinesState((prev) =>
-      prev.map((l) => (l.uid === uid ? { ...l, ...patch } : l)),
-    );
-  };
+  const updateLine = useCallback(
+    (uid: string, patch: Partial<PurchaseDraftLine>) => {
+      updateLinesState((prev) =>
+        prev.map((l) => (l.uid === uid ? { ...l, ...patch } : l)),
+      );
+    },
+    [updateLinesState],
+  );
 
-  const removeLine = (uid: string) => {
-    updateLinesState((prev) => prev.filter((l) => l.uid !== uid));
-  };
+  const removeLine = useCallback(
+    (uid: string) => {
+      updateLinesState((prev) => prev.filter((l) => l.uid !== uid));
+    },
+    [updateLinesState],
+  );
 
   const handleSave = async () => {
     if (!supplier.trim()) {
@@ -428,183 +433,19 @@ export const PurchaseEntryTab: React.FC<Props> = ({
           {linePreview.map((r, idx) => {
             const product = r.product;
             if (!product) return null;
-            const isLatest = r.line.uid === lastAddedUid;
-
             return (
-              <div
+              <PurchaseInvoiceLineCard
                 key={r.line.uid}
-                className={`bg-slate-950 border rounded-xl p-3.5 space-y-3 transition ${
-                  isLatest
-                    ? "border-indigo-500/80 shadow-[0_0_12px_rgba(99,102,241,0.12)]"
-                    : "border-slate-800"
-                }`}
-              >
-                <div className="flex items-center justify-between gap-2 flex-wrap border-b border-slate-800/80 pb-2">
-                  <div className="flex items-center gap-1.5 flex-wrap min-w-0">
-                    <span className="font-mono text-[10px] bg-slate-900 border border-slate-800 text-slate-400 px-1.5 py-0.5 rounded">
-                      #{linePreview.length - idx}
-                    </span>
-                    <DrugIdentityBadges
-                      name={product.name}
-                      category={product.category}
-                      isControlled={product.isControlled}
-                      size="sm"
-                    />
-                    <span className="text-[10.5px] text-slate-400">
-                      — {product.scientificName}
-                    </span>
-                    <span className="font-mono text-[10px] text-slate-500 bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800">
-                      {product.barcode}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center gap-3 shrink-0">
-                    <span className="text-[10.5px] text-slate-400 font-mono">
-                      الرصيد الحالي:{" "}
-                      <b className="text-slate-200">
-                        {product.stockPacks} علبة
-                      </b>
-                    </span>
-                    {r.calc && (
-                      <span className="text-[10.5px] bg-amber-950/50 border border-amber-800/70 text-amber-300 px-2 py-0.5 rounded-lg font-mono">
-                        تكلفة مرجحة جديدة:{" "}
-                        <b>{r.calc.newWeightedCostPrice.toFixed(2)}</b> ر.س
-                      </span>
-                    )}
-                    {r.calc && (
-                      <span className="text-[11px] font-mono font-extrabold text-white">
-                        {r.calc.lineTotalCost.toFixed(2)} ر.س
-                      </span>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => removeLine(r.line.uid)}
-                      title="حذف البند من الفاتورة"
-                      className="bg-slate-800 hover:bg-rose-900 text-slate-400 hover:text-rose-200 rounded-lg p-1.5 transition"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 md:grid-cols-6 gap-2.5 items-end">
-                  <div>
-                    <label className="block text-slate-400 mb-1 text-[10.5px]">
-                      رقم التشغيلة (Batch) *
-                    </label>
-                    <input
-                      ref={(el) => {
-                        batchInputRefs.current[r.line.uid] = el;
-                      }}
-                      type="text"
-                      value={r.line.batchNumber}
-                      onChange={(e) =>
-                        updateLine(r.line.uid, { batchNumber: e.target.value })
-                      }
-                      className={`${inputCls} font-mono`}
-                      placeholder="BATCH-01"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-slate-400 mb-1 text-[10.5px]">
-                      تاريخ الصلاحية *
-                    </label>
-                    <input
-                      type="date"
-                      value={r.line.expiryDate}
-                      onChange={(e) =>
-                        updateLine(r.line.uid, { expiryDate: e.target.value })
-                      }
-                      className={`${inputCls} font-mono`}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-slate-400 mb-1 text-[10.5px]">
-                      الكمية المشتراة (علبة)
-                    </label>
-                    <input
-                      type="number"
-                      min={0}
-                      value={r.line.purchasedPacks}
-                      onChange={(e) =>
-                        updateLine(r.line.uid, {
-                          purchasedPacks: Math.max(
-                            0,
-                            Number(e.target.value) || 0,
-                          ),
-                        })
-                      }
-                      className={`${inputCls} font-mono text-center font-bold`}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-emerald-400 font-bold mb-1 text-[10.5px]">
-                      + بونص مجاني
-                    </label>
-                    <input
-                      type="number"
-                      min={0}
-                      value={r.line.bonusPacks}
-                      onChange={(e) =>
-                        updateLine(r.line.uid, {
-                          bonusPacks: Math.max(0, Number(e.target.value) || 0),
-                        })
-                      }
-                      className="w-full bg-emerald-950 border border-emerald-800 rounded-lg p-2 text-emerald-300 font-mono font-bold text-center outline-none focus:border-emerald-500"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-slate-400 mb-1 text-[10.5px]">
-                      سعر شراء العلبة
-                    </label>
-                    <input
-                      type="number"
-                      min={0}
-                      step="0.01"
-                      value={r.line.purchasePricePerPack}
-                      onChange={(e) =>
-                        updateLine(r.line.uid, {
-                          purchasePricePerPack: Math.max(
-                            0,
-                            Number(e.target.value) || 0,
-                          ),
-                        })
-                      }
-                      className={`${inputCls} font-mono text-center font-bold`}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-slate-400 mb-1 text-[10.5px]">
-                      سعر بيع جديد (اختياري)
-                    </label>
-                    <input
-                      type="number"
-                      min={0}
-                      step="0.01"
-                      value={
-                        r.line.newPackSalePrice > 0
-                          ? r.line.newPackSalePrice
-                          : ""
-                      }
-                      onChange={(e) =>
-                        updateLine(r.line.uid, {
-                          newPackSalePrice: Math.max(
-                            0,
-                            Number(e.target.value) || 0,
-                          ),
-                        })
-                      }
-                      placeholder={`الحالي: ${product.packPrice.toFixed(2)}`}
-                      className={`${inputCls} font-mono text-center`}
-                    />
-                  </div>
-                </div>
-              </div>
+                line={r.line}
+                product={product}
+                calc={r.calc}
+                displayIndex={linePreview.length - idx}
+                isLatest={r.line.uid === lastAddedUid}
+                inputCls={inputCls}
+                setBatchInputRef={setBatchInputRef}
+                onUpdateLine={updateLine}
+                onRemoveLine={removeLine}
+              />
             );
           })}
         </div>
