@@ -1,12 +1,22 @@
 import {
-  ProductEntity,
-  CartItemEntity,
-  HeldInvoiceEntity,
   BatchEntity,
   ControlledDrugMeta,
+  ProductEntity,
 } from "../../../domain/entities";
 import { CompleteCheckoutUseCase } from "../../use-cases/CompleteCheckoutUseCase";
 import { ClinicalDecisionUseCase } from "../../use-cases/ClinicalDecisionUseCase";
+import {
+  applyCartQtyDelta,
+  applyCartUnitToggle,
+  buildHeldInvoiceEntry,
+  buildRestoredReturnItems,
+  computeResumedInvoiceTransition,
+  findSaleInvoiceByQuery,
+  getTotalAvailableStrips,
+  inspectProductExpiry,
+  parseScannedBarcode,
+  upsertCartItem,
+} from "../../helpers/posCartHelpers";
 import { printThermalReceipt } from "../../../infrastructure/tauri/printer";
 import { SoundFeedbackService } from "../../../infrastructure/audio/SoundFeedbackService";
 import {
@@ -51,47 +61,6 @@ export type PosCartSlice = Pick<
   | "completeCheckout"
 >;
 
-const calculateUnitPrice = (
-  product: ProductEntity,
-  unit: "pack" | "strip",
-): number => {
-  if (unit === "pack") return Number(product.packPrice.toFixed(2));
-  const strips = Math.max(1, product.stripsPerPack);
-  return Number((product.packPrice / strips).toFixed(2));
-};
-
-const generateCartKey = (productId: string, unit: "pack" | "strip"): string => {
-  return `${productId}-${unit}`;
-};
-
-const generateHeldInvoiceId = (): string => {
-  return `HLD-${Date.now().toString().slice(-6)}-${Math.floor(10 + Math.random() * 90)}`;
-};
-
-/**
- * فحص صلاحية التشغيلات النشطة (التي تحتوي رصيداً موجباً) قبل صرف الدواء
- */
-const inspectProductExpiry = (
-  product: ProductEntity,
-): { allExpired: boolean; earliestExpiredBatch: BatchEntity | null } => {
-  const todayIso = new Date().toISOString().slice(0, 10);
-  const activeBatches = (product.batches || [])
-    .filter((b) => b.qtyPacks > 0 && Boolean(b.expiryDate))
-    .sort((a, b) => a.expiryDate.localeCompare(b.expiryDate));
-
-  if (activeBatches.length === 0) {
-    return { allExpired: false, earliestExpiredBatch: null };
-  }
-
-  const validBatches = activeBatches.filter((b) => b.expiryDate >= todayIso);
-  const earliest = activeBatches[0];
-
-  return {
-    allExpired: validBatches.length === 0,
-    earliestExpiredBatch: earliest.expiryDate < todayIso ? earliest : null,
-  };
-};
-
 export const createPosCartSlice: PosSlice<PosCartSlice> = (set, get) => {
   /**
    * دالة داخلية موحدة لإدراج صنف بالسلة وإطلاق النغمة الصوتية المناسبة دون تداخل
@@ -103,34 +72,7 @@ export const createPosCartSlice: PosSlice<PosCartSlice> = (set, get) => {
     forceWarningSound = false,
   ): void => {
     const prevState = get();
-    const cartKey = generateCartKey(product.id, unit);
-    const existingItem = prevState.cart.find(
-      (item) => item.cartKey === cartKey,
-    );
-
-    let updatedCart: CartItemEntity[];
-    if (existingItem) {
-      updatedCart = prevState.cart.map((item) =>
-        item.cartKey === cartKey
-          ? {
-              ...item,
-              qty: item.qty + 1,
-              controlledMeta: meta || item.controlledMeta,
-            }
-          : item,
-      );
-    } else {
-      const newItem: CartItemEntity = {
-        cartKey,
-        product,
-        unit,
-        qty: 1,
-        unitPrice: calculateUnitPrice(product, unit),
-        isControlled: product.isControlled,
-        controlledMeta: meta,
-      };
-      updatedCart = [newItem, ...prevState.cart];
-    }
+    const updatedCart = upsertCartItem(prevState.cart, product, unit, meta);
 
     const interactionAlerts =
       ClinicalDecisionUseCase.detectDrugInteractions(updatedCart);
@@ -237,8 +179,7 @@ export const createPosCartSlice: PosSlice<PosCartSlice> = (set, get) => {
 
       // التحقق من توفر الرصيد وصلاحية التشغيلات قبل الإضافة في حالة البيع
       if (invoiceMode === "SALE") {
-        const totalAvailableStrips =
-          product.stockPacks * product.stripsPerPack + product.stockLooseStrips;
+        const totalAvailableStrips = getTotalAvailableStrips(product);
         const neededStrips = unit === "pack" ? product.stripsPerPack : 1;
 
         if (totalAvailableStrips < neededStrips) {
@@ -294,34 +235,12 @@ export const createPosCartSlice: PosSlice<PosCartSlice> = (set, get) => {
 
     updateCartQty: (cartKey, delta) => {
       const state = get();
-      let stockExceeded = false;
-
-      const updatedCart = state.cart
-        .map((item) => {
-          if (item.cartKey === cartKey) {
-            const newQty = item.qty + delta;
-            if (newQty <= 0) return null;
-
-            // التحقق من سقف الرصيد عند الزيادة في وضع البيع
-            if (delta > 0 && state.invoiceMode === "SALE") {
-              const maxStrips =
-                item.product.stockPacks * item.product.stripsPerPack +
-                item.product.stockLooseStrips;
-              const requestedStrips =
-                item.unit === "pack"
-                  ? newQty * item.product.stripsPerPack
-                  : newQty;
-              if (requestedStrips > maxStrips) {
-                stockExceeded = true;
-                return item;
-              }
-            }
-
-            return { ...item, qty: newQty };
-          }
-          return item;
-        })
-        .filter((item): item is CartItemEntity => item !== null);
+      const { updatedCart, stockExceeded } = applyCartQtyDelta(
+        state.cart,
+        cartKey,
+        delta,
+        state.invoiceMode,
+      );
 
       if (stockExceeded) {
         SoundFeedbackService.playWarningBuzzer();
@@ -343,114 +262,52 @@ export const createPosCartSlice: PosSlice<PosCartSlice> = (set, get) => {
 
     toggleCartItemUnit: (cartKey) => {
       const state = get();
-      const targetItem = state.cart.find((item) => item.cartKey === cartKey);
-      if (!targetItem) return;
+      const result = applyCartUnitToggle(
+        state.cart,
+        cartKey,
+        state.invoiceMode,
+      );
 
-      const stripsPerPack = Math.max(1, targetItem.product.stripsPerPack);
-      if (stripsPerPack <= 1) {
+      if (result.status === "NOT_FOUND") return;
+
+      if (result.status === "NOT_SPLITTABLE") {
         SoundFeedbackService.playWarningBuzzer();
         set({
           notification: {
             type: "info",
-            message: `الصنف (${targetItem.product.name}) يُباع كعلبة كاملة فقط ولا يحتوي على أشرطة مجزأة.`,
+            message: `الصنف (${result.productName}) يُباع كعلبة كاملة فقط ولا يحتوي على أشرطة مجزأة.`,
           },
         });
         return;
       }
 
-      const nextUnit: "pack" | "strip" =
-        targetItem.unit === "pack" ? "strip" : "pack";
-      const nextUnitPrice = calculateUnitPrice(targetItem.product, nextUnit);
-      const nextCartKey = generateCartKey(targetItem.product.id, nextUnit);
-
-      // التحقق من توفر الرصيد عند التحويل في وضع البيع
-      if (state.invoiceMode === "SALE") {
-        const maxStrips =
-          targetItem.product.stockPacks * stripsPerPack +
-          targetItem.product.stockLooseStrips;
-
-        const existingSameTargetUnit = state.cart.find(
-          (item) => item.cartKey === nextCartKey && item.cartKey !== cartKey,
-        );
-        const mergedQty =
-          targetItem.qty +
-          (existingSameTargetUnit ? existingSameTargetUnit.qty : 0);
-
-        const neededStrips =
-          nextUnit === "pack" ? mergedQty * stripsPerPack : mergedQty;
-
-        if (neededStrips > maxStrips) {
-          SoundFeedbackService.playWarningBuzzer();
-          set({
-            notification: {
-              type: "error",
-              message: `الرصيد المتاح (${targetItem.product.stockPacks} علبة و ${targetItem.product.stockLooseStrips} شريط) لا يكفي للتحويل إلى (${
-                nextUnit === "pack" ? "علبة" : "شريط"
-              }).`,
-            },
-          });
-          return;
-        }
-      }
-
-      const updatedCart: CartItemEntity[] = [];
-      for (const item of state.cart) {
-        if (item.cartKey === cartKey) {
-          const duplicateIdx = updatedCart.findIndex(
-            (existing) => existing.cartKey === nextCartKey,
-          );
-          if (duplicateIdx >= 0) {
-            updatedCart[duplicateIdx] = {
-              ...updatedCart[duplicateIdx],
-              qty: updatedCart[duplicateIdx].qty + item.qty,
-              controlledMeta:
-                updatedCart[duplicateIdx].controlledMeta || item.controlledMeta,
-            };
-          } else {
-            updatedCart.push({
-              ...item,
-              cartKey: nextCartKey,
-              unit: nextUnit,
-              unitPrice: nextUnitPrice,
-            });
-          }
-        } else if (item.cartKey === nextCartKey) {
-          const alreadyMergedIdx = updatedCart.findIndex(
-            (existing) => existing.cartKey === nextCartKey,
-          );
-          if (alreadyMergedIdx >= 0) {
-            updatedCart[alreadyMergedIdx] = {
-              ...updatedCart[alreadyMergedIdx],
-              qty: updatedCart[alreadyMergedIdx].qty + item.qty,
-              unitPrice: nextUnitPrice,
-              controlledMeta:
-                updatedCart[alreadyMergedIdx].controlledMeta ||
-                item.controlledMeta,
-            };
-          } else {
-            updatedCart.push({
-              ...item,
-              unitPrice: nextUnitPrice,
-            });
-          }
-        } else {
-          updatedCart.push(item);
-        }
+      if (result.status === "INSUFFICIENT_STOCK") {
+        SoundFeedbackService.playWarningBuzzer();
+        set({
+          notification: {
+            type: "error",
+            message: `الرصيد المتاح (${result.product.stockPacks} علبة و ${result.product.stockLooseStrips} شريط) لا يكفي للتحويل إلى (${
+              result.nextUnit === "pack" ? "علبة" : "شريط"
+            }).`,
+          },
+        });
+        return;
       }
 
       set({
-        cart: updatedCart,
-        interactionAlerts:
-          ClinicalDecisionUseCase.detectDrugInteractions(updatedCart),
+        cart: result.updatedCart,
+        interactionAlerts: ClinicalDecisionUseCase.detectDrugInteractions(
+          result.updatedCart,
+        ),
         notification: {
           type: "info",
-          message: `تم تبديل وحدة (${targetItem.product.name}) إلى: ${
-            nextUnit === "pack" ? "علبة كاملة" : "شريط فرط"
-          } (${nextUnitPrice.toFixed(2)} ر.س)`,
+          message: `تم تبديل وحدة (${result.productName}) إلى: ${
+            result.nextUnit === "pack" ? "علبة كاملة" : "شريط فرط"
+          } (${result.nextUnitPrice.toFixed(2)} ر.س)`,
         },
       });
 
-      if (nextUnit === "strip") {
+      if (result.nextUnit === "strip") {
         SoundFeedbackService.playStripAdd();
       } else {
         SoundFeedbackService.playPackAdd();
@@ -483,57 +340,48 @@ export const createPosCartSlice: PosSlice<PosCartSlice> = (set, get) => {
     },
 
     handleBarcodeScan: (rawBarcode) => {
-      const code = rawBarcode.trim();
-      if (!code) return false;
+      const parsed = parseScannedBarcode(rawBarcode, get().products);
+
+      if (parsed.kind === "EMPTY") return false;
 
       // إذا كان الباركود الممسوح يعود لفاتورة سابقة (INV-)، يتم تمريره لدالة الاسترداد المحمية بصلاحية المرتجع
-      if (code.toUpperCase().startsWith("INV-")) {
-        return get().loadInvoiceForReturn(code);
+      if (parsed.kind === "INVOICE") {
+        return get().loadInvoiceForReturn(parsed.code);
       }
 
-      const isStripLabel = code.toUpperCase().endsWith("-S");
-      const baseBarcode = isStripLabel ? code.slice(0, -2) : code;
-
-      const matchedProduct = get().products.find(
-        (p) => p.barcode.toLowerCase() === baseBarcode.toLowerCase(),
-      );
-
-      if (matchedProduct) {
-        const unitToAdd: "pack" | "strip" =
-          isStripLabel && matchedProduct.stripsPerPack > 1 ? "strip" : "pack";
-        const prevCart = get().cart;
-        const prevPending = get().pendingControlledItem;
-        const prevNotification = get().notification;
-
-        get().requestAddToCart(matchedProduct, unitToAdd);
-
-        const accepted =
-          get().cart !== prevCart ||
-          get().pendingControlledItem !== prevPending;
-        const notificationChanged = get().notification !== prevNotification;
-
-        // لا نُغطّي رسائل الخطأ أو تحذيرات الصلاحية الصادرة من requestAddToCart
-        if (accepted && !notificationChanged) {
-          set({
-            notification: {
-              type: "success",
-              message: `تم لقط الباركود: ${matchedProduct.name} (${
-                unitToAdd === "pack" ? "علبة" : "شريط فرط"
-              })`,
-            },
-          });
-        }
-        return accepted;
+      if (parsed.kind === "NOT_FOUND") {
+        SoundFeedbackService.playWarningBuzzer();
+        set({
+          notification: {
+            type: "warning",
+            message: `لم يتم العثور على صنف مسجل بالباركود (${parsed.code})`,
+          },
+        });
+        return false;
       }
 
-      SoundFeedbackService.playWarningBuzzer();
-      set({
-        notification: {
-          type: "warning",
-          message: `لم يتم العثور على صنف مسجل بالباركود (${code})`,
-        },
-      });
-      return false;
+      const prevCart = get().cart;
+      const prevPending = get().pendingControlledItem;
+      const prevNotification = get().notification;
+
+      get().requestAddToCart(parsed.product, parsed.unit);
+
+      const accepted =
+        get().cart !== prevCart || get().pendingControlledItem !== prevPending;
+      const notificationChanged = get().notification !== prevNotification;
+
+      // لا نُغطّي رسائل الخطأ أو تحذيرات الصلاحية الصادرة من requestAddToCart
+      if (accepted && !notificationChanged) {
+        set({
+          notification: {
+            type: "success",
+            message: `تم لقط الباركود: ${parsed.product.name} (${
+              parsed.unit === "pack" ? "علبة" : "شريط فرط"
+            })`,
+          },
+        });
+      }
+      return accepted;
     },
 
     loadInvoiceForReturn: (invoiceQuery) => {
@@ -550,14 +398,11 @@ export const createPosCartSlice: PosSlice<PosCartSlice> = (set, get) => {
         return false;
       }
 
-      const cleanQuery = invoiceQuery.trim().toUpperCase();
-      if (!cleanQuery) return false;
+      if (!invoiceQuery.trim()) return false;
 
-      const targetInvoice = get().invoices.find(
-        (inv) =>
-          inv.type === "SALE" &&
-          (inv.id.toUpperCase() === cleanQuery ||
-            inv.id.toUpperCase().endsWith(cleanQuery)),
+      const targetInvoice = findSaleInvoiceByQuery(
+        get().invoices,
+        invoiceQuery,
       );
 
       if (!targetInvoice) {
@@ -571,22 +416,9 @@ export const createPosCartSlice: PosSlice<PosCartSlice> = (set, get) => {
         return false;
       }
 
-      const currentProducts = get().products;
-      const restoredItems: CartItemEntity[] = targetInvoice.items.map(
-        (item) => {
-          const latestProduct =
-            currentProducts.find((p) => p.id === item.product.id) ||
-            item.product;
-          return {
-            cartKey: generateCartKey(latestProduct.id, item.unit),
-            product: latestProduct,
-            unit: item.unit,
-            qty: item.qty,
-            unitPrice: item.unitPrice,
-            isControlled: latestProduct.isControlled,
-            controlledMeta: item.controlledMeta,
-          };
-        },
+      const restoredItems = buildRestoredReturnItems(
+        targetInvoice,
+        get().products,
       );
 
       set({
@@ -617,13 +449,12 @@ export const createPosCartSlice: PosSlice<PosCartSlice> = (set, get) => {
 
       // الحفاظ على ترتيب التبويبات المرقّمة (زبون 1، زبون 2...) بإضافة التبويب الجديد في النهاية
       const nextTabNumber = heldInvoices.length + 1;
-      const newHeldInvoice: HeldInvoiceEntity = {
-        id: generateHeldInvoiceId(),
-        customerName:
-          customName?.trim() || customerName.trim() || `زبون ${nextTabNumber}`,
-        items: [...cart],
-        heldAt: new Date().toISOString(),
-      };
+      const newHeldInvoice = buildHeldInvoiceEntry(
+        cart,
+        customerName,
+        nextTabNumber,
+        customName,
+      );
 
       set((state) => ({
         heldInvoices: [...state.heldInvoices, newHeldInvoice],
@@ -638,32 +469,19 @@ export const createPosCartSlice: PosSlice<PosCartSlice> = (set, get) => {
 
     resumeInvoice: (invoiceId) => {
       const { heldInvoices, cart, customerName } = get();
-      const targetIndex = heldInvoices.findIndex((inv) => inv.id === invoiceId);
-      if (targetIndex === -1) return;
+      const transition = computeResumedInvoiceTransition(
+        heldInvoices,
+        invoiceId,
+        cart,
+        customerName,
+      );
+      if (!transition) return;
 
-      const invoiceToResume = heldInvoices[targetIndex];
+      const { invoiceToResume, nextHeldInvoices, swappedLabel, targetIndex } =
+        transition;
       const interactionAlerts = ClinicalDecisionUseCase.detectDrugInteractions(
         invoiceToResume.items,
       );
-
-      let nextHeldInvoices: HeldInvoiceEntity[];
-      let swappedLabel: string | null = null;
-
-      // التبديل التلقائي الآمن (Auto-Swap): إذا كانت السلة النشطة فيها أصناف، تُعلّق تلقائياً في نفس موضع التبويب
-      if (cart.length > 0) {
-        const parkedInvoice: HeldInvoiceEntity = {
-          id: generateHeldInvoiceId(),
-          customerName: customerName.trim() || `زبون ${targetIndex + 1}`,
-          items: [...cart],
-          heldAt: new Date().toISOString(),
-        };
-        swappedLabel = parkedInvoice.customerName;
-        nextHeldInvoices = heldInvoices.map((inv, idx) =>
-          idx === targetIndex ? parkedInvoice : inv,
-        );
-      } else {
-        nextHeldInvoices = heldInvoices.filter((inv) => inv.id !== invoiceId);
-      }
 
       set({
         cart: invoiceToResume.items,
