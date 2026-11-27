@@ -8,49 +8,55 @@ import {
   buildProductSearchIndex,
   searchProductsFuzzy,
 } from "../../../domain/utils/fuzzySearch";
-import { CsvCellValue, exportRowsToCsv } from "../../../domain/utils/csvExport";
 import { buildWhatsAppOrderText } from "../../../domain/utils/whatsappHelper";
 import { usePosStore } from "../../../application/store/usePosStore";
 import { CreatePurchaseOrderInput } from "../../../application/store/storeTypes";
 import { ProductSearchInput } from "../common/ProductSearchInput";
 import { FilterPillOption, FilterPills } from "../common/table/FilterPills";
-import {
-  SortAccessors,
-  SortDirection,
-  useTableSort,
-} from "../common/table/useTableSort";
+import { SortAccessors, useTableSort } from "../common/table/useTableSort";
 import { useTablePagination } from "../common/table/useTablePagination";
-import {
-  TableColumnDef,
-  useTableColumns,
-} from "../common/table/useTableColumns";
+import { useTableColumns } from "../common/table/useTableColumns";
 import { ColumnVisibilityMenu } from "../common/table/ColumnVisibilityMenu";
 import { SortableTh } from "../common/table/SortableTh";
 import { DataTableToolbar } from "../common/table/DataTableToolbar";
 import { DataTableShell } from "../common/table/DataTableShell";
 import { TableLoadMoreFooter } from "../common/table/TableLoadMoreFooter";
+import { TableExportButton } from "../common/table/TableExportButton";
 import {
-  TableExportButton,
-  TableExportColumn,
-} from "../common/table/TableExportButton";
+  ASSIGNED_KEY,
+  LiveSupplierBasket,
+  OPEN_ORDER_STATUS_META,
+  OUT_OF_STOCK_KEY,
+  SHORTAGE_DEFAULT_DIRECTIONS,
+  SHORTAGE_PAGE_SIZE,
+  ShortageSortKey,
+  UNASSIGNED_KEY,
+  buildGroupedOrdersDraft,
+  buildLiveSupplierBaskets,
+  buildOpenOrdersByProductMap,
+  exportShortagesOrderToCsv,
+  getShortageExportColumns,
+  getShortageTableColumns,
+  getSuggestedQty,
+  hasOpenOrderForSupplier,
+} from "./shortages/shortages.config";
+import { LiveSupplierBasketsBar } from "./shortages/LiveSupplierBasketsBar";
+import { ShortageBulkAssignBar } from "./shortages/ShortageBulkAssignBar";
 import {
-  ClipboardList,
-  ClipboardCheck,
-  FileSpreadsheet,
-  Copy,
-  Check,
   AlertTriangle,
   Building2,
-  RotateCcw,
-  Settings2,
-  CheckSquare,
+  Check,
   CheckCircle2,
-  Send,
-  PackageCheck,
-  EyeOff,
+  ClipboardCheck,
+  ClipboardList,
+  Copy,
   Eye,
-  ShoppingBasket,
-  X,
+  EyeOff,
+  FileSpreadsheet,
+  PackageCheck,
+  RotateCcw,
+  Send,
+  Settings2,
 } from "lucide-react";
 
 interface Props {
@@ -59,85 +65,6 @@ interface Props {
   onOpenSuppliersModal: () => void;
   onOrdersCreated?: () => void;
 }
-
-const PAGE_SIZE = 50;
-const OUT_OF_STOCK_KEY = "__OUT_OF_STOCK__";
-const ASSIGNED_KEY = "__ASSIGNED__";
-const UNASSIGNED_KEY = "__UNASSIGNED__";
-
-// مفاتيح الأعمدة القابلة للفرز والتحكم في الظهور في جدول دفتر النواقص
-type ShortageSortKey =
-  | "name"
-  | "stockPacks"
-  | "supplierName"
-  | "weightedCostPrice"
-  | "orderQty"
-  | "estimatedTotal";
-
-// تمثيل أمر شراء مفتوح مرتبط بصنف معيّن لعرض حالته الفعلية ومنع تكرار الطلب لنفس المستودع فقط
-interface ProductOpenOrderEntry {
-  orderId: string;
-  supplierId?: string;
-  supplierName: string;
-  status: "DRAFT" | "SENT" | "PARTIAL";
-  remainingPacks: number;
-}
-
-// بطاقة سلّة حيّة لمستودع محدد جاهزة للاعتماد المستقل أو النسخ السريع
-interface LiveSupplierBasket {
-  supplier: SupplierEntity;
-  draft: CreatePurchaseOrderInput;
-  itemsCount: number;
-  totalPacks: number;
-  estimatedTotal: number;
-}
-
-const OPEN_ORDER_STATUS_META: Record<
-  ProductOpenOrderEntry["status"],
-  { label: string; cls: string }
-> = {
-  DRAFT: {
-    label: "قيد الطلب (مسودة)",
-    cls: "bg-slate-800/90 border-slate-700 text-slate-300",
-  },
-  SENT: {
-    label: "مُرسل للمستودع",
-    cls: "bg-sky-950/70 border-sky-700/80 text-sky-300",
-  },
-  PARTIAL: {
-    label: "استلام جزئي",
-    cls: "bg-amber-950/70 border-amber-700/80 text-amber-300",
-  },
-};
-
-// الاتجاه الابتدائي المفضّل عند النقر الأول على كل عمود في جدول النواقص
-const SHORTAGE_DEFAULT_DIRECTIONS: Partial<
-  Record<ShortageSortKey, SortDirection>
-> = {
-  name: "asc",
-  stockPacks: "asc",
-  supplierName: "asc",
-  weightedCostPrice: "desc",
-  orderQty: "desc",
-  estimatedTotal: "desc",
-};
-
-const getSuggestedQty = (product: ProductEntity): number =>
-  Math.max(5, product.minLimit * 2 - product.stockPacks);
-
-// التحقق مما إذا كان الصنف مدرجاً بالفعل في أمر شراء مفتوح لنفس المستودع المحدد (مع السماح بطلبه من مستودعات أخرى)
-const hasOpenOrderForSupplier = (
-  entries: ProductOpenOrderEntry[] | undefined,
-  supplier: SupplierEntity,
-): boolean => {
-  if (!entries || entries.length === 0) return false;
-  const cleanName = supplier.name.trim().toLowerCase();
-  return entries.some(
-    (entry) =>
-      (entry.supplierId && entry.supplierId === supplier.id) ||
-      entry.supplierName.trim().toLowerCase() === cleanName,
-  );
-};
 
 /**
  * تبويب دفتر النواقص وتوزيع الطلبيات على المستودعات (Purchase Orders)
@@ -176,27 +103,10 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
   // قفل فوري متزامن لمنع تكرار إنشاء أوامر الشراء عند النقر السريع المزدوج
   const creatingOrdersRef = useRef(false);
 
-  // تعريف أعمدة جدول النواقص للتحكم في الإظهار والإخفاء مع احترام صلاحية عرض التكلفة
-  const shortageColumns = useMemo<TableColumnDef<ShortageSortKey>[]>(() => {
-    const base: TableColumnDef<ShortageSortKey>[] = [
-      { id: "name", label: "الدواء / المادة الفعالة", locked: true },
-      { id: "stockPacks", label: "الرصيد / الحد" },
-      { id: "supplierName", label: "المستودع الموجه له الطلب" },
-    ];
-    if (canViewCost) {
-      base.push({ id: "weightedCostPrice", label: "آخر تكلفة" });
-    }
-    base.push({
-      id: "orderQty",
-      label: "الكمية المطلوبة (علبة)",
-      locked: true,
-    });
-    if (canViewCost) {
-      base.push({ id: "estimatedTotal", label: "الإجمالي التقديري" });
-    }
-    return base;
-  }, [canViewCost]);
-
+  const shortageColumns = useMemo(
+    () => getShortageTableColumns(canViewCost),
+    [canViewCost],
+  );
   // إدارة إظهار وإخفاء الأعمدة مع حفظ تفضيلات المستخدم في localStorage
   const columnsState = useTableColumns("purchase_shortages", shortageColumns);
 
@@ -216,43 +126,10 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     return map;
   }, [suppliers]);
 
-  // تتبع كافة أوامر الشراء المفتوحة لكل صنف مع حالتها الفعلية واسم المستودع
-  const openOrdersByProduct = useMemo(() => {
-    const map = new Map<string, ProductOpenOrderEntry[]>();
-
-    purchaseOrders.forEach((order) => {
-      if (
-        order.status !== "DRAFT" &&
-        order.status !== "SENT" &&
-        order.status !== "PARTIAL"
-      ) {
-        return;
-      }
-
-      const openStatus = order.status;
-      order.items.forEach((item) => {
-        const remaining = Math.max(0, item.orderedPacks - item.receivedPacks);
-        if (remaining <= 0) return;
-
-        const entry: ProductOpenOrderEntry = {
-          orderId: order.id,
-          supplierId: order.supplierId,
-          supplierName: order.supplierName,
-          status: openStatus,
-          remainingPacks: remaining,
-        };
-
-        const existing = map.get(item.productId);
-        if (existing) {
-          existing.push(entry);
-        } else {
-          map.set(item.productId, [entry]);
-        }
-      });
-    });
-
-    return map;
-  }, [purchaseOrders]);
+  const openOrdersByProduct = useMemo(
+    () => buildOpenOrdersByProductMap(purchaseOrders),
+    [purchaseOrders],
+  );
 
   // عدد أصناف النواقص التي لديها أمر شراء مفتوح حالياً (لمؤشر زر الإخفاء)
   const openOrderedShortageCount = useMemo(
@@ -260,77 +137,16 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     [shortageProducts, openOrdersByProduct],
   );
 
-  // أعمدة تصدير جدول النواقص إلى Excel / CSV مرتبطة بمعرّفات الأعمدة لتصدير الحقول الظاهرة فقط واحترام صلاحية التكلفة
-  const tableExportColumns = useMemo<
-    TableExportColumn<ProductEntity, ShortageSortKey>[]
-  >(() => {
-    const cols: TableExportColumn<ProductEntity, ShortageSortKey>[] = [
-      {
-        columnId: "name",
-        header: "الاسم التجاري للدواء",
-        getValue: (p) => p.name,
-      },
-      {
-        columnId: "name",
-        header: "المادة الفعالة",
-        getValue: (p) => p.scientificName,
-      },
-      { columnId: "name", header: "الباركود", getValue: (p) => p.barcode },
-      {
-        columnId: "stockPacks",
-        header: "الرصيد الحالي (علبة)",
-        getValue: (p) => p.stockPacks,
-      },
-      {
-        columnId: "stockPacks",
-        header: "حد الطلب الأدنى",
-        getValue: (p) => p.minLimit,
-      },
-      {
-        columnId: "supplierName",
-        header: "المستودع الموجه له الطلب",
-        getValue: (p) => {
-          const sid = assignedSupplierMap[p.id];
-          return sid
-            ? (suppliersById.get(sid)?.name ?? "غير محدد")
-            : "غير محدد";
-        },
-      },
-    ];
-
-    if (canViewCost) {
-      cols.push({
-        columnId: "weightedCostPrice",
-        header: "آخر تكلفة مرجحة",
-        getValue: (p) => p.weightedCostPrice.toFixed(2),
-      });
-    }
-
-    cols.push({
-      columnId: "orderQty",
-      header: "الكمية المطلوبة (علبة)",
-      getValue: (p) =>
-        orderQtyMap[p.id] !== undefined
-          ? orderQtyMap[p.id]
-          : getSuggestedQty(p),
-    });
-
-    if (canViewCost) {
-      cols.push({
-        columnId: "estimatedTotal",
-        header: "الإجمالي التقديري",
-        getValue: (p) => {
-          const qty =
-            orderQtyMap[p.id] !== undefined
-              ? orderQtyMap[p.id]
-              : getSuggestedQty(p);
-          return (qty * p.weightedCostPrice).toFixed(2);
-        },
-      });
-    }
-
-    return cols;
-  }, [canViewCost, assignedSupplierMap, suppliersById, orderQtyMap]);
+  const tableExportColumns = useMemo(
+    () =>
+      getShortageExportColumns({
+        canViewCost,
+        assignedSupplierMap,
+        suppliersById,
+        orderQtyMap,
+      }),
+    [canViewCost, assignedSupplierMap, suppliersById, orderQtyMap],
+  );
 
   // اختصار F2 أو / للتركيز السريع على شريط البحث داخل دفتر النواقص
   useEffect(() => {
@@ -370,9 +186,7 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     setAssignedSupplierMap((prev) => {
       const next: Record<string, string> = {};
       Object.entries(prev).forEach(([pid, sid]) => {
-        if (shortageIdSet.has(pid) && sid) {
-          next[pid] = sid;
-        }
+        if (shortageIdSet.has(pid) && sid) next[pid] = sid;
       });
       return next;
     });
@@ -380,9 +194,7 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     setSelectedIds((prev) => {
       const next: Record<string, boolean> = {};
       Object.entries(prev).forEach(([pid, checked]) => {
-        if (checked && shortageIdSet.has(pid)) {
-          next[pid] = true;
-        }
+        if (checked && shortageIdSet.has(pid)) next[pid] = true;
       });
       return next;
     });
@@ -443,11 +255,13 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     return { counts, assigned, unassigned };
   }, [visibilityFilteredShortages, assignedSupplierMap, suppliersById]);
 
-  const filterSuppliers = useMemo(() => {
-    return suppliers.filter(
-      (s) => s.isActive || (supplierCounts.counts[s.id] || 0) > 0,
-    );
-  }, [suppliers, supplierCounts]);
+  const filterSuppliers = useMemo(
+    () =>
+      suppliers.filter(
+        (s) => s.isActive || (supplierCounts.counts[s.id] || 0) > 0,
+      ),
+    [suppliers, supplierCounts],
+  );
 
   // بناء خيارات شريط حبوب الفلترة الموحّد (الكل / نفد بالكامل / الموزعة / غير موزعة / المستودعات)
   const supplierFilterOptions = useMemo<FilterPillOption<string>[]>(() => {
@@ -505,21 +319,24 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     filterSuppliers,
   ]);
 
-  const scopedShortages = useMemo(() => {
-    return visibilityFilteredShortages.filter((p) => {
-      const sid = getAssignedSupplierId(p.id);
-      if (activeSupplierFilter === "ALL") return true;
-      if (activeSupplierFilter === OUT_OF_STOCK_KEY) return p.stockPacks === 0;
-      if (activeSupplierFilter === ASSIGNED_KEY) return Boolean(sid);
-      if (activeSupplierFilter === UNASSIGNED_KEY) return !sid;
-      return sid === activeSupplierFilter;
-    });
-  }, [
-    visibilityFilteredShortages,
-    activeSupplierFilter,
-    assignedSupplierMap,
-    suppliersById,
-  ]);
+  const scopedShortages = useMemo(
+    () =>
+      visibilityFilteredShortages.filter((p) => {
+        const sid = getAssignedSupplierId(p.id);
+        if (activeSupplierFilter === "ALL") return true;
+        if (activeSupplierFilter === OUT_OF_STOCK_KEY)
+          return p.stockPacks === 0;
+        if (activeSupplierFilter === ASSIGNED_KEY) return Boolean(sid);
+        if (activeSupplierFilter === UNASSIGNED_KEY) return !sid;
+        return sid === activeSupplierFilter;
+      }),
+    [
+      visibilityFilteredShortages,
+      activeSupplierFilter,
+      assignedSupplierMap,
+      suppliersById,
+    ],
+  );
 
   const filteredShortages = useMemo(() => {
     const q = searchQuery.trim();
@@ -579,7 +396,7 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
 
   // التحميل التدريجي الموحّد (50 صنفاً في الدفعة) مع إعادة ضبط تلقائية عند تغيّر الفلتر أو البحث أو الفرز
   const pagination = useTablePagination(sortedShortages, {
-    pageSize: PAGE_SIZE,
+    pageSize: SHORTAGE_PAGE_SIZE,
     resetDeps: [
       activeSupplierFilter,
       hideOpenOrdered,
@@ -592,108 +409,43 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
   const activeOrderItems = useMemo(
     () =>
       scopedShortages
-        .map((product) => ({
-          product,
-          qty:
-            orderQtyMap[product.id] !== undefined
-              ? orderQtyMap[product.id]
-              : getSuggestedQty(product),
-          supplier: getAssignedSupplierId(product.id)
-            ? suppliersById.get(getAssignedSupplierId(product.id)) || null
-            : null,
-        }))
+        .map((product) => {
+          const sid = getAssignedSupplierId(product.id);
+          return {
+            product,
+            qty:
+              orderQtyMap[product.id] !== undefined
+                ? orderQtyMap[product.id]
+                : getSuggestedQty(product),
+            supplier: sid ? suppliersById.get(sid) || null : null,
+          };
+        })
         .filter((entry) => entry.qty > 0),
     [scopedShortages, orderQtyMap, assignedSupplierMap, suppliersById],
   );
 
-  // بطاقات ملخّص حيّة لسلّات المستودعات الموزّعة حالياً عبر كامل الدفتر (تتيح الاعتماد أو النسخ لكل مستودع مستقل)
-  const liveSupplierBaskets = useMemo<LiveSupplierBasket[]>(() => {
-    const basketsMap = new Map<string, LiveSupplierBasket>();
+  const liveSupplierBaskets = useMemo(
+    () =>
+      buildLiveSupplierBaskets({
+        shortageProducts,
+        assignedSupplierMap,
+        suppliersById,
+        orderQtyMap,
+        openOrdersByProduct,
+      }),
+    [
+      shortageProducts,
+      assignedSupplierMap,
+      suppliersById,
+      orderQtyMap,
+      openOrdersByProduct,
+    ],
+  );
 
-    shortageProducts.forEach((product) => {
-      const sid = assignedSupplierMap[product.id];
-      if (!sid) return;
-      const supplier = suppliersById.get(sid);
-      if (!supplier) return;
-
-      const qty =
-        orderQtyMap[product.id] !== undefined
-          ? orderQtyMap[product.id]
-          : getSuggestedQty(product);
-      if (qty <= 0) return;
-
-      // استبعاد التكرار فقط إذا كان للصنف أمر مفتوح مسبقاً لدى نفس المستودع
-      if (
-        hasOpenOrderForSupplier(openOrdersByProduct.get(product.id), supplier)
-      ) {
-        return;
-      }
-
-      const lineCost = qty * product.weightedCostPrice;
-      const existing = basketsMap.get(supplier.id);
-      if (existing) {
-        existing.draft.items.push({ product, orderedPacks: qty });
-        existing.itemsCount += 1;
-        existing.totalPacks += qty;
-        existing.estimatedTotal = Number(
-          (existing.estimatedTotal + lineCost).toFixed(2),
-        );
-      } else {
-        basketsMap.set(supplier.id, {
-          supplier,
-          draft: {
-            supplierId: supplier.id,
-            supplierName: supplier.name,
-            supplierPhone: supplier.phone,
-            salesRepName: supplier.salesRepName,
-            items: [{ product, orderedPacks: qty }],
-          },
-          itemsCount: 1,
-          totalPacks: qty,
-          estimatedTotal: Number(lineCost.toFixed(2)),
-        });
-      }
-    });
-
-    return Array.from(basketsMap.values()).sort(
-      (a, b) => b.itemsCount - a.itemsCount,
-    );
-  }, [
-    shortageProducts,
-    assignedSupplierMap,
-    suppliersById,
-    orderQtyMap,
-    openOrdersByProduct,
-  ]);
-
-  // تجميع الأصناف الموجّهة لمستودع فقط ضمن النطاق الحالي مع منع التكرار لنفس المستودع والسماح بطلب نفس الدواء من مستودع آخر
-  const groupedOrdersDraft = useMemo<CreatePurchaseOrderInput[]>(() => {
-    const groups = new Map<string, CreatePurchaseOrderInput>();
-
-    activeOrderItems.forEach(({ product, qty, supplier }) => {
-      if (!supplier) return;
-      if (
-        hasOpenOrderForSupplier(openOrdersByProduct.get(product.id), supplier)
-      ) {
-        return;
-      }
-
-      const existing = groups.get(supplier.id);
-      if (existing) {
-        existing.items.push({ product, orderedPacks: qty });
-      } else {
-        groups.set(supplier.id, {
-          supplierId: supplier.id,
-          supplierName: supplier.name,
-          supplierPhone: supplier.phone,
-          salesRepName: supplier.salesRepName,
-          items: [{ product, orderedPacks: qty }],
-        });
-      }
-    });
-
-    return Array.from(groups.values());
-  }, [activeOrderItems, openOrdersByProduct]);
+  const groupedOrdersDraft = useMemo(
+    () => buildGroupedOrdersDraft(activeOrderItems, openOrdersByProduct),
+    [activeOrderItems, openOrdersByProduct],
+  );
 
   // إجمالي عدد الأصناف الموزّعة على مستودعات والجاهزة للاعتماد دون تكرار على نفس المستودع
   const assignedOrderItemsCount = useMemo(
@@ -811,26 +563,6 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     setOrderQtyMap(resetMap);
   };
 
-  // توليد نص طلبية الواتساب عبر الأداة الموحّدة
-  const getOrderMessageText = (): string =>
-    buildWhatsAppOrderText({
-      pharmacyName: settings.pharmacyName,
-      pharmacyPhone: settings.phone,
-      supplier: selectedSupplier
-        ? {
-            name: selectedSupplier.name,
-            salesRepName: selectedSupplier.salesRepName,
-          }
-        : null,
-      items: activeOrderItems.map(({ product, qty, supplier }) => ({
-        name: product.name,
-        scientificName: product.scientificName,
-        qty,
-        unitLabel: "علبة",
-        supplierName: supplier?.name ?? null,
-      })),
-    });
-
   // تحديث المسودات (DRAFT) المطابقة للنطاق الحالي تلقائياً إلى حالة "مُرسل للمستودع" (SENT) عند نسخ أو تصدير الطلبية
   const markMatchingDraftOrdersSent = async (
     channel: PurchaseOrderDispatchChannel,
@@ -916,10 +648,6 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     }
   };
 
-  const handleCreatePurchaseOrders = async () => {
-    await submitOrdersDrafts(groupedOrdersDraft, true);
-  };
-
   // اعتماد سلّة مستودع واحد فقط (مع البقاء في الدفتر إذا كانت هناك سلّات أخرى لم تُعتمد بعد)
   const handleCreateSingleBasket = async (basket: LiveSupplierBasket) => {
     const isLastBasket = liveSupplierBaskets.length <= 1;
@@ -930,7 +658,7 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
   const handleCopySingleBasket = async (basket: LiveSupplierBasket) => {
     const text = buildWhatsAppOrderText({
       pharmacyName: settings.pharmacyName,
-      pharmacyPhone: settings.phone,
+      pharmacyPhone: settings.phone ?? "",
       supplier: {
         name: basket.supplier.name,
         salesRepName: basket.supplier.salesRepName,
@@ -957,7 +685,24 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
 
   const handleCopyWhatsApp = async () => {
     if (activeOrderItems.length === 0) return;
-    const text = getOrderMessageText();
+    const text = buildWhatsAppOrderText({
+      pharmacyName: settings.pharmacyName,
+      pharmacyPhone: settings.phone ?? "",
+      supplier: selectedSupplier
+        ? {
+            name: selectedSupplier.name,
+            salesRepName: selectedSupplier.salesRepName,
+          }
+        : null,
+      items: activeOrderItems.map(({ product, qty, supplier }) => ({
+        name: product.name,
+        scientificName: product.scientificName,
+        qty,
+        unitLabel: "علبة",
+        supplierName: supplier?.name ?? null,
+      })),
+    });
+
     await navigator.clipboard.writeText(text);
     const updatedCount = await markMatchingDraftOrdersSent("MANUAL_WHATSAPP");
     setCopied(true);
@@ -970,47 +715,14 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     });
   };
 
-  // تصدير ملف CSV عبر الأداة الموحّدة بترميز عربي UTF-8 BOM مع احترام الأعمدة الظاهرة حالياً وصلاحية التكلفة
   const handleExportCsvOrder = async () => {
     if (activeOrderItems.length === 0) return;
 
-    const showSupplier = columnsState.isVisible("supplierName");
-    const showStock = columnsState.isVisible("stockPacks");
-    const showCost = canViewCost && columnsState.isVisible("weightedCostPrice");
-    const showEstimated =
-      canViewCost && columnsState.isVisible("estimatedTotal");
-
-    const headers: string[] = [];
-    if (showSupplier) headers.push("المستودع المحدد");
-    headers.push("الباركود", "الاسم التجاري للدواء", "المادة الفعالة");
-    if (showStock) headers.push("الرصيد الحالي (علبة)", "حد الطلب الأدنى");
-    headers.push("الكمية المطلوبة (علبة)");
-    if (showCost) headers.push("آخر تكلفة مرجحة للعلبة");
-    if (showEstimated) headers.push("التكلفة التقديرية للسطر");
-
-    const rows: CsvCellValue[][] = activeOrderItems.map(
-      ({ product, qty, supplier }) => {
-        const row: CsvCellValue[] = [];
-        if (showSupplier) row.push(supplier?.name || "غير محدد");
-        row.push(product.barcode, product.name, product.scientificName);
-        if (showStock) row.push(product.stockPacks, product.minLimit);
-        row.push(qty);
-        if (showCost) row.push(product.weightedCostPrice.toFixed(2));
-        if (showEstimated)
-          row.push((qty * product.weightedCostPrice).toFixed(2));
-        return row;
-      },
-    );
-
-    const datePart = new Date().toISOString().slice(0, 10);
-    const safeSupplierSlug = selectedSupplier
-      ? `_${selectedSupplier.name.replace(/[^\p{L}\p{N}_-]+/gu, "_")}`
-      : "";
-
-    const downloadedFileName = exportRowsToCsv({
-      fileName: `Purchase_Order${safeSupplierSlug}_${datePart}.csv`,
-      headers,
-      rows,
+    const downloadedFileName = exportShortagesOrderToCsv({
+      activeOrderItems,
+      selectedSupplier,
+      canViewCost,
+      isColumnVisible: columnsState.isVisible,
     });
 
     const updatedCount = await markMatchingDraftOrdersSent("CSV_EXPORT");
@@ -1165,7 +877,7 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
             <button
               type="button"
               disabled={groupedOrdersDraft.length === 0 || creatingOrders}
-              onClick={() => void handleCreatePurchaseOrders()}
+              onClick={() => void submitOrdersDrafts(groupedOrdersDraft, true)}
               title={
                 groupedOrdersDraft.length === 0
                   ? "اختر مستودعاً لصنف واحد على الأقل (ليس لديه أمر مفتوح لدى نفس المستودع) لاعتماد أمر شراء"
@@ -1212,115 +924,20 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
       </div>
 
       {/* بطاقات ملخّص حيّة لسلّات المستودعات (Live Supplier Baskets) */}
-      {liveSupplierBaskets.length > 0 && (
-        <div className="bg-indigo-950/20 border border-indigo-800/60 rounded-xl p-3 space-y-2.5">
-          <div className="flex items-center justify-between gap-2 flex-wrap">
-            <div className="flex items-center gap-2 text-indigo-200 font-bold text-xs">
-              <ShoppingBasket className="w-4 h-4 text-indigo-400" />
-              <span>
-                سلّات المستودعات الجاهزة للاعتماد (
-                <span className="font-mono text-white">
-                  {liveSupplierBaskets.length}
-                </span>
-                )
-              </span>
-            </div>
-            <span className="text-[10.5px] text-slate-400">
-              اضغط على اسم المستودع لتصفية الجدول، أو اعتمد سلّة كل مستودع بشكل
-              مستقل
-            </span>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-            {liveSupplierBaskets.map((basket) => {
-              const isFocused = activeSupplierFilter === basket.supplier.id;
-              const isCopiedBasket = copiedBasketId === basket.supplier.id;
-
-              return (
-                <div
-                  key={basket.supplier.id}
-                  className={`rounded-xl border p-3 flex flex-col justify-between gap-2.5 transition ${
-                    isFocused
-                      ? "bg-indigo-950/60 border-indigo-500 shadow-[0_0_12px_rgba(99,102,241,0.16)]"
-                      : "bg-slate-950/85 border-slate-800 hover:border-slate-700"
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setActiveSupplierFilter(
-                          isFocused ? "ALL" : basket.supplier.id,
-                        )
-                      }
-                      className="text-right group min-w-0"
-                      title={
-                        isFocused
-                          ? "إلغاء التصفية بهذا المستودع"
-                          : "تصفية الجدول على أصناف هذا المستودع"
-                      }
-                    >
-                      <div className="font-bold text-white group-hover:text-indigo-300 flex items-center gap-1.5 truncate transition">
-                        <Building2 className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
-                        <span className="truncate">{basket.supplier.name}</span>
-                      </div>
-                      <div className="text-[10.5px] text-slate-400 font-mono mt-0.5 flex items-center gap-2 flex-wrap">
-                        <span>{basket.itemsCount} صنف</span>
-                        <span>•</span>
-                        <span>{basket.totalPacks} علبة</span>
-                        {canViewCost && (
-                          <>
-                            <span>•</span>
-                            <b className="text-amber-300">
-                              {basket.estimatedTotal.toFixed(2)} ر.س
-                            </b>
-                          </>
-                        )}
-                      </div>
-                    </button>
-
-                    {isFocused && (
-                      <span className="text-[9.5px] font-bold px-2 py-0.5 rounded-full bg-indigo-600/30 border border-indigo-500/60 text-indigo-200 shrink-0">
-                        معروض
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="flex items-center gap-1.5 pt-2 border-t border-slate-800/80">
-                    <button
-                      type="button"
-                      disabled={creatingOrders}
-                      onClick={() => void handleCreateSingleBasket(basket)}
-                      className="flex-1 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white font-bold py-1.5 px-2.5 rounded-lg text-[11px] inline-flex items-center justify-center gap-1 transition"
-                    >
-                      <ClipboardCheck className="w-3.5 h-3.5" />
-                      اعتماد الأمر
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => void handleCopySingleBasket(basket)}
-                      className="bg-slate-800 hover:bg-emerald-700 border border-slate-700 hover:border-emerald-600 text-slate-200 hover:text-white font-bold py-1.5 px-2.5 rounded-lg text-[11px] inline-flex items-center gap-1 transition"
-                    >
-                      {isCopiedBasket ? (
-                        <>
-                          <Check className="w-3.5 h-3.5 text-emerald-300" />
-                          نُسخ
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3.5 h-3.5" />
-                          نسخ
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
+      <LiveSupplierBasketsBar
+        baskets={liveSupplierBaskets}
+        activeSupplierFilter={activeSupplierFilter}
+        canViewCost={canViewCost}
+        creatingOrders={creatingOrders}
+        copiedBasketId={copiedBasketId}
+        onToggleSupplierFilter={(supplierId) =>
+          setActiveSupplierFilter((prev) =>
+            prev === supplierId ? "ALL" : supplierId,
+          )
+        }
+        onCreateBasket={(basket) => void handleCreateSingleBasket(basket)}
+        onCopyBasket={(basket) => void handleCopySingleBasket(basket)}
+      />
 
       {/* الهيكل الموحّد للجدول (framed=false للحفاظ على البطاقة الخارجية الحالية) */}
       <DataTableShell
@@ -1398,57 +1015,14 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
           ) : undefined
         }
         aboveTable={
-          /* شريط التوجيه الجماعي يظهر تلقائياً عند تحديد صنف واحد أو أكثر */
-          selectedProductIdsList.length > 0 ? (
-            <div className="bg-indigo-950/45 border border-indigo-700/80 rounded-xl p-3 flex items-center justify-between gap-3 flex-wrap">
-              <div className="flex items-center gap-2 text-indigo-200 font-bold">
-                <CheckSquare className="w-4 h-4 text-indigo-400" />
-                <span>
-                  تم تحديد{" "}
-                  <b className="font-mono text-white">
-                    {selectedProductIdsList.length}
-                  </b>{" "}
-                  صنف — توجيهها دفعة واحدة إلى:
-                </span>
-              </div>
-
-              <div className="flex items-center gap-2 flex-wrap">
-                <select
-                  value={bulkSupplierId}
-                  onChange={(e) => setBulkSupplierId(e.target.value)}
-                  className="bg-slate-900 border border-indigo-700 rounded-lg px-3 py-1.5 text-white outline-none min-w-[200px]"
-                >
-                  <option value="">-- اختر المستودع --</option>
-                  {activeSuppliers.map((sup) => (
-                    <option key={sup.id} value={sup.id}>
-                      {sup.name}
-                    </option>
-                  ))}
-                  <option value={UNASSIGNED_KEY}>
-                    إلغاء التعيين (غير موزع)
-                  </option>
-                </select>
-
-                <button
-                  type="button"
-                  disabled={!bulkSupplierId}
-                  onClick={handleApplyBulkAssign}
-                  className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white font-bold px-3.5 py-1.5 rounded-lg transition"
-                >
-                  تطبيق التوجيه
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setSelectedIds({})}
-                  title="إلغاء التحديد"
-                  className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          ) : undefined
+          <ShortageBulkAssignBar
+            selectedCount={selectedProductIdsList.length}
+            bulkSupplierId={bulkSupplierId}
+            activeSuppliers={activeSuppliers}
+            onBulkSupplierChange={setBulkSupplierId}
+            onApplyBulkAssign={handleApplyBulkAssign}
+            onClearSelection={() => setSelectedIds({})}
+          />
         }
         header={
           <tr>
