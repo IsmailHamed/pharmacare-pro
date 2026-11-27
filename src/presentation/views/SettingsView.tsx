@@ -6,19 +6,21 @@ import {
 import { getSystemRuntimeInfo } from "../../infrastructure/tauri/system";
 import { PharmacyIdentitySection } from "../components/settings/PharmacyIdentitySection";
 import { HardwareCloudSection } from "../components/settings/HardwareCloudSection";
+import { PrintTemplatesSection } from "../components/settings/PrintTemplatesSection";
 import { StaffManagementSection } from "../components/settings/StaffManagementSection";
 import { BackupMaintenanceSection } from "../components/settings/BackupMaintenanceSection";
 import {
   Settings,
   Building2,
   Printer,
+  SlidersHorizontal,
   Users,
   DatabaseBackup,
   HardDrive,
   ShieldAlert,
 } from "lucide-react";
 
-type SettingsSubTab = "identity" | "hardware" | "staff" | "backup";
+type SettingsSubTab = "identity" | "hardware" | "print" | "staff" | "backup";
 
 export const SettingsView: React.FC = () => {
   const { currentUser } = usePosStore();
@@ -41,8 +43,8 @@ export const SettingsView: React.FC = () => {
             صلاحيات الفريق، والأجهزة الطرفية
           </h2>
           <p className="text-slate-400 mt-1">
-            تخصيص بيانات هوية الصيدلية والفواتير، ضبط الطابعة الحرارية الصامتة
-            وقارئ الباركود، وإدارة الموظفين والنسخ الاحتياطي.
+            تخصيص بيانات هوية الصيدلية، ضبط الطابعة الحرارية الصامتة وقوالب
+            الطباعة، وإدارة الموظفين والنسخ الاحتياطي.
           </p>
         </div>
 
@@ -57,7 +59,7 @@ export const SettingsView: React.FC = () => {
         </div>
       </div>
 
-      {/* شريط التبويبات الفرعية لأقسام الإعدادات الأربعة */}
+      {/* شريط التبويبات الفرعية لأقسام الإعدادات */}
       <div className="mb-6 flex items-center gap-2 bg-slate-900 p-1.5 rounded-2xl border border-slate-800 w-fit flex-wrap">
         <button
           type="button"
@@ -69,7 +71,7 @@ export const SettingsView: React.FC = () => {
           }`}
         >
           <Building2 className="w-4 h-4" />
-          هوية الصيدلية والفواتير
+          هوية الصيدلية
         </button>
 
         <button
@@ -83,6 +85,19 @@ export const SettingsView: React.FC = () => {
         >
           <Printer className="w-4 h-4" />
           الأجهزة الطرفية والسحابة
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveSubTab("print")}
+          className={`px-4 py-2 rounded-xl font-bold flex items-center gap-2 transition ${
+            activeSubTab === "print"
+              ? "bg-indigo-600 text-white shadow-md"
+              : "text-slate-400 hover:text-white hover:bg-slate-800"
+          }`}
+        >
+          <SlidersHorizontal className="w-4 h-4" />
+          قوالب الطباعة والمعاينة
         </button>
 
         <button
@@ -135,6 +150,11 @@ export const SettingsView: React.FC = () => {
       <div className="w-full">
         {activeSubTab === "identity" && <PharmacyIdentitySection />}
         {activeSubTab === "hardware" && <HardwareCloudSection />}
+        {activeSubTab === "print" && (
+          <PrintTemplatesSection
+            onGoToIdentity={() => setActiveSubTab("identity")}
+          />
+        )}
         {activeSubTab === "staff" && <StaffManagementSection />}
         {activeSubTab === "backup" && <BackupMaintenanceSection />}
       </div>
