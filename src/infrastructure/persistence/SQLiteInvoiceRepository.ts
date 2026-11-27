@@ -1,45 +1,27 @@
 import { IInvoiceRepository } from "../../domain/repositories/IInvoiceRepository";
 import { InvoiceEntity } from "../../domain/entities/Invoice";
 import {
-  PurchaseInvoiceEntity,
-  ControlledDrugLogEntity,
   CashExpenseEntity,
+  ControlledDrugLogEntity,
+  LedgerPaymentEntity,
+  PurchaseInvoiceEntity,
   ShiftSummaryEntity,
   SyncQueueItemEntity,
-  LedgerPaymentEntity,
 } from "../../domain/entities";
 import { sqliteEngine } from "../db/database";
 import { isTauriDesktop, sqliteRaw } from "../db/connection";
+import {
+  mapControlledDrugLogRow,
+  mapExpenseRow,
+  mapInvoiceRow,
+  mapLedgerPaymentRow,
+  mapPurchaseInvoiceRow,
+  mapShiftRow,
+  mapSyncQueueRow,
+  recalculateShiftExpectedCash,
+} from "./invoiceMappers";
 
 export class SQLiteInvoiceRepository implements IInvoiceRepository {
-  /**
-   * المعادلة المحاسبية الموحدة لحساب النقد المتوقع في درج الكاشير:
-   * النقد المتوقع = الرصيد الافتتاحي + المبيعات النقدية + مقبوضات ديون العملاء
-   *               - المرتجعات النقدية - المصاريف النثرية - المشتريات النقدية - دفعات الموردين النقدية
-   */
-  private recalculateShiftExpectedCash(shift: ShiftSummaryEntity): void {
-    const opening = Number(shift.openingBalance || 0);
-    const cashSales = Number(shift.cashSalesTotal || 0);
-    const debtIn = Number(shift.debtCollectionsTotal || 0);
-
-    const cashReturns = Number(shift.returnsTotal || 0);
-    const pettyExpenses = Number(shift.pettyCashTotal || 0);
-    const cashPurchases = Number(shift.cashPurchasesTotal || 0);
-    const supplierOut = Number(shift.supplierPaymentsTotal || 0);
-
-    shift.expectedDrawerCash = Number(
-      (
-        opening +
-        cashSales +
-        debtIn -
-        cashReturns -
-        pettyExpenses -
-        cashPurchases -
-        supplierOut
-      ).toFixed(2),
-    );
-  }
-
   async saveInvoice(invoice: InvoiceEntity): Promise<void> {
     let updatedOpenShift: ShiftSummaryEntity | null = null;
 
@@ -73,7 +55,7 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
           }
         }
 
-        this.recalculateShiftExpectedCash(openShift);
+        recalculateShiftExpectedCash(openShift);
         updatedOpenShift = { ...openShift };
       }
     });
@@ -125,27 +107,7 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
           "SELECT * FROM invoices ORDER BY created_at DESC;",
         );
         if (rows.length > 0) {
-          const mapped: InvoiceEntity[] = rows.map((r) => ({
-            id: String(r.id),
-            type: String(r.type) as "SALE" | "RETURN",
-            paymentMode: String(r.payment_mode) as "CASH" | "CREDIT",
-            customerName: String(r.customer_name),
-            subtotal: Number(r.subtotal),
-            discountPercent: Number(r.discount_percent),
-            totalAmount: Number(r.total_amount),
-            totalCostAmount: Number(r.total_cost_amount),
-            netProfit: Number(r.net_profit),
-            items: JSON.parse(String(r.items_json || "[]")),
-            createdAt: String(r.created_at),
-            shiftId: r.shift_id ? String(r.shift_id) : undefined,
-            performedByUserId: r.performed_by_user_id
-              ? String(r.performed_by_user_id)
-              : undefined,
-            performedByName: r.performed_by_name
-              ? String(r.performed_by_name)
-              : undefined,
-            branchId: String(r.branch_id),
-          }));
+          const mapped = rows.map(mapInvoiceRow);
           sqliteEngine.commit((draft) => {
             draft.invoices = mapped;
           });
@@ -172,7 +134,7 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
             2,
           ),
         );
-        this.recalculateShiftExpectedCash(openShift);
+        recalculateShiftExpectedCash(openShift);
         updatedOpenShift = { ...openShift };
       }
     });
@@ -218,20 +180,7 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
           "SELECT * FROM purchase_invoices ORDER BY created_at DESC;",
         );
         if (rows.length > 0) {
-          const mapped: PurchaseInvoiceEntity[] = rows.map((r) => ({
-            id: String(r.id),
-            supplierName: String(r.supplier_name),
-            supplierInvoiceNumber: String(r.supplier_invoice_number),
-            paymentMode: String(r.payment_mode) as "CASH" | "CREDIT",
-            totalAmount: Number(r.total_amount),
-            totalBonusValue: Number(r.total_bonus_value),
-            items: JSON.parse(String(r.items_json || "[]")),
-            purchaseOrderId: r.purchase_order_id
-              ? String(r.purchase_order_id)
-              : undefined,
-            createdAt: String(r.created_at),
-            branchId: String(r.branch_id),
-          }));
+          const mapped = rows.map(mapPurchaseInvoiceRow);
           sqliteEngine.commit((draft) => {
             draft.purchaseInvoices = mapped;
           });
@@ -285,41 +234,16 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
     await this.persistSyncItemToDesktopSQLite(syncItem);
   }
 
-  /**
-   * جلب دفتر الأدوية المراقبة والنفسية:
-   * - على سطح المكتب (Tauri): القراءة المباشرة من جدول controlled_drug_logs في pharmacare.db
-   * - على المتصفح (Web): القراءة من لقطة الذاكرة المحلية sqliteEngine
-   */
   async getControlledDrugLogs(): Promise<ControlledDrugLogEntity[]> {
     if (isTauriDesktop() && sqliteRaw) {
       try {
         const rows = await sqliteRaw.select<Record<string, unknown>[]>(
           "SELECT * FROM controlled_drug_logs ORDER BY dispensed_at DESC;",
         );
-
-        const mapped: ControlledDrugLogEntity[] = rows.map((r) => ({
-          id: String(r.id),
-          invoiceId: String(r.invoice_id),
-          productId: String(r.product_id),
-          productName: String(r.product_name),
-          scientificName: String(r.scientific_name),
-          barcode: String(r.barcode),
-          unit: String(r.unit) as "pack" | "strip",
-          qty: Number(r.qty),
-          batchNumber: String(r.batch_number),
-          patientName: String(r.patient_name),
-          nationalId: String(r.national_id),
-          doctorName: String(r.doctor_name),
-          prescriptionId: String(r.prescription_id),
-          dispensedAt: String(r.dispensed_at),
-          branchId: String(r.branch_id),
-        }));
-
-        // مزامنة نسخة الذاكرة السريعة مع السجل الرسمي المحفوظ في SQLite
+        const mapped = rows.map(mapControlledDrugLogRow);
         sqliteEngine.commit((draft) => {
           draft.controlledLogs = mapped;
         });
-
         return mapped;
       } catch (err) {
         console.warn("Controlled drug logs SQLite read fallback:", err);
@@ -341,7 +265,7 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
         openShift.pettyCashTotal = Number(
           (openShift.pettyCashTotal + expense.amount).toFixed(2),
         );
-        this.recalculateShiftExpectedCash(openShift);
+        recalculateShiftExpectedCash(openShift);
         updatedOpenShift = { ...openShift };
       }
     });
@@ -380,40 +304,16 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
     await this.persistSyncItemToDesktopSQLite(syncItem);
   }
 
-  /**
-   * جلب جميع المصاريف النثرية وخسائر الجرد والتوالف:
-   * - على سطح المكتب (Tauri): القراءة المباشرة من جدول cash_expenses في pharmacare.db
-   * - على المتصفح (Web): القراءة من لقطة الذاكرة المحلية sqliteEngine
-   */
   async getAllExpenses(): Promise<CashExpenseEntity[]> {
     if (isTauriDesktop() && sqliteRaw) {
       try {
         const rows = await sqliteRaw.select<Record<string, unknown>[]>(
           "SELECT * FROM cash_expenses ORDER BY created_at DESC;",
         );
-
-        const mapped: CashExpenseEntity[] = rows.map((r) => ({
-          id: String(r.id),
-          title: String(r.title),
-          category: String(r.category) as CashExpenseEntity["category"],
-          amount: Number(r.amount),
-          notes: r.notes ? String(r.notes) : undefined,
-          shiftId: String(r.shift_id),
-          performedByUserId: r.performed_by_user_id
-            ? String(r.performed_by_user_id)
-            : undefined,
-          performedByName: r.performed_by_name
-            ? String(r.performed_by_name)
-            : undefined,
-          createdAt: String(r.created_at),
-          branchId: String(r.branch_id),
-        }));
-
-        // مزامنة نسخة الذاكرة السريعة مع المصاريف المحفوظة في SQLite
+        const mapped = rows.map(mapExpenseRow);
         sqliteEngine.commit((draft) => {
           draft.expenses = mapped;
         });
-
         return mapped;
       } catch (err) {
         console.warn("Cash expenses SQLite read fallback:", err);
@@ -451,44 +351,7 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
           "SELECT * FROM shifts ORDER BY opened_at DESC;",
         );
         if (rows.length > 0) {
-          const mapped: ShiftSummaryEntity[] = rows.map((r) => ({
-            id: String(r.id),
-            pharmacistName: String(r.pharmacist_name),
-            openedByUserId: r.opened_by_user_id
-              ? String(r.opened_by_user_id)
-              : undefined,
-            openedAt: String(r.opened_at),
-            closedAt: r.closed_at ? String(r.closed_at) : undefined,
-            closedByUserId: r.closed_by_user_id
-              ? String(r.closed_by_user_id)
-              : undefined,
-            closedByName: r.closed_by_name
-              ? String(r.closed_by_name)
-              : undefined,
-            status: String(r.status) as "OPEN" | "CLOSED",
-            openingBalance: Number(r.opening_balance),
-            cashSalesTotal: Number(r.cash_sales_total),
-            creditSalesTotal: Number(r.credit_sales_total),
-            returnsTotal: Number(r.returns_total),
-            creditReturnsTotal: Number(r.credit_returns_total || 0),
-            debtCollectionsTotal: Number(r.debt_collections_total || 0),
-            supplierPaymentsTotal: Number(r.supplier_payments_total || 0),
-            cashPurchasesTotal: Number(r.cash_purchases_total || 0),
-            pettyCashTotal: Number(r.petty_cash_total),
-            expectedDrawerCash: Number(r.expected_drawer_cash),
-            actualDrawerCash:
-              r.actual_drawer_cash !== null &&
-              r.actual_drawer_cash !== undefined
-                ? Number(r.actual_drawer_cash)
-                : undefined,
-            variance:
-              r.variance !== null && r.variance !== undefined
-                ? Number(r.variance)
-                : undefined,
-            safeDropAmount: Number(r.safe_drop_amount || 0),
-            nextShiftFloat: Number(r.next_shift_float || 0),
-            branchId: String(r.branch_id),
-          }));
+          const mapped = rows.map(mapShiftRow);
           sqliteEngine.commit((draft) => {
             draft.shifts = mapped;
           });
@@ -501,38 +364,16 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
     return [...sqliteEngine.getSnapshot().shifts];
   }
 
-  /**
-   * جلب طابور المزامنة السحابية:
-   * - على سطح المكتب (Tauri): القراءة المباشرة من جدول sync_queue في pharmacare.db
-   *   لضمان استرجاع جميع العمليات المعلقة (PENDING) حتى بعد إعادة تشغيل التطبيق
-   * - على المتصفح (Web): القراءة من لقطة الذاكرة المحلية sqliteEngine
-   */
   async getSyncQueue(): Promise<SyncQueueItemEntity[]> {
     if (isTauriDesktop() && sqliteRaw) {
       try {
         const rows = await sqliteRaw.select<Record<string, unknown>[]>(
           "SELECT * FROM sync_queue ORDER BY created_at DESC;",
         );
-
-        const mapped: SyncQueueItemEntity[] = rows.map((r) => ({
-          id: String(r.id),
-          entityType: String(
-            r.entity_type,
-          ) as SyncQueueItemEntity["entityType"],
-          operation: String(r.operation) as SyncQueueItemEntity["operation"],
-          recordId: String(r.record_id),
-          payload: String(r.payload),
-          branchId: String(r.branch_id),
-          status: String(r.status) as SyncQueueItemEntity["status"],
-          createdAt: String(r.created_at),
-          syncedAt: r.synced_at ? String(r.synced_at) : undefined,
-        }));
-
-        // مزامنة نسخة الذاكرة السريعة مع ما هو محفوظ فعلياً في قاعدة بيانات سطح المكتب
+        const mapped = rows.map(mapSyncQueueRow);
         sqliteEngine.commit((draft) => {
           draft.syncQueue = mapped;
         });
-
         return mapped;
       } catch (err) {
         console.warn("SyncQueue SQLite read fallback:", err);
@@ -542,17 +383,12 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
     return [...sqliteEngine.getSnapshot().syncQueue];
   }
 
-  /**
-   * تحديث حالة العناصر التي أكد السيرفر السحابي استلامها إلى SYNCED
-   * في الذاكرة المحلية وفي جدول sync_queue داخل pharmacare.db معاً
-   */
   async markSyncItemsCompleted(ids: string[]): Promise<void> {
     if (ids.length === 0) return;
 
     const now = new Date().toISOString();
     const idSet = new Set(ids);
 
-    // 1. تحديث حالة السجلات في الذاكرة السريعة ولقطة المتصفح
     sqliteEngine.commit((draft) => {
       draft.syncQueue.forEach((item) => {
         if (idSet.has(item.id)) {
@@ -562,7 +398,6 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
       });
     });
 
-    // 2. تحديث حالة السجلات في جدول sync_queue على سطح المكتب (Tauri SQLite)
     if (isTauriDesktop() && sqliteRaw) {
       for (const id of ids) {
         await sqliteRaw.execute(
@@ -594,7 +429,7 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
             ),
           );
         }
-        this.recalculateShiftExpectedCash(openShift);
+        recalculateShiftExpectedCash(openShift);
         updatedOpenShift = { ...openShift };
       }
     });
@@ -640,22 +475,7 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
           "SELECT * FROM ledger_payments ORDER BY created_at DESC;",
         );
         if (rows.length > 0) {
-          const mapped: LedgerPaymentEntity[] = rows.map((r) => ({
-            id: String(r.id),
-            partyType: String(r.party_type) as "CUSTOMER" | "SUPPLIER",
-            partyName: String(r.party_name),
-            amount: Number(r.amount),
-            notes: r.notes ? String(r.notes) : undefined,
-            shiftId: r.shift_id ? String(r.shift_id) : undefined,
-            performedByUserId: r.performed_by_user_id
-              ? String(r.performed_by_user_id)
-              : undefined,
-            performedByName: r.performed_by_name
-              ? String(r.performed_by_name)
-              : undefined,
-            createdAt: String(r.created_at),
-            branchId: String(r.branch_id),
-          }));
+          const mapped = rows.map(mapLedgerPaymentRow);
           sqliteEngine.commit((draft) => {
             draft.ledgerPayments = mapped;
           });
@@ -713,9 +533,6 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
     );
   }
 
-  /**
-   * حفظ عنصر طابور المزامنة داخل جدول sync_queue في ملف pharmacare.db على سطح المكتب
-   */
   private async persistSyncItemToDesktopSQLite(
     item: SyncQueueItemEntity,
   ): Promise<void> {
