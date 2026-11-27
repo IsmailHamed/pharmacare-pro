@@ -77,6 +77,7 @@ const bootstrapSQLiteTables = async (db: Database) => {
       total_amount REAL NOT NULL,
       total_bonus_value REAL DEFAULT 0 NOT NULL,
       items_json TEXT NOT NULL,
+      purchase_order_id TEXT,
       created_at TEXT NOT NULL,
       branch_id TEXT DEFAULT 'MAIN_BRANCH' NOT NULL
     );
@@ -208,7 +209,32 @@ const bootstrapSQLiteTables = async (db: Database) => {
       branch_id TEXT DEFAULT 'MAIN_BRANCH' NOT NULL
     );
   `);
-
+  // جدول أوامر الشراء (Purchase Orders) لتتبع الطلبيات من المسودة حتى الاستلام الجزئي والكلي
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS purchase_orders (
+      id TEXT PRIMARY KEY NOT NULL,
+      supplier_id TEXT,
+      supplier_name TEXT NOT NULL,
+      supplier_phone TEXT,
+      sales_rep_name TEXT,
+      status TEXT NOT NULL,
+      items_json TEXT NOT NULL,
+      total_ordered_packs INTEGER NOT NULL DEFAULT 0,
+      total_received_packs INTEGER NOT NULL DEFAULT 0,
+      estimated_total_amount REAL NOT NULL DEFAULT 0,
+      notes TEXT,
+      dispatch_channel TEXT,
+      sent_at TEXT,
+      completed_at TEXT,
+      cancelled_at TEXT,
+      linked_purchase_invoice_ids_json TEXT NOT NULL DEFAULT '[]',
+      created_by_user_id TEXT,
+      created_by_name TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      branch_id TEXT DEFAULT 'MAIN_BRANCH' NOT NULL
+    );
+  `);
   // ترقية آمنة للأعمدة المضافة إذا كانت قاعدة البيانات منشأة من إصدار أقدم
   const safeAlterStatements = [
     // أعمدة ربط الوردية وتوثيق المنفّذ في جدول الفواتير (invoices)
@@ -232,6 +258,8 @@ const bootstrapSQLiteTables = async (db: Database) => {
     "ALTER TABLE ledger_payments ADD COLUMN shift_id TEXT;",
     "ALTER TABLE ledger_payments ADD COLUMN performed_by_user_id TEXT;",
     "ALTER TABLE ledger_payments ADD COLUMN performed_by_name TEXT;",
+    // عمود ربط فاتورة الشراء بأمر الشراء المصدر (purchase_invoices)
+    "ALTER TABLE purchase_invoices ADD COLUMN purchase_order_id TEXT;",
   ];
   for (const stmt of safeAlterStatements) {
     try {
@@ -277,6 +305,16 @@ const bootstrapSQLiteTables = async (db: Database) => {
   );
   await db.execute(
     "CREATE INDEX IF NOT EXISTS idx_ledger_payments_shift_id ON ledger_payments(shift_id);",
+  );
+  // فهارس لتسريع تصفية أوامر الشراء وربطها بفواتير الاستلام
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_purchase_orders_status ON purchase_orders(status);",
+  );
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_purchase_orders_created_at ON purchase_orders(created_at);",
+  );
+  await db.execute(
+    "CREATE INDEX IF NOT EXISTS idx_purchase_invoices_order_id ON purchase_invoices(purchase_order_id);",
   );
 };
 

@@ -8,6 +8,7 @@ export interface SyncQueueItemEntity {
     | "BATCH"
     | "INVOICE"
     | "PURCHASE"
+    | "PURCHASE_ORDER"
     | "CONTROLLED_LOG"
     | "EXPENSE"
     | "SHIFT"

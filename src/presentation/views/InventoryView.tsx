@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { usePosStore } from "../../application/store/usePosStore";
 import { ProductEntity } from "../../domain/entities";
 import { BarcodeLabelModal } from "../components/BarcodeLabelModal";
@@ -9,14 +9,22 @@ import { InventoryStockTab } from "../components/inventory/InventoryStockTab";
 import { InventoryLossesTab } from "../components/inventory/InventoryLossesTab";
 import { ClipboardCheck, Package } from "lucide-react";
 
-type InventorySubTab = "stock" | "losses";
+export type InventorySubTab = "stock" | "losses";
+
+interface InventoryViewProps {
+  activeSubTab?: InventorySubTab;
+  onChangeSubTab?: (tab: InventorySubTab) => void;
+}
 
 interface AdjustmentTarget {
   product: ProductEntity;
   batchId?: string;
 }
 
-export const InventoryView: React.FC = () => {
+export const InventoryView: React.FC<InventoryViewProps> = ({
+  activeSubTab: controlledSubTab,
+  onChangeSubTab,
+}) => {
   const {
     products,
     invoices,
@@ -33,7 +41,17 @@ export const InventoryView: React.FC = () => {
     (s) => s.currentUser?.permissions.canViewCostAndProfit ?? false,
   );
 
-  const [activeSubTab, setActiveSubTab] = useState<InventorySubTab>("stock");
+  const [internalSubTab, setInternalSubTab] =
+    useState<InventorySubTab>("stock");
+  const activeSubTab = controlledSubTab ?? internalSubTab;
+  const setActiveSubTab = useCallback(
+    (tab: InventorySubTab) => {
+      setInternalSubTab(tab);
+      onChangeSubTab?.(tab);
+    },
+    [onChangeSubTab],
+  );
+
   const [showAddModal, setShowAddModal] = useState(false);
   const [barcodeProduct, setBarcodeProduct] = useState<ProductEntity | null>(
     null,
@@ -46,7 +64,7 @@ export const InventoryView: React.FC = () => {
     if (!canViewCost && activeSubTab === "losses") {
       setActiveSubTab("stock");
     }
-  }, [canViewCost, activeSubTab]);
+  }, [canViewCost, activeSubTab, setActiveSubTab]);
 
   // سجل التوالف والفروقات الجردية المقيدة مالياً
   const inventoryLossLogs = useMemo(
@@ -64,7 +82,9 @@ export const InventoryView: React.FC = () => {
         products={products}
         canBulkPricing={canBulkPricing}
         onOpenAddModal={() => setShowAddModal(true)}
-        onImportProductsBatch={importProductsBatch}
+        onImportProductsBatch={async (imported) => {
+          await importProductsBatch(imported);
+        }}
         onApplyBulkPricing={applyBulkPricing}
       />
 

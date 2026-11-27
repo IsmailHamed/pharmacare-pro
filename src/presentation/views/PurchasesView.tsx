@@ -1,12 +1,20 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { usePosStore } from "../../application/store/usePosStore";
-import { PackagePlus, ClipboardList, FileText, Building2 } from "lucide-react";
+import { PurchaseOrderEntity } from "../../domain/entities";
+import {
+  PackagePlus,
+  ClipboardList,
+  ClipboardCheck,
+  FileText,
+  Building2,
+} from "lucide-react";
 import { SuppliersManagerModal } from "../components/purchases/SuppliersManagerModal";
 import { PurchaseEntryTab } from "../components/purchases/PurchaseEntryTab";
 import { PurchaseShortagesTab } from "../components/purchases/PurchaseShortagesTab";
+import { PurchaseOrdersTab } from "../components/purchases/PurchaseOrdersTab";
 import { PurchaseReportsTab } from "../components/purchases/PurchaseReportsTab";
 
-export type PurchasesSubTab = "entry" | "shortages" | "reports";
+export type PurchasesSubTab = "entry" | "shortages" | "orders" | "reports";
 
 interface PurchasesViewProps {
   activeSubTab?: PurchasesSubTab;
@@ -25,8 +33,15 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
   const canViewCost = usePosStore(
     (s) => s.currentUser?.permissions.canViewCostAndProfit ?? false,
   );
-  const { products, purchaseInvoices, suppliers, createPurchaseWithBonus } =
-    usePosStore();
+  const {
+    products,
+    purchaseInvoices,
+    purchaseOrders,
+    pendingOrderForInvoice,
+    setPendingOrderForInvoice,
+    suppliers,
+    createPurchaseWithBonus,
+  } = usePosStore();
 
   const [internalSubTab, setInternalSubTab] =
     useState<PurchasesSubTab>("entry");
@@ -58,6 +73,21 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
     [products],
   );
 
+  // عدّاد أوامر الشراء المفتوحة (مسودة / مرسل / استلام جزئي)
+  const openOrdersCount = useMemo(
+    () =>
+      purchaseOrders.filter(
+        (o) =>
+          o.status === "DRAFT" || o.status === "SENT" || o.status === "PARTIAL",
+      ).length,
+    [purchaseOrders],
+  );
+
+  const handleReceiveOrder = (order: PurchaseOrderEntity) => {
+    setPendingOrderForInvoice(order);
+    setActiveSubTab("entry");
+  };
+
   if (!canManagePurchases) {
     return (
       <div className="flex-1 flex items-center justify-center bg-slate-950 p-6">
@@ -82,11 +112,11 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
         <div>
           <h2 className="text-lg font-bold text-white flex items-center gap-2">
             <PackagePlus className="w-5 h-5 text-indigo-400" /> المشتريات،
-            البونص، وطلبيات المستودعات
+            البونص، وأوامر الشراء
           </h2>
           <p className="text-slate-400 mt-0.5">
-            إدخال فواتير الشراء بالباركود والتكلفة المرجحة، توزيع طلبيات النواقص
-            على المستودعات، وتقارير المشتريات التفصيلية.
+            إدخال فواتير الشراء بالباركود والتكلفة المرجحة، توزيع طلبيات
+            النواقص، متابعة أوامر الشراء، وتقارير المشتريات التفصيلية.
           </p>
         </div>
 
@@ -154,6 +184,30 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
 
         <button
           type="button"
+          onClick={() => setActiveSubTab("orders")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg font-bold transition ${
+            activeSubTab === "orders"
+              ? "bg-amber-600 text-white shadow-md"
+              : "text-slate-400 hover:text-white hover:bg-slate-800"
+          }`}
+        >
+          <ClipboardCheck className="w-4 h-4" />
+          أوامر الشراء (PO)
+          <span
+            className={`font-mono text-[10px] px-1.5 py-0.5 rounded-full ${
+              activeSubTab === "orders"
+                ? "bg-amber-950/60 text-amber-100"
+                : openOrdersCount > 0
+                  ? "bg-amber-950 text-amber-300 border border-amber-800/70"
+                  : "bg-slate-800 text-slate-300"
+            }`}
+          >
+            {openOrdersCount > 0 ? openOrdersCount : purchaseOrders.length}
+          </span>
+        </button>
+
+        <button
+          type="button"
           onClick={() => setActiveSubTab("reports")}
           className={`flex items-center gap-2 px-4 py-2 rounded-lg font-bold transition ${
             activeSubTab === "reports"
@@ -181,6 +235,8 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
           activeSuppliers={activeSuppliers}
           canViewCost={canViewCost}
           isScannerActive={isEntryScannerActive}
+          pendingOrder={pendingOrderForInvoice}
+          onClearPendingOrder={() => setPendingOrderForInvoice(null)}
           onOpenSuppliersModal={() => setShowSuppliersModal(true)}
           onLinesCountChange={setDraftLinesCount}
           onSubmitPurchase={createPurchaseWithBonus}
@@ -192,6 +248,15 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({
           shortageProducts={shortageProducts}
           canViewCost={canViewCost}
           onOpenSuppliersModal={() => setShowSuppliersModal(true)}
+        />
+      )}
+
+      {activeSubTab === "orders" && (
+        <PurchaseOrdersTab
+          purchaseOrders={purchaseOrders}
+          canViewCost={canViewCost}
+          onReceiveOrder={handleReceiveOrder}
+          onGoToShortages={() => setActiveSubTab("shortages")}
         />
       )}
 

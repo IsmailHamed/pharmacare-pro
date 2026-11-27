@@ -173,10 +173,12 @@ export function ColumnVisibilityMenu<K extends string = string>({
                   </div>
 
                   {col.locked && (
-                    <Lock
-                      className="w-3 h-3 text-slate-500 shrink-0"
+                    <span
                       title="عمود أساسي لا يمكن إخفاؤه"
-                    />
+                      className="inline-flex shrink-0"
+                    >
+                      <Lock className="w-3 h-3 text-slate-500" />
+                    </span>
                   )}
                 </button>
               );

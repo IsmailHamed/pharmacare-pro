@@ -8,7 +8,7 @@ export interface DataTableToolbarProps {
   searchValue?: string;
   onSearchChange?: (value: string) => void;
   searchPlaceholder?: string;
-  searchInputRef?: React.RefObject<HTMLInputElement | null>;
+  searchInputRef?: React.Ref<HTMLInputElement>;
   // تلميح اختصار اختياري يظهر داخل حقل البحث المدمج عند فراغه (مثل F2)
   searchShortcutHint?: string;
 

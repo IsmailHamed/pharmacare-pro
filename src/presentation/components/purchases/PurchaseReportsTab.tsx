@@ -38,6 +38,7 @@ import {
   Gift,
   Package,
   Building2,
+  ClipboardCheck,
 } from "lucide-react";
 
 interface Props {
@@ -170,6 +171,7 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
       const matchesHeader =
         inv.id.toLowerCase().includes(q) ||
         (inv.supplierInvoiceNumber || "").toLowerCase().includes(q) ||
+        (inv.purchaseOrderId || "").toLowerCase().includes(q) ||
         inv.supplierName.toLowerCase().includes(q);
 
       if (matchesHeader) return true;
@@ -294,6 +296,7 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
 
     const headers: string[] = [
       "رقم القيد الداخلي",
+      "رقم أمر الشراء (PO)",
       "تاريخ ووقت الإدخال",
       "اسم المستودع / المورد",
     ];
@@ -323,7 +326,12 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
       const dateStr = inv.createdAt.slice(0, 16).replace("T", " ");
 
       const buildInvoicePrefix = (): CsvCellValue[] => {
-        const prefix: CsvCellValue[] = [inv.id, dateStr, inv.supplierName];
+        const prefix: CsvCellValue[] = [
+          inv.id,
+          inv.purchaseOrderId || "—",
+          dateStr,
+          inv.supplierName,
+        ];
         if (showSupplierInv) prefix.push(inv.supplierInvoiceNumber || "—");
         if (showPayment) prefix.push(paymentLabel);
         if (showTotalAmount) prefix.push(inv.totalAmount.toFixed(2));
@@ -413,7 +421,7 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
           <div>
             <span class="bold">${escapeHtml(inv.supplierName)}</span>
             <span class="badge">${inv.paymentMode === "CASH" ? "نقدي" : "آجل"}</span>
-            <div class="sub mono">القيد: ${escapeHtml(inv.id)} | فاتورة المورد: ${escapeHtml(inv.supplierInvoiceNumber || "—")}</div>
+            <div class="sub mono">القيد: ${escapeHtml(inv.id)} | فاتورة المورد: ${escapeHtml(inv.supplierInvoiceNumber || "—")}${inv.purchaseOrderId ? ` | أمر الشراء: ${escapeHtml(inv.purchaseOrderId)}` : ""}</div>
           </div>
           <div style="text-align:left;">
             <div class="mono bold">الإجمالي: ${inv.totalAmount.toFixed(2)} ر.س | البونص: ${inv.totalBonusValue.toFixed(2)} ر.س</div>
@@ -607,7 +615,7 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
             accent="indigo"
             searchValue={searchQuery}
             onSearchChange={setSearchQuery}
-            searchPlaceholder="ابحث برقم القيد، فاتورة المورد، المستودع، اسم/باركود الدواء، أو رقم التشغيلة..."
+            searchPlaceholder="ابحث برقم القيد، فاتورة المورد، أمر الشراء (PO)، المستودع، اسم/باركود الدواء، أو رقم التشغيلة..."
             filters={
               <>
                 {/* فلتر المستودع */}
@@ -806,7 +814,7 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
               >
                 {columnsState.isVisible("createdAt") && (
                   <td className="py-3 px-3">
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       {isExpanded ? (
                         <ChevronDown className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
                       ) : (
@@ -815,6 +823,12 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
                       <span className="font-mono font-bold text-indigo-300">
                         {inv.id}
                       </span>
+                      {inv.purchaseOrderId && (
+                        <span className="inline-flex items-center gap-1 text-[9.5px] font-mono font-bold px-1.5 py-0.5 rounded bg-amber-950/60 border border-amber-800/70 text-amber-300">
+                          <ClipboardCheck className="w-2.5 h-2.5" />
+                          {inv.purchaseOrderId}
+                        </span>
+                      )}
                     </div>
                     <div className="text-[10.5px] font-mono text-slate-500 mt-0.5 pr-5">
                       {new Date(inv.createdAt).toLocaleString("ar-SA", {
@@ -908,6 +922,11 @@ export const PurchaseReportsTab: React.FC<Props> = ({ purchaseInvoices }) => {
                         <span className="font-mono text-slate-400 text-[10.5px]">
                           الفرع: {inv.branchId} • فاتورة المورد:{" "}
                           {inv.supplierInvoiceNumber || "غير مدخلة"}
+                          {inv.purchaseOrderId && (
+                            <span className="text-amber-300 mr-2">
+                              • أمر الشراء: {inv.purchaseOrderId}
+                            </span>
+                          )}
                         </span>
                       </div>
 

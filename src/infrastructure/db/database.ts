@@ -1,6 +1,7 @@
 import {
   ProductEntity,
   PurchaseInvoiceEntity,
+  PurchaseOrderEntity,
   ControlledDrugLogEntity,
   CashExpenseEntity,
   ShiftSummaryEntity,
@@ -27,6 +28,7 @@ export interface LocalDatabaseSnapshot {
   products: ProductEntity[];
   invoices: InvoiceEntity[];
   purchaseInvoices: PurchaseInvoiceEntity[];
+  purchaseOrders: PurchaseOrderEntity[];
   controlledLogs: ControlledDrugLogEntity[];
   expenses: CashExpenseEntity[];
   shifts: ShiftSummaryEntity[];
@@ -46,6 +48,7 @@ const createDefaultDatabase = (): LocalDatabaseSnapshot => {
     products: INITIAL_SEED_PRODUCTS,
     invoices: [],
     purchaseInvoices: [],
+    purchaseOrders: [],
     controlledLogs: [],
     expenses: [],
     shifts: [
@@ -98,6 +101,9 @@ class LocalSQLiteEngine {
               ...parsed,
               invoices: parsed.invoices || [],
               purchaseInvoices: parsed.purchaseInvoices || [],
+              purchaseOrders: Array.isArray(parsed.purchaseOrders)
+                ? parsed.purchaseOrders
+                : [],
               controlledLogs: parsed.controlledLogs || [],
               expenses: parsed.expenses || [],
               shifts:

@@ -29,6 +29,7 @@ export interface PurchaseInvoiceEntity {
   totalAmount: number;
   totalBonusValue: number;
   items: PurchaseItemEntity[];
+  purchaseOrderId?: string; // رقم أمر الشراء المرتبط (في حال تم الاستلام من أمر شراء)
   createdAt: string;
   branchId: string;
 }

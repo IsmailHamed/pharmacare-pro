@@ -9,6 +9,7 @@ import {
   invoiceRepo,
   userRepo,
   supplierRepo,
+  purchaseOrderRepo,
 } from "../storeTypes";
 import { UserEntity } from "../../../domain/entities/User";
 import { SupplierEntity } from "../../../domain/entities/Supplier";
@@ -25,6 +26,7 @@ export type SystemSyncSlice = Pick<
   | "products"
   | "invoices"
   | "purchaseInvoices"
+  | "purchaseOrders"
   | "controlledLogs"
   | "expenses"
   | "shifts"
@@ -56,6 +58,7 @@ export const createSystemSyncSlice: PosSlice<SystemSyncSlice> = (set, get) => ({
   products: sqliteEngine.getSnapshot().products,
   invoices: sqliteEngine.getSnapshot().invoices,
   purchaseInvoices: sqliteEngine.getSnapshot().purchaseInvoices,
+  purchaseOrders: sqliteEngine.getSnapshot().purchaseOrders || [],
   controlledLogs: sqliteEngine.getSnapshot().controlledLogs,
   expenses: sqliteEngine.getSnapshot().expenses,
   shifts: sqliteEngine.getSnapshot().shifts,
@@ -73,6 +76,7 @@ export const createSystemSyncSlice: PosSlice<SystemSyncSlice> = (set, get) => ({
       products,
       invoices,
       purchaseInvoices,
+      purchaseOrders,
       controlledLogs,
       expenses,
       shifts,
@@ -84,6 +88,7 @@ export const createSystemSyncSlice: PosSlice<SystemSyncSlice> = (set, get) => ({
       productRepo.getAllProducts(),
       invoiceRepo.getAllInvoices(),
       invoiceRepo.getAllPurchaseInvoices(),
+      purchaseOrderRepo.getAllPurchaseOrders(),
       invoiceRepo.getControlledDrugLogs(),
       invoiceRepo.getAllExpenses(),
       invoiceRepo.getShifts(),
@@ -96,6 +101,7 @@ export const createSystemSyncSlice: PosSlice<SystemSyncSlice> = (set, get) => ({
       products,
       invoices,
       purchaseInvoices,
+      purchaseOrders,
       controlledLogs,
       expenses,
       shifts,
@@ -174,6 +180,7 @@ export const createSystemSyncSlice: PosSlice<SystemSyncSlice> = (set, get) => ({
         products: state.products,
         invoices: state.invoices,
         purchaseInvoices: state.purchaseInvoices,
+        purchaseOrders: state.purchaseOrders,
         controlledLogs: state.controlledLogs,
         expenses: state.expenses,
         shifts: state.shifts,
@@ -200,9 +207,10 @@ export const createSystemSyncSlice: PosSlice<SystemSyncSlice> = (set, get) => ({
       await get().loadInitialData();
       set({
         heldInvoices: [],
+        pendingOrderForInvoice: null,
         notification: {
           type: "success",
-          message: `تمت استعادة النسخة الاحتياطية بنجاح (${summary.productsCount} صنف دوائي، ${summary.invoicesCount} فاتورة، ${summary.suppliersCount} مستودع، ${summary.usersCount} موظف).`,
+          message: `تمت استعادة النسخة الاحتياطية بنجاح (${summary.productsCount} صنف دوائي، ${summary.invoicesCount} فاتورة، ${summary.suppliersCount} مستودع، ${summary.purchaseOrdersCount} أمر شراء، ${summary.usersCount} موظف).`,
         },
       });
     } catch (err) {
@@ -225,6 +233,7 @@ export const createSystemSyncSlice: PosSlice<SystemSyncSlice> = (set, get) => ({
       await get().loadInitialData();
       set({
         heldInvoices: [],
+        pendingOrderForInvoice: null,
         notification: {
           type: "info",
           message:

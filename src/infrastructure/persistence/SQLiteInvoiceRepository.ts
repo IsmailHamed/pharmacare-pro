@@ -181,8 +181,8 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
       await sqliteRaw.execute(
         `INSERT OR REPLACE INTO purchase_invoices (
           id, supplier_name, supplier_invoice_number, payment_mode,
-          total_amount, total_bonus_value, items_json, created_at, branch_id
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);`,
+          total_amount, total_bonus_value, items_json, purchase_order_id, created_at, branch_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);`,
         [
           purchase.id,
           purchase.supplierName,
@@ -191,6 +191,7 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
           purchase.totalAmount,
           purchase.totalBonusValue,
           JSON.stringify(purchase.items),
+          purchase.purchaseOrderId || null,
           purchase.createdAt,
           purchase.branchId,
         ],
@@ -225,6 +226,9 @@ export class SQLiteInvoiceRepository implements IInvoiceRepository {
             totalAmount: Number(r.total_amount),
             totalBonusValue: Number(r.total_bonus_value),
             items: JSON.parse(String(r.items_json || "[]")),
+            purchaseOrderId: r.purchase_order_id
+              ? String(r.purchase_order_id)
+              : undefined,
             createdAt: String(r.created_at),
             branchId: String(r.branch_id),
           }));

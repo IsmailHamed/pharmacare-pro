@@ -1,6 +1,8 @@
 import {
   ProductEntity,
   PurchaseInvoiceEntity,
+  PurchaseOrderEntity,
+  PurchaseOrderStatus,
   ControlledDrugLogEntity,
   CashExpenseEntity,
   ShiftSummaryEntity,
@@ -41,6 +43,7 @@ export interface FullBackupPayload {
     // حقول اختيارية للحفاظ على التوافق العكسي مع ملفات النسخ الاحتياطي القديمة
     users?: UserEntity[];
     suppliers?: SupplierEntity[];
+    purchaseOrders?: PurchaseOrderEntity[];
   };
 }
 
@@ -86,6 +89,57 @@ const normalizeBackupSupplier = (raw: SupplierEntity): SupplierEntity => ({
   branchId: raw.branchId || CURRENT_BRANCH_ID,
 });
 
+/**
+ * تطبيع سجل أمر شراء مستعاد من ملف النسخة الاحتياطية لضمان توافق الحقول مع جدول purchase_orders
+ */
+const normalizeBackupPurchaseOrder = (
+  raw: PurchaseOrderEntity,
+): PurchaseOrderEntity => {
+  const validStatuses: PurchaseOrderStatus[] = [
+    "DRAFT",
+    "SENT",
+    "PARTIAL",
+    "RECEIVED",
+    "CANCELLED",
+  ];
+  const status: PurchaseOrderStatus = validStatuses.includes(raw.status)
+    ? raw.status
+    : "DRAFT";
+  const createdAt = raw.createdAt || new Date().toISOString();
+
+  return {
+    id: String(raw.id),
+    supplierId: raw.supplierId ? String(raw.supplierId) : undefined,
+    supplierName: String(raw.supplierName || "").trim(),
+    supplierPhone: raw.supplierPhone
+      ? String(raw.supplierPhone).trim() || undefined
+      : undefined,
+    salesRepName: raw.salesRepName
+      ? String(raw.salesRepName).trim() || undefined
+      : undefined,
+    status,
+    items: Array.isArray(raw.items) ? raw.items : [],
+    totalOrderedPacks: Number(raw.totalOrderedPacks || 0),
+    totalReceivedPacks: Number(raw.totalReceivedPacks || 0),
+    estimatedTotalAmount: Number(raw.estimatedTotalAmount || 0),
+    notes: raw.notes ? String(raw.notes).trim() || undefined : undefined,
+    dispatchChannel: raw.dispatchChannel,
+    sentAt: raw.sentAt ? String(raw.sentAt) : undefined,
+    completedAt: raw.completedAt ? String(raw.completedAt) : undefined,
+    cancelledAt: raw.cancelledAt ? String(raw.cancelledAt) : undefined,
+    linkedPurchaseInvoiceIds: Array.isArray(raw.linkedPurchaseInvoiceIds)
+      ? raw.linkedPurchaseInvoiceIds.map(String)
+      : [],
+    createdByUserId: raw.createdByUserId
+      ? String(raw.createdByUserId)
+      : undefined,
+    createdByName: raw.createdByName ? String(raw.createdByName) : undefined,
+    createdAt,
+    updatedAt: raw.updatedAt || createdAt,
+    branchId: raw.branchId || CURRENT_BRANCH_ID,
+  };
+};
+
 export class BackupService {
   /**
    * دالة مساعدة موحدة لكتابة كامل الجداول داخل pharmacare.db على سطح المكتب ضمن Transaction ذرية واحدة
@@ -103,9 +157,11 @@ export class BackupService {
       ledgerPayments: LedgerPaymentEntity[];
       users?: UserEntity[];
       suppliers?: SupplierEntity[];
+      purchaseOrders?: PurchaseOrderEntity[];
     },
     overwriteUsersTable: boolean,
     overwriteSuppliersTable: boolean,
+    overwritePurchaseOrdersTable: boolean,
   ): Promise<void> {
     if (!isTauriDesktop() || !sqliteRaw) return;
 
@@ -129,6 +185,11 @@ export class BackupService {
       // استبدال جدول المستودعات فقط عند وجود حقل suppliers في النسخة أو أثناء إعادة ضبط المصنع
       if (overwriteSuppliersTable) {
         await sqliteRaw.execute("DELETE FROM suppliers;");
+      }
+
+      // استبدال جدول أوامر الشراء فقط عند وجود حقل purchaseOrders في النسخة أو أثناء إعادة ضبط المصنع
+      if (overwritePurchaseOrdersTable) {
+        await sqliteRaw.execute("DELETE FROM purchase_orders;");
       }
 
       // 1. المنتجات والدفعات (Batches)
@@ -203,8 +264,8 @@ export class BackupService {
         await sqliteRaw.execute(
           `INSERT OR REPLACE INTO purchase_invoices (
             id, supplier_name, supplier_invoice_number, payment_mode,
-            total_amount, total_bonus_value, items_json, created_at, branch_id
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);`,
+            total_amount, total_bonus_value, items_json, purchase_order_id, created_at, branch_id
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);`,
           [
             pur.id,
             pur.supplierName,
@@ -213,6 +274,7 @@ export class BackupService {
             pur.totalAmount,
             pur.totalBonusValue,
             JSON.stringify(pur.items),
+            pur.purchaseOrderId || null,
             pur.createdAt,
             pur.branchId || CURRENT_BRANCH_ID,
           ],
@@ -381,6 +443,47 @@ export class BackupService {
         }
       }
 
+      // 11. جدول أوامر الشراء (purchase_orders)
+      if (overwritePurchaseOrdersTable && payload.purchaseOrders) {
+        for (const order of payload.purchaseOrders) {
+          await sqliteRaw.execute(
+            `INSERT OR REPLACE INTO purchase_orders (
+              id, supplier_id, supplier_name, supplier_phone, sales_rep_name,
+              status, items_json, total_ordered_packs, total_received_packs,
+              estimated_total_amount, notes, dispatch_channel, sent_at,
+              completed_at, cancelled_at, linked_purchase_invoice_ids_json,
+              created_by_user_id, created_by_name, created_at, updated_at, branch_id
+            ) VALUES (
+              $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+              $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+            );`,
+            [
+              order.id,
+              order.supplierId || null,
+              order.supplierName,
+              order.supplierPhone || null,
+              order.salesRepName || null,
+              order.status,
+              JSON.stringify(order.items || []),
+              order.totalOrderedPacks || 0,
+              order.totalReceivedPacks || 0,
+              order.estimatedTotalAmount || 0,
+              order.notes || null,
+              order.dispatchChannel || null,
+              order.sentAt || null,
+              order.completedAt || null,
+              order.cancelledAt || null,
+              JSON.stringify(order.linkedPurchaseInvoiceIds || []),
+              order.createdByUserId || null,
+              order.createdByName || null,
+              order.createdAt,
+              order.updatedAt || order.createdAt,
+              order.branchId || CURRENT_BRANCH_ID,
+            ],
+          );
+        }
+      }
+
       await sqliteRaw.execute("COMMIT;");
     } catch (err) {
       await sqliteRaw.execute("ROLLBACK;");
@@ -389,7 +492,7 @@ export class BackupService {
   }
 
   /**
-   * تصدير نسخة احتياطية كاملة لجميع جداول قاعدة البيانات والموظفين والمستودعات وإعدادات الصيدلية كملف JSON
+   * تصدير نسخة احتياطية كاملة لجميع جداول قاعدة البيانات والموظفين والمستودعات وأوامر الشراء وإعدادات الصيدلية كملف JSON
    */
   static exportBackupFile(
     stateData: FullBackupPayload["data"],
@@ -409,6 +512,10 @@ export class BackupService {
       ? stateData.suppliers
       : sqliteEngine.getSnapshot().suppliers || [];
 
+    const resolvedPurchaseOrders = Array.isArray(stateData.purchaseOrders)
+      ? stateData.purchaseOrders
+      : sqliteEngine.getSnapshot().purchaseOrders || [];
+
     const backupObject: FullBackupPayload = {
       meta: {
         app: "PharmaCare Pro",
@@ -421,6 +528,7 @@ export class BackupService {
         ...stateData,
         users: resolvedUsers,
         suppliers: resolvedSuppliers,
+        purchaseOrders: resolvedPurchaseOrders,
       },
     };
 
@@ -442,7 +550,7 @@ export class BackupService {
   }
 
   /**
-   * قراءة ملف النسخة الاحتياطية والتحقق من سلامته واستعادة كافة الجداول (بما فيها الموظفين والمستودعات)
+   * قراءة ملف النسخة الاحتياطية والتحقق من سلامته واستعادة كافة الجداول (بما فيها الموظفين والمستودعات وأوامر الشراء)
    * في SQLite (pharmacare.db) وفي الذاكرة المحلية بأمان كامل
    */
   static async restoreFromBackupFile(file: File): Promise<{
@@ -450,6 +558,7 @@ export class BackupService {
     invoicesCount: number;
     usersCount: number;
     suppliersCount: number;
+    purchaseOrdersCount: number;
     exportedAt: string;
   }> {
     const rawText = await file.text();
@@ -483,6 +592,7 @@ export class BackupService {
       ledgerPayments = [],
       users: rawUsers,
       suppliers: rawSuppliers,
+      purchaseOrders: rawPurchaseOrders,
     } = parsed.data;
 
     // معالجة الموظفين: إذا كان الملف يحتوي على قائمة موظفين نُطبّع صلاحياتهم ونستعيدهم،
@@ -518,6 +628,16 @@ export class BackupService {
       }
     }
 
+    // معالجة أوامر الشراء: تطبيع السجلات المستعادة إن وُجدت في النسخة، أو الإبقاء على الحالية للنسخ القديمة
+    const hasPurchaseOrdersInBackup = Array.isArray(rawPurchaseOrders);
+    let normalizedPurchaseOrders: PurchaseOrderEntity[] | undefined;
+
+    if (hasPurchaseOrdersInBackup) {
+      normalizedPurchaseOrders = rawPurchaseOrders
+        .map(normalizeBackupPurchaseOrder)
+        .filter((o) => Boolean(o.id && o.supplierName));
+    }
+
     // 1. تنفيذ الاستعادة أولاً داخل SQLite (pharmacare.db) في معاملة ذرية واحدة
     await BackupService.writeSnapshotToDesktopSQLite(
       {
@@ -531,9 +651,11 @@ export class BackupService {
         ledgerPayments,
         users: normalizedUsers,
         suppliers: normalizedSuppliers,
+        purchaseOrders: normalizedPurchaseOrders,
       },
       hasUsersInBackup,
       hasSuppliersInBackup,
+      hasPurchaseOrdersInBackup,
     );
 
     // 2. استعادة إعدادات الصيدلية إن وجدت داخل النسخة الاحتياطية
@@ -557,6 +679,9 @@ export class BackupService {
       if (normalizedSuppliers) {
         draft.suppliers = normalizedSuppliers;
       }
+      if (normalizedPurchaseOrders) {
+        draft.purchaseOrders = normalizedPurchaseOrders;
+      }
     });
 
     return {
@@ -569,6 +694,10 @@ export class BackupService {
       suppliersCount:
         normalizedSuppliers?.length ??
         sqliteEngine.getSnapshot().suppliers?.length ??
+        0,
+      purchaseOrdersCount:
+        normalizedPurchaseOrders?.length ??
+        sqliteEngine.getSnapshot().purchaseOrders?.length ??
         0,
       exportedAt: parsed.meta?.exportedAt || new Date().toISOString(),
     };
@@ -586,6 +715,7 @@ export class BackupService {
         products: freshSnapshot.products,
         invoices: freshSnapshot.invoices,
         purchaseInvoices: freshSnapshot.purchaseInvoices,
+        purchaseOrders: freshSnapshot.purchaseOrders,
         controlledLogs: freshSnapshot.controlledLogs,
         expenses: freshSnapshot.expenses,
         shifts: freshSnapshot.shifts,
@@ -594,6 +724,7 @@ export class BackupService {
         users: freshSnapshot.users,
         suppliers: freshSnapshot.suppliers,
       },
+      true,
       true,
       true,
     );

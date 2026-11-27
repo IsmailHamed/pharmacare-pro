@@ -6,6 +6,8 @@ import {
   ControlledDrugMeta,
   DrugInteractionAlert,
   PurchaseInvoiceEntity,
+  PurchaseOrderEntity,
+  PurchaseOrderDispatchChannel,
   ControlledDrugLogEntity,
   CashExpenseEntity,
   ShiftSummaryEntity,
@@ -22,18 +24,41 @@ import { SQLiteBatchRepository } from "../../infrastructure/persistence/SQLiteBa
 import { SQLiteInvoiceRepository } from "../../infrastructure/persistence/SQLiteInvoiceRepository";
 import { SQLiteUserRepository } from "../../infrastructure/persistence/SQLiteUserRepository";
 import { SQLiteSupplierRepository } from "../../infrastructure/persistence/SQLiteSupplierRepository";
+import { SQLitePurchaseOrderRepository } from "../../infrastructure/persistence/SQLitePurchaseOrderRepository";
 
 export const productRepo = new SQLiteProductRepository();
 export const batchRepo = new SQLiteBatchRepository();
 export const invoiceRepo = new SQLiteInvoiceRepository();
 export const userRepo = new SQLiteUserRepository();
 export const supplierRepo = new SQLiteSupplierRepository();
+export const purchaseOrderRepo = new SQLitePurchaseOrderRepository();
+
+/**
+ * بيانات بند واحد عند إنشاء أمر شراء جديد من دفتر النواقص
+ */
+export interface PurchaseOrderLineDraftInput {
+  product: ProductEntity;
+  orderedPacks: number;
+}
+
+/**
+ * بيانات إنشاء أمر شراء جديد لمستودع محدد
+ */
+export interface CreatePurchaseOrderInput {
+  supplierId?: string;
+  supplierName: string;
+  supplierPhone?: string;
+  salesRepName?: string;
+  notes?: string;
+  items: PurchaseOrderLineDraftInput[];
+}
 
 export interface PosState {
   // البيانات المتزامنة مع SQLite المحلي
   products: ProductEntity[];
   invoices: InvoiceEntity[];
   purchaseInvoices: PurchaseInvoiceEntity[];
+  purchaseOrders: PurchaseOrderEntity[];
   controlledLogs: ControlledDrugLogEntity[];
   expenses: CashExpenseEntity[];
   shifts: ShiftSummaryEntity[];
@@ -41,6 +66,9 @@ export interface PosState {
   ledgerPayments: LedgerPaymentEntity[];
   suppliers: SupplierEntity[];
   settings: PharmacySettingsEntity;
+
+  // أمر الشراء المحدّد حالياً للتحويل إلى شاشة إدخال فاتورة الشراء (استلام بنقرة واحدة)
+  pendingOrderForInvoice: PurchaseOrderEntity | null;
 
   // حالة نقطة البيع (POS State)
   cart: CartItemEntity[];
@@ -109,7 +137,27 @@ export interface PosState {
     supplierInvoiceNumber: string,
     paymentMode: "CASH" | "CREDIT",
     lines: PurchaseLineInput[],
+    purchaseOrderId?: string,
   ) => Promise<PurchaseInvoiceEntity>;
+
+  // إجراءات دورة أوامر الشراء (Purchase Orders Lifecycle)
+  setPendingOrderForInvoice: (order: PurchaseOrderEntity | null) => void;
+  loadPurchaseOrders: () => Promise<void>;
+  createPurchaseOrdersBatch: (
+    ordersInput: CreatePurchaseOrderInput[],
+  ) => Promise<PurchaseOrderEntity[]>;
+  updatePurchaseOrderItems: (
+    orderId: string,
+    updatedItems: { itemId: string; orderedPacks: number }[],
+    notes?: string,
+    addedItems?: PurchaseOrderLineDraftInput[],
+  ) => Promise<void>;
+  markPurchaseOrderSent: (
+    orderId: string,
+    channel?: PurchaseOrderDispatchChannel,
+  ) => Promise<void>;
+  cancelPurchaseOrder: (orderId: string) => Promise<void>;
+  deleteDraftPurchaseOrder: (orderId: string) => Promise<void>;
 
   // إجراءات المخزون والتسعير الجماعي وتسوية الجرد
   addNewProduct: (product: Omit<ProductEntity, "id">) => Promise<void>;

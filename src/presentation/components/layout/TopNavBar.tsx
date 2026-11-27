@@ -24,7 +24,7 @@ export type NavTabId =
   | "controlled"
   | "settings";
 
-export type NavPurchasesSubTab = "entry" | "shortages" | "reports";
+export type NavPurchasesSubTab = "entry" | "shortages" | "orders" | "reports";
 export type NavInventorySubTab = "stock" | "losses";
 
 interface SubMenuItem {

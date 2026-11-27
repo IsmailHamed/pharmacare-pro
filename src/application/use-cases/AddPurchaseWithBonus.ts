@@ -90,6 +90,7 @@ export class AddPurchaseWithBonusUseCase {
     supplierInvoiceNumber: string,
     paymentMode: "CASH" | "CREDIT",
     lines: PurchaseLineInput[],
+    purchaseOrderId?: string,
   ): Promise<PurchaseInvoiceEntity> {
     if (lines.length === 0) {
       throw new Error("لا يمكن حفظ فاتورة مشتريات فارغة.");
@@ -101,10 +102,14 @@ export class AddPurchaseWithBonusUseCase {
 
     for (const line of lines) {
       if (line.purchasedPacks <= 0 && line.bonusPacks <= 0) {
-        throw new Error(`يجب إدخال كمية مشتراة أو بونص للصنف ${line.product.name}`);
+        throw new Error(
+          `يجب إدخال كمية مشتراة أو بونص للصنف ${line.product.name}`,
+        );
       }
       if (!line.batchNumber.trim()) {
-        throw new Error(`يرجى إدخال رقم التشغيلة (Batch Number) للصنف ${line.product.name}`);
+        throw new Error(
+          `يرجى إدخال رقم التشغيلة (Batch Number) للصنف ${line.product.name}`,
+        );
       }
       if (!line.expiryDate.trim()) {
         throw new Error(`يرجى تحديد تاريخ الصلاحية للصنف ${line.product.name}`);
@@ -136,7 +141,9 @@ export class AddPurchaseWithBonusUseCase {
         line.product.id,
         calc.newTotalStockPacks,
         calc.newWeightedCostPrice,
-        line.newPackSalePrice > 0 ? line.newPackSalePrice : line.product.packPrice,
+        line.newPackSalePrice > 0
+          ? line.newPackSalePrice
+          : line.product.packPrice,
       );
 
       totalAmount = Number((totalAmount + calc.lineTotalCost).toFixed(2));
@@ -169,11 +176,13 @@ export class AddPurchaseWithBonusUseCase {
       id: `PUR-${Date.now()}`,
       supplierName: supplierName.trim() || "مستودع الأدوية المركزي",
       supplierInvoiceNumber:
-        supplierInvoiceNumber.trim() || `SUP-${Date.now().toString().slice(-5)}`,
+        supplierInvoiceNumber.trim() ||
+        `SUP-${Date.now().toString().slice(-5)}`,
       paymentMode,
       totalAmount,
       totalBonusValue,
       items: purchaseItems,
+      purchaseOrderId: purchaseOrderId?.trim() || undefined,
       createdAt: new Date().toISOString(),
       branchId: CURRENT_BRANCH_ID,
     };

@@ -1,16 +1,17 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ProductEntity, SupplierEntity } from "../../../domain/entities";
+import {
+  ProductEntity,
+  PurchaseOrderDispatchChannel,
+  SupplierEntity,
+} from "../../../domain/entities";
 import {
   buildProductSearchIndex,
   searchProductsFuzzy,
 } from "../../../domain/utils/fuzzySearch";
 import { CsvCellValue, exportRowsToCsv } from "../../../domain/utils/csvExport";
-import {
-  buildWhatsAppOrderText,
-  buildWhatsAppUrl,
-  sanitizeWhatsAppPhone,
-} from "../../../domain/utils/whatsappHelper";
+import { buildWhatsAppOrderText } from "../../../domain/utils/whatsappHelper";
 import { usePosStore } from "../../../application/store/usePosStore";
+import { CreatePurchaseOrderInput } from "../../../application/store/storeTypes";
 import { ProductSearchInput } from "../common/ProductSearchInput";
 import { FilterPillOption, FilterPills } from "../common/table/FilterPills";
 import {
@@ -29,7 +30,12 @@ import { DataTableToolbar } from "../common/table/DataTableToolbar";
 import { DataTableShell } from "../common/table/DataTableShell";
 import { TableLoadMoreFooter } from "../common/table/TableLoadMoreFooter";
 import {
+  TableExportButton,
+  TableExportColumn,
+} from "../common/table/TableExportButton";
+import {
   ClipboardList,
+  ClipboardCheck,
   FileSpreadsheet,
   Copy,
   Check,
@@ -37,22 +43,25 @@ import {
   Building2,
   RotateCcw,
   Settings2,
-  MessageCircle,
   CheckSquare,
   CheckCircle2,
+  Send,
+  PackageCheck,
+  EyeOff,
+  Eye,
+  ShoppingBasket,
   X,
 } from "lucide-react";
-import {
-  TableExportButton,
-  TableExportColumn,
-} from "../common/table/TableExportButton";
+
 interface Props {
   shortageProducts: ProductEntity[];
   canViewCost: boolean;
   onOpenSuppliersModal: () => void;
+  onOrdersCreated?: () => void;
 }
 
 const PAGE_SIZE = 50;
+const OUT_OF_STOCK_KEY = "__OUT_OF_STOCK__";
 const ASSIGNED_KEY = "__ASSIGNED__";
 const UNASSIGNED_KEY = "__UNASSIGNED__";
 
@@ -64,6 +73,42 @@ type ShortageSortKey =
   | "weightedCostPrice"
   | "orderQty"
   | "estimatedTotal";
+
+// تمثيل أمر شراء مفتوح مرتبط بصنف معيّن لعرض حالته الفعلية ومنع تكرار الطلب لنفس المستودع فقط
+interface ProductOpenOrderEntry {
+  orderId: string;
+  supplierId?: string;
+  supplierName: string;
+  status: "DRAFT" | "SENT" | "PARTIAL";
+  remainingPacks: number;
+}
+
+// بطاقة سلّة حيّة لمستودع محدد جاهزة للاعتماد المستقل أو النسخ السريع
+interface LiveSupplierBasket {
+  supplier: SupplierEntity;
+  draft: CreatePurchaseOrderInput;
+  itemsCount: number;
+  totalPacks: number;
+  estimatedTotal: number;
+}
+
+const OPEN_ORDER_STATUS_META: Record<
+  ProductOpenOrderEntry["status"],
+  { label: string; cls: string }
+> = {
+  DRAFT: {
+    label: "قيد الطلب (مسودة)",
+    cls: "bg-slate-800/90 border-slate-700 text-slate-300",
+  },
+  SENT: {
+    label: "مُرسل للمستودع",
+    cls: "bg-sky-950/70 border-sky-700/80 text-sky-300",
+  },
+  PARTIAL: {
+    label: "استلام جزئي",
+    cls: "bg-amber-950/70 border-amber-700/80 text-amber-300",
+  },
+};
 
 // الاتجاه الابتدائي المفضّل عند النقر الأول على كل عمود في جدول النواقص
 const SHORTAGE_DEFAULT_DIRECTIONS: Partial<
@@ -80,17 +125,38 @@ const SHORTAGE_DEFAULT_DIRECTIONS: Partial<
 const getSuggestedQty = (product: ProductEntity): number =>
   Math.max(5, product.minLimit * 2 - product.stockPacks);
 
+// التحقق مما إذا كان الصنف مدرجاً بالفعل في أمر شراء مفتوح لنفس المستودع المحدد (مع السماح بطلبه من مستودعات أخرى)
+const hasOpenOrderForSupplier = (
+  entries: ProductOpenOrderEntry[] | undefined,
+  supplier: SupplierEntity,
+): boolean => {
+  if (!entries || entries.length === 0) return false;
+  const cleanName = supplier.name.trim().toLowerCase();
+  return entries.some(
+    (entry) =>
+      (entry.supplierId && entry.supplierId === supplier.id) ||
+      entry.supplierName.trim().toLowerCase() === cleanName,
+  );
+};
+
 /**
  * تبويب دفتر النواقص وتوزيع الطلبيات على المستودعات (Purchase Orders)
- * يستخدم محرك البحث الضبابي والصوتي (fuzzySearch)، أدوات التصدير والمراسلة الموحّدة،
- * ونواة الجداول الموحّدة (حبوب الفلترة، فرز الأعمدة، إظهار/إخفاء الأعمدة، والتحميل التدريجي)
+ * يدعم فلتر "نفد بالكامل (0)"، إخفاء الأصناف قيد الطلب حالياً، وبطاقات السلّات الحيّة لكل مستودع
  */
 export const PurchaseShortagesTab: React.FC<Props> = ({
   shortageProducts,
   canViewCost,
   onOpenSuppliersModal,
+  onOrdersCreated,
 }) => {
-  const { settings, suppliers, setNotification } = usePosStore();
+  const {
+    settings,
+    suppliers,
+    purchaseOrders,
+    setNotification,
+    createPurchaseOrdersBatch,
+    markPurchaseOrderSent,
+  } = usePosStore();
 
   const [orderQtyMap, setOrderQtyMap] = useState<Record<string, number>>({});
   const [assignedSupplierMap, setAssignedSupplierMap] = useState<
@@ -100,10 +166,15 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
   const [bulkSupplierId, setBulkSupplierId] = useState<string>("");
   const [activeSupplierFilter, setActiveSupplierFilter] =
     useState<string>("ALL");
+  const [hideOpenOrdered, setHideOpenOrdered] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [copied, setCopied] = useState(false);
+  const [copiedBasketId, setCopiedBasketId] = useState<string | null>(null);
+  const [creatingOrders, setCreatingOrders] = useState(false);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
+  // قفل فوري متزامن لمنع تكرار إنشاء أوامر الشراء عند النقر السريع المزدوج
+  const creatingOrdersRef = useRef(false);
 
   // تعريف أعمدة جدول النواقص للتحكم في الإظهار والإخفاء مع احترام صلاحية عرض التكلفة
   const shortageColumns = useMemo<TableColumnDef<ShortageSortKey>[]>(() => {
@@ -144,6 +215,50 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     suppliers.forEach((s) => map.set(s.id, s));
     return map;
   }, [suppliers]);
+
+  // تتبع كافة أوامر الشراء المفتوحة لكل صنف مع حالتها الفعلية واسم المستودع
+  const openOrdersByProduct = useMemo(() => {
+    const map = new Map<string, ProductOpenOrderEntry[]>();
+
+    purchaseOrders.forEach((order) => {
+      if (
+        order.status !== "DRAFT" &&
+        order.status !== "SENT" &&
+        order.status !== "PARTIAL"
+      ) {
+        return;
+      }
+
+      const openStatus = order.status;
+      order.items.forEach((item) => {
+        const remaining = Math.max(0, item.orderedPacks - item.receivedPacks);
+        if (remaining <= 0) return;
+
+        const entry: ProductOpenOrderEntry = {
+          orderId: order.id,
+          supplierId: order.supplierId,
+          supplierName: order.supplierName,
+          status: openStatus,
+          remainingPacks: remaining,
+        };
+
+        const existing = map.get(item.productId);
+        if (existing) {
+          existing.push(entry);
+        } else {
+          map.set(item.productId, [entry]);
+        }
+      });
+    });
+
+    return map;
+  }, [purchaseOrders]);
+
+  // عدد أصناف النواقص التي لديها أمر شراء مفتوح حالياً (لمؤشر زر الإخفاء)
+  const openOrderedShortageCount = useMemo(
+    () => shortageProducts.filter((p) => openOrdersByProduct.has(p.id)).length,
+    [shortageProducts, openOrdersByProduct],
+  );
 
   // أعمدة تصدير جدول النواقص إلى Excel / CSV مرتبطة بمعرّفات الأعمدة لتصدير الحقول الظاهرة فقط واحترام صلاحية التكلفة
   const tableExportColumns = useMemo<
@@ -216,6 +331,7 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
 
     return cols;
   }, [canViewCost, assignedSupplierMap, suppliersById, orderQtyMap]);
+
   // اختصار F2 أو / للتركيز السريع على شريط البحث داخل دفتر النواقص
   useEffect(() => {
     const handleFocusShortcut = (e: KeyboardEvent) => {
@@ -276,6 +392,7 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
   useEffect(() => {
     if (
       activeSupplierFilter !== "ALL" &&
+      activeSupplierFilter !== OUT_OF_STOCK_KEY &&
       activeSupplierFilter !== ASSIGNED_KEY &&
       activeSupplierFilter !== UNASSIGNED_KEY &&
       !suppliersById.has(activeSupplierFilter)
@@ -294,12 +411,26 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     return sid && suppliersById.has(sid) ? sid : "";
   };
 
+  // قاعدة الأصناف المرئية بعد تطبيق خيار "إخفاء قيد الطلب حالياً" لتحديث العدّادات بدقة
+  const visibilityFilteredShortages = useMemo(
+    () =>
+      hideOpenOrdered
+        ? shortageProducts.filter((p) => !openOrdersByProduct.has(p.id))
+        : shortageProducts,
+    [shortageProducts, hideOpenOrdered, openOrdersByProduct],
+  );
+
+  const outOfStockCount = useMemo(
+    () => visibilityFilteredShortages.filter((p) => p.stockPacks === 0).length,
+    [visibilityFilteredShortages],
+  );
+
   const supplierCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     let assigned = 0;
     let unassigned = 0;
 
-    shortageProducts.forEach((p) => {
+    visibilityFilteredShortages.forEach((p) => {
       const sid = assignedSupplierMap[p.id];
       if (sid && suppliersById.has(sid)) {
         counts[sid] = (counts[sid] || 0) + 1;
@@ -310,7 +441,7 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     });
 
     return { counts, assigned, unassigned };
-  }, [shortageProducts, assignedSupplierMap, suppliersById]);
+  }, [visibilityFilteredShortages, assignedSupplierMap, suppliersById]);
 
   const filterSuppliers = useMemo(() => {
     return suppliers.filter(
@@ -318,14 +449,22 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     );
   }, [suppliers, supplierCounts]);
 
-  // بناء خيارات شريط حبوب الفلترة الموحّد (الكل / الموزعة / غير موزعة / المستودعات)
+  // بناء خيارات شريط حبوب الفلترة الموحّد (الكل / نفد بالكامل / الموزعة / غير موزعة / المستودعات)
   const supplierFilterOptions = useMemo<FilterPillOption<string>[]>(() => {
     const baseOptions: FilterPillOption<string>[] = [
       {
         id: "ALL",
         label: "الكل",
-        count: shortageProducts.length,
+        count: visibilityFilteredShortages.length,
         tone: "slate",
+      },
+      {
+        id: OUT_OF_STOCK_KEY,
+        label: "نفد بالكامل (0)",
+        count: outOfStockCount,
+        icon: AlertTriangle,
+        tone: "rose",
+        highlightWhenInactive: outOfStockCount > 0,
       },
       {
         id: ASSIGNED_KEY,
@@ -359,23 +498,24 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     );
 
     return [...baseOptions, ...supplierOptions];
-  }, [shortageProducts.length, supplierCounts, filterSuppliers]);
-
-  const outOfStockCount = useMemo(
-    () => shortageProducts.filter((p) => p.stockPacks === 0).length,
-    [shortageProducts],
-  );
+  }, [
+    visibilityFilteredShortages.length,
+    outOfStockCount,
+    supplierCounts,
+    filterSuppliers,
+  ]);
 
   const scopedShortages = useMemo(() => {
-    return shortageProducts.filter((p) => {
+    return visibilityFilteredShortages.filter((p) => {
       const sid = getAssignedSupplierId(p.id);
       if (activeSupplierFilter === "ALL") return true;
+      if (activeSupplierFilter === OUT_OF_STOCK_KEY) return p.stockPacks === 0;
       if (activeSupplierFilter === ASSIGNED_KEY) return Boolean(sid);
       if (activeSupplierFilter === UNASSIGNED_KEY) return !sid;
       return sid === activeSupplierFilter;
     });
   }, [
-    shortageProducts,
+    visibilityFilteredShortages,
     activeSupplierFilter,
     assignedSupplierMap,
     suppliersById,
@@ -442,6 +582,7 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     pageSize: PAGE_SIZE,
     resetDeps: [
       activeSupplierFilter,
+      hideOpenOrdered,
       searchQuery,
       sortState?.key,
       sortState?.direction,
@@ -465,19 +606,110 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     [scopedShortages, orderQtyMap, assignedSupplierMap, suppliersById],
   );
 
+  // بطاقات ملخّص حيّة لسلّات المستودعات الموزّعة حالياً عبر كامل الدفتر (تتيح الاعتماد أو النسخ لكل مستودع مستقل)
+  const liveSupplierBaskets = useMemo<LiveSupplierBasket[]>(() => {
+    const basketsMap = new Map<string, LiveSupplierBasket>();
+
+    shortageProducts.forEach((product) => {
+      const sid = assignedSupplierMap[product.id];
+      if (!sid) return;
+      const supplier = suppliersById.get(sid);
+      if (!supplier) return;
+
+      const qty =
+        orderQtyMap[product.id] !== undefined
+          ? orderQtyMap[product.id]
+          : getSuggestedQty(product);
+      if (qty <= 0) return;
+
+      // استبعاد التكرار فقط إذا كان للصنف أمر مفتوح مسبقاً لدى نفس المستودع
+      if (
+        hasOpenOrderForSupplier(openOrdersByProduct.get(product.id), supplier)
+      ) {
+        return;
+      }
+
+      const lineCost = qty * product.weightedCostPrice;
+      const existing = basketsMap.get(supplier.id);
+      if (existing) {
+        existing.draft.items.push({ product, orderedPacks: qty });
+        existing.itemsCount += 1;
+        existing.totalPacks += qty;
+        existing.estimatedTotal = Number(
+          (existing.estimatedTotal + lineCost).toFixed(2),
+        );
+      } else {
+        basketsMap.set(supplier.id, {
+          supplier,
+          draft: {
+            supplierId: supplier.id,
+            supplierName: supplier.name,
+            supplierPhone: supplier.phone,
+            salesRepName: supplier.salesRepName,
+            items: [{ product, orderedPacks: qty }],
+          },
+          itemsCount: 1,
+          totalPacks: qty,
+          estimatedTotal: Number(lineCost.toFixed(2)),
+        });
+      }
+    });
+
+    return Array.from(basketsMap.values()).sort(
+      (a, b) => b.itemsCount - a.itemsCount,
+    );
+  }, [
+    shortageProducts,
+    assignedSupplierMap,
+    suppliersById,
+    orderQtyMap,
+    openOrdersByProduct,
+  ]);
+
+  // تجميع الأصناف الموجّهة لمستودع فقط ضمن النطاق الحالي مع منع التكرار لنفس المستودع والسماح بطلب نفس الدواء من مستودع آخر
+  const groupedOrdersDraft = useMemo<CreatePurchaseOrderInput[]>(() => {
+    const groups = new Map<string, CreatePurchaseOrderInput>();
+
+    activeOrderItems.forEach(({ product, qty, supplier }) => {
+      if (!supplier) return;
+      if (
+        hasOpenOrderForSupplier(openOrdersByProduct.get(product.id), supplier)
+      ) {
+        return;
+      }
+
+      const existing = groups.get(supplier.id);
+      if (existing) {
+        existing.items.push({ product, orderedPacks: qty });
+      } else {
+        groups.set(supplier.id, {
+          supplierId: supplier.id,
+          supplierName: supplier.name,
+          supplierPhone: supplier.phone,
+          salesRepName: supplier.salesRepName,
+          items: [{ product, orderedPacks: qty }],
+        });
+      }
+    });
+
+    return Array.from(groups.values());
+  }, [activeOrderItems, openOrdersByProduct]);
+
+  // إجمالي عدد الأصناف الموزّعة على مستودعات والجاهزة للاعتماد دون تكرار على نفس المستودع
+  const assignedOrderItemsCount = useMemo(
+    () => groupedOrdersDraft.reduce((sum, g) => sum + g.items.length, 0),
+    [groupedOrdersDraft],
+  );
+
   const selectedSupplier = useMemo(
     () =>
       activeSupplierFilter !== "ALL" &&
+      activeSupplierFilter !== OUT_OF_STOCK_KEY &&
       activeSupplierFilter !== ASSIGNED_KEY &&
       activeSupplierFilter !== UNASSIGNED_KEY
         ? suppliersById.get(activeSupplierFilter) || null
         : null,
     [activeSupplierFilter, suppliersById],
-  );
-
-  const selectedSupplierWhatsAppPhone = useMemo(
-    () => sanitizeWhatsAppPhone(selectedSupplier?.phone),
-    [selectedSupplier],
   );
 
   const totalEstimatedCost = useMemo(
@@ -499,11 +731,14 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
     pagination.visibleItems.every((p) => Boolean(selectedIds[p.id]));
 
   const hasActiveFilters =
-    activeSupplierFilter !== "ALL" || Boolean(searchQuery.trim());
+    activeSupplierFilter !== "ALL" ||
+    hideOpenOrdered ||
+    Boolean(searchQuery.trim());
 
-  // إعادة ضبط فلتر المستودع والبحث والفرز بضغطة واحدة
+  // إعادة ضبط فلتر المستودع وإخفاء قيد الطلب والبحث والفرز بضغطة واحدة
   const handleResetFilters = () => {
     setActiveSupplierFilter("ALL");
+    setHideOpenOrdered(false);
     setSearchQuery("");
     resetSort();
   };
@@ -596,29 +831,147 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
       })),
     });
 
+  // تحديث المسودات (DRAFT) المطابقة للنطاق الحالي تلقائياً إلى حالة "مُرسل للمستودع" (SENT) عند نسخ أو تصدير الطلبية
+  const markMatchingDraftOrdersSent = async (
+    channel: PurchaseOrderDispatchChannel,
+  ): Promise<number> => {
+    const activeProductIds = new Set(
+      activeOrderItems.map((entry) => entry.product.id),
+    );
+    const activeSupplierIds = new Set(
+      activeOrderItems
+        .map((entry) => entry.supplier?.id)
+        .filter((id): id is string => Boolean(id)),
+    );
+
+    const matchingDrafts = purchaseOrders.filter((order) => {
+      if (order.status !== "DRAFT") return false;
+
+      if (selectedSupplier) {
+        return (
+          (order.supplierId && order.supplierId === selectedSupplier.id) ||
+          order.supplierName.trim().toLowerCase() ===
+            selectedSupplier.name.trim().toLowerCase()
+        );
+      }
+
+      const matchesProduct = order.items.some((item) =>
+        activeProductIds.has(item.productId),
+      );
+      if (!matchesProduct) return false;
+
+      if (activeSupplierFilter === ASSIGNED_KEY && order.supplierId) {
+        return activeSupplierIds.has(order.supplierId);
+      }
+
+      return true;
+    });
+
+    for (const draft of matchingDrafts) {
+      await markPurchaseOrderSent(draft.id, channel);
+    }
+
+    return matchingDrafts.length;
+  };
+
+  // دالة موحّدة لاعتماد قائمة أوامر شراء (سواء لكل النطاق أو لسلّة مستودع منفردة) وتفريغ توزيعها فوراً
+  const submitOrdersDrafts = async (
+    drafts: CreatePurchaseOrderInput[],
+    navigateAfterCreate: boolean,
+  ) => {
+    if (drafts.length === 0 || creatingOrdersRef.current) return;
+
+    creatingOrdersRef.current = true;
+    setCreatingOrders(true);
+    try {
+      const createdProductIds = new Set(
+        drafts.flatMap((g) => g.items.map((it) => it.product.id)),
+      );
+
+      const created = await createPurchaseOrdersBatch(drafts);
+      if (created.length > 0) {
+        // تفريغ المستودع المعيّن والتحديد للأصناف المعتمدة فوراً لتعطيل الزر ومنع أي تكرار
+        setAssignedSupplierMap((prev) => {
+          const next = { ...prev };
+          createdProductIds.forEach((pid) => {
+            delete next[pid];
+          });
+          return next;
+        });
+        setSelectedIds((prev) => {
+          const next = { ...prev };
+          createdProductIds.forEach((pid) => {
+            delete next[pid];
+          });
+          return next;
+        });
+
+        if (navigateAfterCreate) {
+          onOrdersCreated?.();
+        }
+      }
+    } finally {
+      creatingOrdersRef.current = false;
+      setCreatingOrders(false);
+    }
+  };
+
+  const handleCreatePurchaseOrders = async () => {
+    await submitOrdersDrafts(groupedOrdersDraft, true);
+  };
+
+  // اعتماد سلّة مستودع واحد فقط (مع البقاء في الدفتر إذا كانت هناك سلّات أخرى لم تُعتمد بعد)
+  const handleCreateSingleBasket = async (basket: LiveSupplierBasket) => {
+    const isLastBasket = liveSupplierBaskets.length <= 1;
+    await submitOrdersDrafts([basket.draft], isLastBasket);
+  };
+
+  // نسخ نص طلبية سلّة مستودع واحد مباشرةً من بطاقته
+  const handleCopySingleBasket = async (basket: LiveSupplierBasket) => {
+    const text = buildWhatsAppOrderText({
+      pharmacyName: settings.pharmacyName,
+      pharmacyPhone: settings.phone,
+      supplier: {
+        name: basket.supplier.name,
+        salesRepName: basket.supplier.salesRepName,
+      },
+      items: basket.draft.items.map(({ product, orderedPacks }) => ({
+        name: product.name,
+        scientificName: product.scientificName,
+        qty: orderedPacks,
+        unitLabel: "علبة",
+        supplierName: basket.supplier.name,
+      })),
+    });
+
+    await navigator.clipboard.writeText(text);
+    setCopiedBasketId(basket.supplier.id);
+    window.setTimeout(() => {
+      setCopiedBasketId((prev) => (prev === basket.supplier.id ? null : prev));
+    }, 2200);
+    setNotification({
+      type: "success",
+      message: `تم نسخ طلبية (${basket.supplier.name}) بعدد (${basket.itemsCount}) صنف بنجاح!`,
+    });
+  };
+
   const handleCopyWhatsApp = async () => {
     if (activeOrderItems.length === 0) return;
     const text = getOrderMessageText();
     await navigator.clipboard.writeText(text);
+    const updatedCount = await markMatchingDraftOrdersSent("MANUAL_WHATSAPP");
     setCopied(true);
     window.setTimeout(() => setCopied(false), 2500);
     setNotification({
       type: "success",
       message: selectedSupplier
-        ? `تم نسخ طلبية (${selectedSupplier.name}) بنجاح! يمكنك لصقها في واتساب المندوب.`
-        : "تم نسخ نص طلبية النواقص بنجاح! يمكنك لصقها في واتساب مباشرة.",
+        ? `تم نسخ طلبية (${selectedSupplier.name}) بنجاح!${updatedCount > 0 ? " وتم تحديث حالة أمر الشراء إلى مُرسل." : ""}`
+        : `تم نسخ نص طلبية النواقص بنجاح!${updatedCount > 0 ? ` وتم تحديث (${updatedCount}) أمر شراء إلى مُرسل.` : ""}`,
     });
   };
 
-  const handleOpenWhatsAppDirect = () => {
-    if (activeOrderItems.length === 0 || !selectedSupplier) return;
-    const url = buildWhatsAppUrl(selectedSupplier.phone, getOrderMessageText());
-    if (!url) return;
-    window.open(url, "_blank", "noopener,noreferrer");
-  };
-
   // تصدير ملف CSV عبر الأداة الموحّدة بترميز عربي UTF-8 BOM مع احترام الأعمدة الظاهرة حالياً وصلاحية التكلفة
-  const handleExportCsvOrder = () => {
+  const handleExportCsvOrder = async () => {
     if (activeOrderItems.length === 0) return;
 
     const showSupplier = columnsState.isVisible("supplierName");
@@ -660,21 +1013,25 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
       rows,
     });
 
+    const updatedCount = await markMatchingDraftOrdersSent("CSV_EXPORT");
+
     setNotification({
       type: "success",
       message: selectedSupplier
-        ? `تم تصدير طلبية (${selectedSupplier.name}) بنجاح.`
-        : `تم تصدير ملف طلبية النواقص (${downloadedFileName}) بنجاح.`,
+        ? `تم تصدير طلبية (${selectedSupplier.name}) بنجاح.${updatedCount > 0 ? " وتم تحديث حالة أمر الشراء إلى مُرسل." : ""}`
+        : `تم تصدير ملف طلبية النواقص (${downloadedFileName}) بنجاح.${updatedCount > 0 ? ` وتم تحديث (${updatedCount}) أمر شراء إلى مُرسل.` : ""}`,
     });
   };
 
   const currentScopeLabel = selectedSupplier
     ? selectedSupplier.name
-    : activeSupplierFilter === ASSIGNED_KEY
-      ? "الأصناف الموزعة على المستودعات"
-      : activeSupplierFilter === UNASSIGNED_KEY
-        ? "الأصناف غير الموزعة"
-        : "كافة النواقص (مجمّعة حسب المستودع)";
+    : activeSupplierFilter === OUT_OF_STOCK_KEY
+      ? "الأصناف التي نفدت بالكامل (0)"
+      : activeSupplierFilter === ASSIGNED_KEY
+        ? "الأصناف الموزعة على المستودعات"
+        : activeSupplierFilter === UNASSIGNED_KEY
+          ? "الأصناف غير الموزعة"
+          : "كافة النواقص (مجمّعة حسب المستودع)";
 
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
@@ -686,8 +1043,8 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
             وتوزيع طلبيات المستودعات
           </h3>
           <p className="text-slate-400 text-[11px] mt-0.5">
-            وزّع الأصناف الناقصة على المستودعات وقت الطلب، ثم انسخ أو أرسل طلبية
-            كل مستودع بشكل مستقل عبر واتساب أو Excel.
+            وزّع الأصناف الناقصة على المستودعات وقت الطلب، وتابع سلّات كل مستودع
+            فوراً لاعتمادها كأوامر شراء رسمية أو نسخها وتصديرها.
           </p>
         </div>
 
@@ -745,15 +1102,50 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
         </div>
       )}
 
-      {/* لوحة تصفية المستودعات الموحّدة (FilterPills) وإجراءات إرسال وتصدير الطلبية */}
+      {/* لوحة تصفية المستودعات الموحّدة (FilterPills) + خيار إخفاء قيد الطلب + إجراءات الاعتماد والنسخ */}
       <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3 space-y-3">
-        <FilterPills
-          variant="chips"
-          options={supplierFilterOptions}
-          value={activeSupplierFilter}
-          onChange={setActiveSupplierFilter}
-          ariaLabel="تصفية النواقص حسب المستودع"
-        />
+        <div className="flex items-center justify-between gap-2.5 flex-wrap">
+          <FilterPills
+            variant="chips"
+            options={supplierFilterOptions}
+            value={activeSupplierFilter}
+            onChange={setActiveSupplierFilter}
+            ariaLabel="تصفية النواقص حسب المستودع أو حالة النفاد"
+          />
+
+          <button
+            type="button"
+            onClick={() => setHideOpenOrdered((prev) => !prev)}
+            className={`px-3 py-1.5 rounded-xl border font-bold text-[11px] inline-flex items-center gap-1.5 transition shrink-0 ${
+              hideOpenOrdered
+                ? "bg-amber-600/25 border-amber-500/80 text-amber-200 shadow-sm"
+                : "bg-slate-900 hover:bg-slate-800 border-slate-700 text-slate-300 hover:text-white"
+            }`}
+            title="إخفاء الأصناف التي لديها أمر شراء مفتوح حالياً (مسودة / مرسل / جزئي)"
+          >
+            {hideOpenOrdered ? (
+              <Eye className="w-3.5 h-3.5 text-amber-300" />
+            ) : (
+              <EyeOff className="w-3.5 h-3.5 text-slate-400" />
+            )}
+            <span>
+              {hideOpenOrdered
+                ? "إظهار الأصناف قيد الطلب"
+                : "إخفاء الأصناف قيد الطلب حالياً"}
+            </span>
+            {openOrderedShortageCount > 0 && (
+              <span
+                className={`font-mono text-[10px] px-1.5 py-0.5 rounded-full ${
+                  hideOpenOrdered
+                    ? "bg-amber-500/30 text-amber-100"
+                    : "bg-slate-800 text-amber-300"
+                }`}
+              >
+                {openOrderedShortageCount}
+              </span>
+            )}
+          </button>
+        </div>
 
         <div className="pt-2.5 border-t border-slate-800/80 flex items-center justify-between gap-3 flex-wrap">
           <div className="text-[11px] text-slate-400">
@@ -762,20 +1154,32 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
             <span className="font-mono text-sky-400">
               {activeOrderItems.length} صنف جاهز للطلب
             </span>
+            {assignedOrderItemsCount !== activeOrderItems.length && (
+              <span className="font-mono text-amber-400 mr-2">
+                ({assignedOrderItemsCount} منها موزّع وجاهز لأمر شراء جديد)
+              </span>
+            )}
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
-            {selectedSupplier && selectedSupplierWhatsAppPhone && (
-              <button
-                type="button"
-                disabled={activeOrderItems.length === 0}
-                onClick={handleOpenWhatsAppDirect}
-                className="bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 text-white font-bold py-2 px-3.5 rounded-xl flex items-center gap-1.5 shadow transition"
-              >
-                <MessageCircle className="w-4 h-4" /> إرسال مباشر لواتساب
-                المستودع
-              </button>
-            )}
+            <button
+              type="button"
+              disabled={groupedOrdersDraft.length === 0 || creatingOrders}
+              onClick={() => void handleCreatePurchaseOrders()}
+              title={
+                groupedOrdersDraft.length === 0
+                  ? "اختر مستودعاً لصنف واحد على الأقل (ليس لديه أمر مفتوح لدى نفس المستودع) لاعتماد أمر شراء"
+                  : `سيتم اعتماد (${assignedOrderItemsCount}) صنف موزّع فقط (ويمكن طلب نفس الدواء من مستودع آخر بحرية)`
+              }
+              className="bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white font-bold py-2 px-3.5 rounded-xl flex items-center gap-1.5 shadow transition"
+            >
+              <ClipboardCheck className="w-4 h-4" />
+              {groupedOrdersDraft.length > 1
+                ? `اعتماد (${groupedOrdersDraft.length}) أوامر شراء (${assignedOrderItemsCount} صنف)`
+                : assignedOrderItemsCount > 0
+                  ? `اعتماد كأمر شراء (${assignedOrderItemsCount} صنف)`
+                  : "اعتماد كأمر شراء (PO)"}
+            </button>
 
             <button
               type="button"
@@ -798,7 +1202,7 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
             <button
               type="button"
               disabled={activeOrderItems.length === 0}
-              onClick={handleExportCsvOrder}
+              onClick={() => void handleExportCsvOrder()}
               className="bg-sky-600 hover:bg-sky-500 disabled:opacity-40 text-white font-bold py-2 px-3.5 rounded-xl flex items-center gap-1.5 shadow transition"
             >
               <FileSpreadsheet className="w-4 h-4" /> تصدير Excel / CSV
@@ -806,6 +1210,117 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
           </div>
         </div>
       </div>
+
+      {/* بطاقات ملخّص حيّة لسلّات المستودعات (Live Supplier Baskets) */}
+      {liveSupplierBaskets.length > 0 && (
+        <div className="bg-indigo-950/20 border border-indigo-800/60 rounded-xl p-3 space-y-2.5">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2 text-indigo-200 font-bold text-xs">
+              <ShoppingBasket className="w-4 h-4 text-indigo-400" />
+              <span>
+                سلّات المستودعات الجاهزة للاعتماد (
+                <span className="font-mono text-white">
+                  {liveSupplierBaskets.length}
+                </span>
+                )
+              </span>
+            </div>
+            <span className="text-[10.5px] text-slate-400">
+              اضغط على اسم المستودع لتصفية الجدول، أو اعتمد سلّة كل مستودع بشكل
+              مستقل
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+            {liveSupplierBaskets.map((basket) => {
+              const isFocused = activeSupplierFilter === basket.supplier.id;
+              const isCopiedBasket = copiedBasketId === basket.supplier.id;
+
+              return (
+                <div
+                  key={basket.supplier.id}
+                  className={`rounded-xl border p-3 flex flex-col justify-between gap-2.5 transition ${
+                    isFocused
+                      ? "bg-indigo-950/60 border-indigo-500 shadow-[0_0_12px_rgba(99,102,241,0.16)]"
+                      : "bg-slate-950/85 border-slate-800 hover:border-slate-700"
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setActiveSupplierFilter(
+                          isFocused ? "ALL" : basket.supplier.id,
+                        )
+                      }
+                      className="text-right group min-w-0"
+                      title={
+                        isFocused
+                          ? "إلغاء التصفية بهذا المستودع"
+                          : "تصفية الجدول على أصناف هذا المستودع"
+                      }
+                    >
+                      <div className="font-bold text-white group-hover:text-indigo-300 flex items-center gap-1.5 truncate transition">
+                        <Building2 className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                        <span className="truncate">{basket.supplier.name}</span>
+                      </div>
+                      <div className="text-[10.5px] text-slate-400 font-mono mt-0.5 flex items-center gap-2 flex-wrap">
+                        <span>{basket.itemsCount} صنف</span>
+                        <span>•</span>
+                        <span>{basket.totalPacks} علبة</span>
+                        {canViewCost && (
+                          <>
+                            <span>•</span>
+                            <b className="text-amber-300">
+                              {basket.estimatedTotal.toFixed(2)} ر.س
+                            </b>
+                          </>
+                        )}
+                      </div>
+                    </button>
+
+                    {isFocused && (
+                      <span className="text-[9.5px] font-bold px-2 py-0.5 rounded-full bg-indigo-600/30 border border-indigo-500/60 text-indigo-200 shrink-0">
+                        معروض
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-1.5 pt-2 border-t border-slate-800/80">
+                    <button
+                      type="button"
+                      disabled={creatingOrders}
+                      onClick={() => void handleCreateSingleBasket(basket)}
+                      className="flex-1 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white font-bold py-1.5 px-2.5 rounded-lg text-[11px] inline-flex items-center justify-center gap-1 transition"
+                    >
+                      <ClipboardCheck className="w-3.5 h-3.5" />
+                      اعتماد الأمر
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => void handleCopySingleBasket(basket)}
+                      className="bg-slate-800 hover:bg-emerald-700 border border-slate-700 hover:border-emerald-600 text-slate-200 hover:text-white font-bold py-1.5 px-2.5 rounded-lg text-[11px] inline-flex items-center gap-1 transition"
+                    >
+                      {isCopiedBasket ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-emerald-300" />
+                          نُسخ
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          نسخ
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* الهيكل الموحّد للجدول (framed=false للحفاظ على البطاقة الخارجية الحالية) */}
       <DataTableShell
@@ -822,7 +1337,7 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
         }}
         noResultsState={{
           description:
-            "لا توجد أصناف ناقصة مطابقة لفلتر المستودع أو عبارة البحث الحالية.",
+            "لا توجد أصناف ناقصة مطابقة لفلتر المستودع أو خيار الإخفاء أو عبارة البحث الحالية.",
         }}
         toolbar={
           shortageProducts.length > 0 ? (
@@ -1033,6 +1548,7 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
           const assignedSupplierObj = assignedId
             ? suppliersById.get(assignedId)
             : undefined;
+          const productOpenOrders = openOrdersByProduct.get(p.id);
 
           return (
             <tr
@@ -1067,6 +1583,36 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
                     {p.scientificName} |{" "}
                     <span className="font-mono">{p.barcode}</span>
                   </div>
+                  {productOpenOrders && productOpenOrders.length > 0 && (
+                    <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                      {productOpenOrders.map((entry) => {
+                        const meta = OPEN_ORDER_STATUS_META[entry.status];
+                        return (
+                          <span
+                            key={`${entry.orderId}-${entry.supplierName}`}
+                            className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-md border ${meta.cls}`}
+                          >
+                            {entry.status === "SENT" ? (
+                              <Send className="w-3 h-3 shrink-0" />
+                            ) : entry.status === "PARTIAL" ? (
+                              <PackageCheck className="w-3 h-3 shrink-0" />
+                            ) : (
+                              <ClipboardCheck className="w-3 h-3 shrink-0" />
+                            )}
+                            <span>{meta.label}</span>
+                            <span className="opacity-75">•</span>
+                            <span>{entry.supplierName}</span>
+                            <span className="font-mono opacity-80">
+                              ({entry.orderId})
+                            </span>
+                            <span className="font-mono">
+                              • متبقي {entry.remainingPacks} علبة
+                            </span>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
                 </td>
               )}
 
@@ -1098,15 +1644,22 @@ export const PurchaseShortagesTab: React.FC<Props> = ({
                     <option value="" className="bg-slate-900 text-slate-400">
                       — غير محدد —
                     </option>
-                    {activeSuppliers.map((sup) => (
-                      <option
-                        key={sup.id}
-                        value={sup.id}
-                        className="bg-slate-900 text-white"
-                      >
-                        {sup.name}
-                      </option>
-                    ))}
+                    {activeSuppliers.map((sup) => {
+                      const alreadyOpenHere = hasOpenOrderForSupplier(
+                        productOpenOrders,
+                        sup,
+                      );
+                      return (
+                        <option
+                          key={sup.id}
+                          value={sup.id}
+                          className="bg-slate-900 text-white"
+                        >
+                          {sup.name}
+                          {alreadyOpenHere ? " (أمر مفتوح)" : ""}
+                        </option>
+                      );
+                    })}
                     {assignedSupplierObj && !assignedSupplierObj.isActive && (
                       <option
                         value={assignedSupplierObj.id}

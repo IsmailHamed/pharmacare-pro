@@ -1,19 +1,31 @@
-import React, { useCallback, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { v4 as uuidv4 } from "uuid";
-import { ProductEntity, SupplierEntity } from "../../../domain/entities";
+import {
+  ProductEntity,
+  PurchaseOrderEntity,
+  SupplierEntity,
+} from "../../../domain/entities";
 import {
   AddPurchaseWithBonusUseCase,
   PurchaseLineInput,
 } from "../../../application/use-cases/AddPurchaseWithBonus";
 import { ProductQuickPicker } from "../common/ProductQuickPicker";
 import { DrugIdentityBadges } from "../common/DrugIdentityBadges";
-import { Trash2, Settings2, Barcode } from "lucide-react";
+import { Trash2, Settings2, Barcode, ClipboardCheck, X } from "lucide-react";
 
 interface Props {
   products: ProductEntity[];
   activeSuppliers: SupplierEntity[];
   canViewCost: boolean;
   isScannerActive: boolean;
+  pendingOrder?: PurchaseOrderEntity | null;
+  onClearPendingOrder?: () => void;
   onOpenSuppliersModal: () => void;
   onLinesCountChange?: (count: number) => void;
   onSubmitPurchase: (
@@ -21,7 +33,8 @@ interface Props {
     supplierInvoiceNumber: string,
     paymentMode: "CASH" | "CREDIT",
     lines: PurchaseLineInput[],
-  ) => Promise<void>;
+    purchaseOrderId?: string,
+  ) => Promise<unknown>;
 }
 
 interface DraftLine {
@@ -35,25 +48,35 @@ interface DraftLine {
   newPackSalePrice: number;
 }
 
-const createDraftLineForProduct = (product: ProductEntity): DraftLine => ({
+const createDraftLineForProduct = (
+  product: ProductEntity,
+  overrides?: Partial<
+    Pick<DraftLine, "purchasedPacks" | "purchasePricePerPack">
+  >,
+): DraftLine => ({
   uid: uuidv4(),
   productId: product.id,
   batchNumber: "",
   expiryDate: new Date().toISOString().slice(0, 10),
-  purchasedPacks: 1,
+  purchasedPacks: overrides?.purchasedPacks ?? 1,
   bonusPacks: 0,
-  purchasePricePerPack: Number(product.weightedCostPrice.toFixed(2)) || 0,
+  purchasePricePerPack:
+    overrides?.purchasePricePerPack ??
+    (Number(product.weightedCostPrice.toFixed(2)) || 0),
   newPackSalePrice: 0,
 });
 
 /**
  * تبويب إدخال فاتورة الشراء والبونص وحساب التكلفة المرجحة
+ * يدعم الاستلام المباشر من أمر شراء (PO) وتعبئة المستودع والكميات المتبقية تلقائياً
  */
 export const PurchaseEntryTab: React.FC<Props> = ({
   products,
   activeSuppliers,
   canViewCost,
   isScannerActive,
+  pendingOrder = null,
+  onClearPendingOrder,
   onOpenSuppliersModal,
   onLinesCountChange,
   onSubmitPurchase,
@@ -66,6 +89,7 @@ export const PurchaseEntryTab: React.FC<Props> = ({
   const [lastAddedUid, setLastAddedUid] = useState<string | null>(null);
 
   const batchInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const loadedOrderIdRef = useRef<string | null>(null);
 
   const updateLinesState = useCallback(
     (updater: (prev: DraftLine[]) => DraftLine[]) => {
@@ -83,6 +107,55 @@ export const PurchaseEntryTab: React.FC<Props> = ({
     products.forEach((p) => map.set(p.id, p));
     return map;
   }, [products]);
+
+  // تعبئة النموذج تلقائياً بالكميات المتبقية عند التحويل من أمر شراء (PO)
+  useEffect(() => {
+    if (!pendingOrder) {
+      loadedOrderIdRef.current = null;
+      return;
+    }
+
+    if (loadedOrderIdRef.current === pendingOrder.id) return;
+    loadedOrderIdRef.current = pendingOrder.id;
+
+    const supplierInDirectory = activeSuppliers.some(
+      (s) => s.name === pendingOrder.supplierName,
+    );
+    setUseManualSupplier(!supplierInDirectory);
+    setSupplier(pendingOrder.supplierName);
+
+    const prefilledLines: DraftLine[] = [];
+    for (const item of pendingOrder.items) {
+      const remainingPacks = Math.max(
+        0,
+        item.orderedPacks - item.receivedPacks,
+      );
+      if (remainingPacks <= 0) continue;
+
+      const matchedProduct = productsById.get(item.productId);
+      if (!matchedProduct) continue;
+
+      prefilledLines.push(
+        createDraftLineForProduct(matchedProduct, {
+          purchasedPacks: remainingPacks,
+          purchasePricePerPack:
+            item.estimatedUnitCost > 0
+              ? Number(item.estimatedUnitCost.toFixed(2))
+              : Number(matchedProduct.weightedCostPrice.toFixed(2)) || 0,
+        }),
+      );
+    }
+
+    updateLinesState(() => prefilledLines);
+    const firstUid = prefilledLines[0]?.uid ?? null;
+    setLastAddedUid(firstUid);
+
+    if (firstUid) {
+      window.setTimeout(() => {
+        batchInputRefs.current[firstUid]?.focus();
+      }, 60);
+    }
+  }, [pendingOrder, activeSuppliers, productsById, updateLinesState]);
 
   const linePreview = useMemo(
     () =>
@@ -176,12 +249,14 @@ export const PurchaseEntryTab: React.FC<Props> = ({
         supplierInvoiceNumber.trim(),
         paymentMode,
         validLines,
+        pendingOrder?.id,
       );
       setSupplier("");
       setUseManualSupplier(false);
       setSupplierInvoiceNumber("");
       updateLinesState(() => []);
       setLastAddedUid(null);
+      loadedOrderIdRef.current = null;
     } catch (err) {
       alert(err instanceof Error ? err.message : "خطأ غير متوقع");
     }
@@ -192,6 +267,41 @@ export const PurchaseEntryTab: React.FC<Props> = ({
 
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+      {/* شريط ربط أمر الشراء النشط عند الاستلام من تبويب أوامر الشراء */}
+      {pendingOrder && (
+        <div className="bg-sky-950/40 border border-sky-700/70 rounded-xl px-4 py-3 flex items-center justify-between flex-wrap gap-3">
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <ClipboardCheck className="w-4 h-4 text-sky-400 shrink-0" />
+            <div>
+              <div className="font-bold text-white text-xs">
+                استلام فاتورة مرتبطة بأمر الشراء{" "}
+                <span className="font-mono text-sky-300">
+                  {pendingOrder.id}
+                </span>{" "}
+                — {pendingOrder.supplierName}
+              </div>
+              <div className="text-[11px] text-sky-200/80 mt-0.5">
+                تمت تعبئة الأصناف بالكميات المتبقية تلقائياً؛ أدخل أرقام
+                التشغيلات وتواريخ الصلاحية والبونص ثم اعتمد الفاتورة لتحديث حالة
+                الأمر (استلام جزئي أو كلي).
+              </div>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              loadedOrderIdRef.current = null;
+              onClearPendingOrder?.();
+            }}
+            className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 hover:text-white font-bold text-[11px] inline-flex items-center gap-1 transition"
+          >
+            <X className="w-3.5 h-3.5" />
+            فك الارتباط بالأمر
+          </button>
+        </div>
+      )}
+
       <div className="text-[11px] text-slate-400 bg-slate-950/70 border border-slate-800 rounded-xl px-3.5 py-2">
         معادلة التكلفة المرجحة: (تكلفة الرصيد السابق + قيمة المشتريات) ÷ (الرصيد
         + المشترى + البونص المجاني).
@@ -541,7 +651,9 @@ export const PurchaseEntryTab: React.FC<Props> = ({
             onClick={() => void handleSave()}
             className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white font-bold px-6 py-3 rounded-xl shadow-lg transition"
           >
-            اعتماد الفاتورة وتحديث المخزون
+            {pendingOrder
+              ? `اعتماد الفاتورة وتحديث الأمر (${pendingOrder.id})`
+              : "اعتماد الفاتورة وتحديث المخزون"}
           </button>
         </div>
       </div>
